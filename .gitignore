@@ -139,3 +139,12 @@ credentials.json
 *.key
 .credentials
 backend/videos/
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
