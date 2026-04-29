@@ -1,0 +1,261 @@
+"""Sprint 4 — Admin dashboard routes (web-optimized)."""
+from datetime import datetime, timezone, timedelta
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+from motor.motor_asyncio import AsyncIOMotorClient
+
+from core.config import MONGO_URL, DB_NAME, ENV, IS_BETA
+from core.auth import require_admin
+from core.pricing import PLANS, plan_by_id
+
+_client = AsyncIOMotorClient(MONGO_URL)
+db = _client[DB_NAME]
+
+router = APIRouter(prefix='/api/admin', tags=['admin'])
+
+
+class AdjustCreditsRequest(BaseModel):
+    delta: int  # positive to add, negative to subtract
+    reason: str = ''
+
+
+class SetTierRequest(BaseModel):
+    tier: str  # 'free' | 'starter' | 'pro'
+
+
+class ProfitCalcRequest(BaseModel):
+    total_users: int
+    starter_users: int
+    pro_users: int
+    avg_videos_per_user_per_month: float = 10.0
+    avg_cost_per_video_inr: float = 8.0
+
+
+@router.get('/users')
+async def list_users(request: Request, limit: int = 200):
+    await require_admin(request)
+    users = await db.users.find({}, {'_id': 0, 'password_hash': 0}).sort('created_at', -1).to_list(length=limit)
+    return {'users': users, 'count': len(users), 'env': ENV}
+
+
+@router.post('/users/{user_id}/credits')
+async def adjust_credits(user_id: str, req: AdjustCreditsRequest, request: Request):
+    await require_admin(request)
+    u = await db.users.find_one({'id': user_id})
+    if not u:
+        raise HTTPException(status_code=404, detail='User not found')
+    new_bal = max(0, int(u.get('credits_balance', 0)) + int(req.delta))
+    await db.users.update_one({'id': user_id}, {'$set': {'credits_balance': new_bal}})
+    await db.admin_audit.insert_one({
+        'at': datetime.now(timezone.utc).isoformat(), 'action': 'credit_adjust',
+        'user_id': user_id, 'delta': req.delta, 'reason': req.reason, 'new_balance': new_bal,
+    })
+    return {'ok': True, 'new_balance': new_bal}
+
+
+@router.post('/users/{user_id}/tier')
+async def set_tier(user_id: str, req: SetTierRequest, request: Request):
+    await require_admin(request)
+    if req.tier not in PLANS:
+        raise HTTPException(status_code=400, detail='Invalid tier')
+    await db.users.update_one({'id': user_id}, {'$set': {
+        'subscription_tier': req.tier,
+        'credits_balance': PLANS[req.tier]['credits'],
+    }})
+    return {'ok': True}
+
+
+@router.post('/users/{user_id}/reset-daily')
+async def reset_daily(user_id: str, request: Request):
+    """BETA only: reset daily_usage for testing."""
+    await require_admin(request)
+    if not IS_BETA:
+        raise HTTPException(status_code=403, detail='Only available in BETA mode')
+    await db.users.update_one({'id': user_id}, {'$set': {'daily_usage': 0, 'daily_usage_date': None}})
+    return {'ok': True}
+
+
+@router.get('/usage')
+async def usage_stats(request: Request):
+    await require_admin(request)
+    total_users = await db.users.count_documents({})
+    by_tier = {}
+    for tier in PLANS.keys():
+        by_tier[tier] = await db.users.count_documents({'subscription_tier': tier})
+    # Projects counts
+    total_projects = await db.video_projects.count_documents({})
+    # Recent projects (last 7 days by created_at string prefix)
+    seven_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    recent_projects = await db.video_projects.count_documents({'created_at': {'$gte': seven_ago}})
+    # Templates
+    templates_count = await db.templates.count_documents({'is_active': True})
+    return {
+        'env': ENV, 'total_users': total_users, 'by_tier': by_tier,
+        'total_projects': total_projects, 'recent_projects': recent_projects,
+        'active_templates': templates_count,
+    }
+
+
+@router.post('/profit')
+async def profit_calc(req: ProfitCalcRequest, request: Request):
+    await require_admin(request)
+    starter_revenue = req.starter_users * PLANS['starter']['price_inr']
+    pro_revenue = req.pro_users * PLANS['pro']['price_inr']
+    revenue = starter_revenue + pro_revenue
+    # Assume paid users generate the avg videos; free users generate 1 video/month
+    free_users = max(0, req.total_users - req.starter_users - req.pro_users)
+    total_videos = (
+        (req.starter_users + req.pro_users) * req.avg_videos_per_user_per_month
+        + free_users * 1.0
+    )
+    cost = total_videos * req.avg_cost_per_video_inr
+    profit = revenue - cost
+    margin = (profit / revenue * 100.0) if revenue > 0 else 0.0
+    return {
+        'total_users': req.total_users,
+        'paid_users': req.starter_users + req.pro_users,
+        'free_users': free_users,
+        'revenue_inr': round(revenue, 2),
+        'estimated_videos': round(total_videos, 0),
+        'estimated_cost_inr': round(cost, 2),
+        'profit_inr': round(profit, 2),
+        'margin_pct': round(margin, 2),
+    }
+
+
+@router.get('/env')
+async def env_info(request: Request):
+    await require_admin(request)
+    return {'env': ENV, 'is_beta': IS_BETA}
+
+
+class SwitchEnvRequest(BaseModel):
+    env: str  # 'DEV' | 'BETA' | 'PROD'
+
+
+@router.post('/env/switch')
+async def switch_env(req: SwitchEnvRequest, request: Request):
+    """Admin-only: hot-swap ENV at runtime.
+
+    Rewrites ENV= in /app/backend/.env and touches server.py so uvicorn
+    --reload picks up the change. JWTs issued in the previous DB will NOT
+    work in the new DB, so the frontend MUST force-logout after calling this.
+    """
+    await require_admin(request)
+    import os as _os
+    import re as _re
+    from pathlib import Path as _P
+
+    new_env = (req.env or '').upper()
+    if new_env not in ('DEV', 'BETA', 'PROD'):
+        raise HTTPException(status_code=400, detail='env must be one of DEV, BETA, PROD')
+    if new_env == ENV:
+        return {'ok': True, 'env': ENV, 'unchanged': True}
+
+    env_path = _P('/app/backend/.env')
+    if not env_path.exists():
+        raise HTTPException(status_code=500, detail='.env file missing on server')
+
+    text = env_path.read_text()
+    if _re.search(r'^ENV=.*$', text, flags=_re.MULTILINE):
+        text = _re.sub(r'^ENV=.*$', f'ENV={new_env}', text, flags=_re.MULTILINE)
+    else:
+        text = text.rstrip('\n') + f'\nENV={new_env}\n'
+    env_path.write_text(text)
+
+    # Audit trail
+    await db.admin_audit.insert_one({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'action': 'env_switch', 'from': ENV, 'to': new_env,
+    })
+
+    # Touch server.py to trigger uvicorn --reload. Backend will be back in ~2s.
+    try:
+        server_py = _P('/app/backend/server.py')
+        server_py.touch()
+    except Exception:
+        pass
+
+    return {'ok': True, 'env': new_env, 'previous': ENV,
+            'note': 'Backend reloading. Frontend should log out and re-login in ~3s.'}
+
+
+# ============================================================
+# Session 31 — MH credit budget dashboard
+# ============================================================
+from core import mh_guardrails
+
+
+@router.get('/mh-usage')
+async def mh_usage(request: Request):
+    """Real-time MH credit burn stats for the ₹1,350/mo Creator plan.
+
+    Returns daily + monthly totals, projected end-of-month usage, top users,
+    and per-model breakdown so admins can proactively upgrade the MH tier
+    before running out mid-cycle.
+    """
+    await require_admin(request)
+    data = await mh_guardrails.get_admin_usage(db)
+    return data
+
+
+# ============================================================
+# Session 31 — Pattern Lab admin endpoints
+# ============================================================
+@router.post('/pattern-lab/trigger')
+async def pattern_lab_trigger(request: Request):
+    """Manually fire a Pattern Lab refresh."""
+    await require_admin(request)
+    from core import pattern_lab
+    return await pattern_lab.run_refresh(db)
+
+
+@router.post('/pattern-lab/flag/{template_id}')
+async def pattern_lab_flag(template_id: str, request: Request):
+    """User-accessible endpoint (not actually admin-gated) — records a flag."""
+    # NOTE: auth optional — any logged-in user can flag. We don't require admin here.
+    body = await request.json() if request.headers.get('content-type') == 'application/json' else {}
+    reason = (body or {}).get('reason', 'user_flagged')[:200]
+    try:
+        user_id = None
+        try:
+            from core.auth import get_current_user
+            u = await get_current_user(request)
+            user_id = u.get('id') if u else None
+        except Exception:
+            pass
+        await db.templates.update_one(
+            {'id': template_id},
+            {'$inc': {'flag_count': 1}, '$push': {'flags': {'user_id': user_id, 'reason': reason, 'at': datetime.now(timezone.utc).isoformat()}}},
+        )
+        # Auto-deactivate if flag_count ≥ 5
+        t = await db.templates.find_one({'id': template_id})
+        if t and int(t.get('flag_count', 0)) >= 5:
+            await db.templates.update_one({'id': template_id}, {'$set': {'is_active': False, 'auto_deactivated': True}})
+        return {'ok': True, 'flag_count': int((t or {}).get('flag_count', 1))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/pattern-lab/flagged')
+async def pattern_lab_flagged(request: Request, limit: int = 50):
+    await require_admin(request)
+    cur = db.templates.find({'source': 'pattern_lab', 'flag_count': {'$gt': 0}}).sort('flag_count', -1).limit(limit)
+    items = await cur.to_list(length=limit)
+    for it in items:
+        it.pop('_id', None)
+    return {'flagged': items, 'count': len(items)}
+
+
+@router.post('/pattern-lab/moderate/{template_id}')
+async def pattern_lab_moderate(template_id: str, request: Request):
+    await require_admin(request)
+    body = await request.json() if request.headers.get('content-type') == 'application/json' else {}
+    action = (body or {}).get('action', 'deactivate')  # 'deactivate' | 'approve' | 'delete'
+    if action == 'approve':
+        await db.templates.update_one({'id': template_id}, {'$set': {'flag_count': 0, 'flags': [], 'auto_deactivated': False, 'is_active': True}})
+    elif action == 'delete':
+        await db.templates.delete_one({'id': template_id})
+    else:
+        await db.templates.update_one({'id': template_id}, {'$set': {'is_active': False}})
+    return {'ok': True, 'action': action}

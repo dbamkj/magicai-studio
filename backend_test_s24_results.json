@@ -1,0 +1,137 @@
+[
+  {
+    "name": "A1 GET /mode 200 env=BETA",
+    "passed": true,
+    "detail": "status=200 env=BETA"
+  },
+  {
+    "name": "A2 POST /auth/login admin",
+    "passed": true,
+    "detail": "status=200 is_admin=True tier=pro"
+  },
+  {
+    "name": "A3 GET /auth/me admin",
+    "passed": true,
+    "detail": "status=200 keys=['user', 'env', 'is_beta', 'is_dev']"
+  },
+  {
+    "name": "B1 GET /admin/env admin",
+    "passed": true,
+    "detail": "status=200 body={'env': 'BETA', 'is_beta': True}"
+  },
+  {
+    "name": "B2 GET /admin/env no auth \u2192 401",
+    "passed": true,
+    "detail": "status=401 body={\"detail\":\"Authentication required\"}"
+  },
+  {
+    "name": "B3 GET /admin/env non-admin (pro) \u2192 403",
+    "passed": true,
+    "detail": "status=403 body={\"detail\":\"Admin access required\"}"
+  },
+  {
+    "name": "C1 POST /admin/env/switch BETA (no-op)",
+    "passed": true,
+    "detail": "status=200 body={'ok': True, 'env': 'BETA', 'unchanged': True}"
+  },
+  {
+    "name": "D1 POST /admin/env/switch INVALID_XYZ \u2192 400",
+    "passed": true,
+    "detail": "status=400 detail=env must be one of DEV, BETA, PROD"
+  },
+  {
+    "name": "D2 POST /admin/env/switch non-admin (pro) \u2192 403",
+    "passed": true,
+    "detail": "status=403"
+  },
+  {
+    "name": "D3 POST /admin/env/switch no auth \u2192 401",
+    "passed": true,
+    "detail": "status=401"
+  },
+  {
+    "name": "E1 GET /subscription/balance admin",
+    "passed": true,
+    "detail": "status=200 balance=440"
+  },
+  {
+    "name": "E2 POST /generate-image admin",
+    "passed": true,
+    "detail": "status=200 credits_charged=5 project=creative-plan-engine"
+  },
+  {
+    "name": "E3 balance_after == balance_before - credits_charged",
+    "passed": true,
+    "detail": "before=440 after=435 charged=5 expected=435"
+  },
+  {
+    "name": "E4 POST /generate-image no auth \u2192 401",
+    "passed": true,
+    "detail": "status=401"
+  },
+  {
+    "name": "E5 POST /create-multishot free \u2192 402 Pro plan",
+    "passed": true,
+    "detail": "status=402 detail=Multi-shot requires Pro plan."
+  },
+  {
+    "name": "E6 POST /create-lipsync free \u2192 402 tier error",
+    "passed": true,
+    "detail": "status=402 detail=Lip Sync requires Starter plan or higher."
+  },
+  {
+    "name": "E7 POST /create-multishot pro 2 shots \u2192 200",
+    "passed": true,
+    "detail": "status=200 project=creative-plan-engine charged=100"
+  },
+  {
+    "name": "F /subscription/plans 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "F /admin/users 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "F /admin/usage 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "F /templates 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "F /motion-presets 200 (len==8)",
+    "passed": true,
+    "detail": "len=8"
+  },
+  {
+    "name": "F /voice-styles 200 (len==5)",
+    "passed": true,
+    "detail": "len=5"
+  },
+  {
+    "name": "F /sound-effects 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "F /mh-models 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "F /credits-info 200",
+    "passed": true,
+    "detail": "status=200 "
+  },
+  {
+    "name": "G1 No NEW startup errors for watermark/billing helpers in recent log",
+    "passed": true,
+    "detail": "relevant_hits=0 total_hits=0"
+  }
+]

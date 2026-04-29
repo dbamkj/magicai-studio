@@ -1,0 +1,156 @@
+<analysis>**original_problem_statement**: 
+Design and develop MagiCAi Studio. The user requested continuous development of the AI Creator Pipeline, Template Marketplace, and UI/UX improvements. Recently, the user made two massive requests:
+1. **Creative Plan Engine**: A new backend system to generate structured JSON (hook, script, scene_keywords, voice_style, bgm, mood) based on a user idea/template to perfectly align video clips, expressive AI voice, and music.
+2. **Global UI/UX Overhaul**: A complete redesign of all 12 screens to match a new Premium Neon Glass UI reference (apimg1/2), featuring refined Aurora backgrounds, frosted glass cards, and a specific layout structure.
+
+**User's preferred language**: English (You MUST respond in English only)
+
+**what currently exists?** 
+A feature-rich full-stack Expo/FastAPI app styled with an Aurora + Glassmorphism design system. 
+- **Frontend**: Custom , frosted-glass , animated splash screen, AI Video wizard, Avatar studio, and Subscription/Credits pages. 
+- **Recent Updates**: The Home screen header was polished (removed Studio, restyled credits pill), the bottom tab bar was flattened, overlap issues were patched via ScrollView padding, and Magic Hour text was rebranded to MagiCAi. 
+
+**Last working item**:
+    - Last item agent was working: The agent applied 5 quick visual polish fixes to the Home screen and Bottom Tab Bar based on the user's latest UI feedback. Because the user's request for a 12-screen redesign and the Creative Plan Engine was too large for the end of the session, the agent created a detailed handoff document () and exited cleanly.
+    - Status: USER VERIFICATION PENDING
+    - Agent Testing Done: Y
+    - Which testing method agent to use? Frontend testing agent / Backend testing agent (for the new API endpoint) / Screenshot tool.
+    - User Testing Done: N
+
+**All Pending/In progress Issue list**: 
+  Issue 1: Marketplace Templates Not Restored (Priority: P0)
+     - Attempted fixes: Deferred to this session.
+     - Next debug checklist: Check  and the DB seed files. The old templates (Krishna Bhajan, Shiv Tandav, etc.) need to be restored. Add a  tag (Free/Pro/Creator) to each template and ensure the Use Template button passes the *full, rich prompt* to the wizard, not just a short tagline.
+     - Why fix this issue and what will be achieved with the fix? Core functionality is broken; users cannot generate videos from pre-defined templates properly.
+     - Status: NOT STARTED
+     - Is recurring issue? Y
+     - Should Test frontend/backend/both after fix? both
+     - Blocked on other issue: None
+
+**In progress Task List**:
+  Task 1: Full System UI Redesign (Premium Neon Glass UI) (Priority: P0)
+     - Where to resume: Read  and user's prompt regarding .
+     - What will be achieved with this? Complete visual overhaul of Login, Marketplace, Avatar Studio, AI Video Gen, Preview & Export, Subscription, Credits, Library, and Profile screens to match the new strict glassmorphism/aurora design system.
+     - Status: NOT STARTED (Home screen partially done)
+     - Should Test frontend/backend/both after fix? frontend
+     - Blocked on something: None
+
+  Task 2: Creative Plan Engine (Priority: P0)
+     - Where to resume: Backend route creation ().
+     - What will be achieved with this? Uses Emergent LLM (GPT-4o-mini) to ingest an idea/template and output JSON . This data must then drive Pixabay search (via keywords), Sarvam/Gemini TTS (via voice_style + script), and BGM generation.
+     - Status: NOT STARTED
+     - Should Test frontend/backend/both after fix? both
+     - Blocked on something: None
+
+**Upcoming and Future Tasks**
+    Upcoming Tasks:
+    - P2: Light Mode Theme — Soft pastel gradients and white glass cards for a daytime viewing experience.
+    - P2: Onboarding Screen — Design consistent with the new Premium Neon Glass UI.
+
+    Future Tasks:
+    - P3:  refactor (Split out endpoints, remove shadowing ).
+    - P3: Auto-preview MP4 renderer for .
+
+**Completed work in this session**
+- Rebranded Magic Hour to MagiCAi and MH credits to credits globally (DONE)
+- Fixed Bottom Tab bar overlapping Generate buttons by adding  to main ScrollViews (DONE)
+- Fixed Aurora Background bleed-through by lowering opacity (DONE)
+- Removed creepy/distorted fallback images from Home screen and Quick Access tiles (DONE)
+- Fixed  login issue by adding it to the login quick-pick screen (DONE)
+- Silenced  error popup in dev mode (DONE)
+- Polished Home Header (removed Studio, adjusted credits pill, moved one-time purchase to subscription tabs) (DONE)
+- Generated  for the next agent (DONE)
+
+**Earlier issues found/mentioned but not fixed**
+   - None newly discovered, but the marketplace template restoration was explicitly deferred to the next agent.
+
+**Known issue recurrence from previous fork**
+  - Issue recurrence in previous fork: Bottom bar UI overlap, Marketplace routing issues.
+  - Recurrence count: 1
+  - Status: RESOLVED (Overlap) / NOT STARTED (Marketplace Template details)
+
+**Code Architecture**
+
+
+**Key Technical Concepts**
+React Native Expo, FastAPI, Pixabay API, Sarvam TTS / Gemini, Emergent LLM Key (GPT-4o-mini for JSON structuring), Glassmorphism UI, Reanimated.
+
+**key DB schema**
+  - : , .
+  - : , , , , ,  (Needed).
+
+**changes in tech stack**
+  - None.
+
+**All files of reference** 
+  -  (CRITICAL: Contains instructions from the previous agent regarding the UI redesign and Creative Plan Engine).
+  -  (Recently updated Home layout).
+  -  &  (Core UI components).
+  -  (Needs fixing for template tags and prompt passing).
+  -  (Contains demo accounts).
+
+**Areas that need refactoring**: 
+  -  is bloated and will only get larger with the addition of .
+  - Global UI components (Buttons, Cards, Inputs) need to be standardized to fit the new Premium Neon Glass UI requested by the user, rather than styled inline file-by-file.
+
+**key api endpoints**
+  -  (To be created)
+
+**Critical Info for New Agent** 
+  - **READ  FIRST**: The previous agent explicitly structured the next steps for you regarding the 12-screen UI redesign and the Creative Plan Engine.
+  - **Creative Plan Engine**: This is the most complex logical task. You need to use the Emergent LLM key (GPT-4o-mini) to generate a strict JSON schema. This JSON must then seamlessly integrate into the existing video/audio generation pipeline (using Sarvam/Gemini for voice, and Pixabay for scenes).
+  - **UI Redesign Scope**: The user wants a highly premium, unified look. Do not deviate from the Aurora gradient + frosted glass cards aesthetic. Avoid hardcoded px where responsive design is better, but maintain 16-20px padding norms.
+
+**documents and test reports created in this job** 
+  - 
+  -  (Updated with )
+  -  (New - Roadmap for current agent)
+
+**Last 10 User Messages and any pending HUMAN messages** 
+ - *User*: Noticed bugs: Bottom bar overlap, missing template details, login failure for demo account, MH credits text still present. Requested a massive new backend feature: Creative Plan Engine.
+ - *Agent*: Triaged bugs and split plan into Batch 1 (Quick fixes) and Batch 2 (Creative Plan Engine + Marketplace).
+ - *User*: Approved Batch 1 first.
+ - *Agent*: Executed Batch 1. Fixed overlaps, rebranded text, silenced errors, fixed login, removed creepy images.
+ - *User*: Uploaded new UI references (, ). Requested a massive 12-screen Premium Neon Glass UI redesign. Noted minor adjustments still needed on the Home header and Bottom bar.
+ - *Agent*: Negotiated to complete the minor Home/Header fixes immediately, and leave the 12-screen redesign + Creative Plan Engine for a fresh session via a Handoff Doc.
+ - *User*: Approved (A).
+ - *Agent*: Completed minor Home/Header fixes, generated Handoff Doc, and ended session.
+ - *Pending*: Next agent must execute the Creative Plan Engine, restore Marketplace Templates, and begin the 12-screen UI overhaul.
+
+**Project Health Check:**
+  Broken: Marketplace Template prompt passing / metadata.
+  Mocked: Payments.
+
+**3rd Party Integrations** 
+	 •	Razorpay (Payments) — Requires User API Key
+	 •	Pixabay (Video/Images/Music) — Requires User API Key
+	 •	Gemini 2.5 Flash / Nano Banana (Avatars/Thumbnails) — Uses Emergent LLM Key
+	 •	OpenAI GPT-4o-mini (JSON Prompts/Moderation/Creative Plan Engine) — Uses Emergent LLM Key
+
+**Testing status**
+  - Testing agent used after significant changes: NO (Handled via Screenshots this session).
+  - Troubleshoot agent used after agent stuck in loop: NO
+  - Test files created:  updated.
+  - Known regressions: Marketplace templates missing proper data payloads.
+
+**Credentials to test flow:**
+  - Check . Main new test account:  / .
+
+**What agent forgot to execute**
+The agent intentionally deferred the Creative Plan Engine, the Restoration of Marketplace Templates, and the full 12-Screen UI overhaul to ensure quality. These are your primary tasks.
+
+**Debugging checklist for current issue**
+    Issue: Marketplace Template Restoration & Wiring
+
+    Frontend files to check: 
+    -  (Ensure UI reads  and passes the full prompt to the wizard)
+    -  (or DB seed script) to ensure rich prompts are present.
+  
+    Backend files to check:
+    -  or  (Wherever templates are fetched from the DB, ensure the payload is correct).
+   
+    
+
+<TESTING METHOD>
+Backend testing agent (for /api/creative-plan) / Frontend testing agent / Screenshot tool
+</TESTING METHOD></analysis>

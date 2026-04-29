@@ -1,0 +1,141 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# ---- v1.0 contest cleanup — BIG binary directories that must never ship ----
+# These pile up via auto-commits and balloon the repo to multiple GB.
+backend/uploads/
+backend/static/previews/
+backend/static/avatars/
+backend/static/talking_avatars/
+backend/static/cinematic/
+backend/static/cinematic_outputs/
+backend/static/talking/
+backend/static/lipsync/
+backend/static/face_swaps/
+backend/static/multi_swaps/
+backend/static/divine/
+backend/storage/
+backend/llm_cache/
+backend/pixabay_cache/
+backend/bgm/
+backend/__pycache__/
+**/__pycache__/
+**/.metro-cache/
+**/.expo/
+**/.expo-shared/
+android-sdk/
+
+# IDE and editors
+.idea/
+.vscode/
+
+# Dependencies
+node_modules/
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Testing
+/coverage
+
+# Next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Production builds
+/build
+dist/
+dist
+
+# Environment files (comprehensive coverage)
+
+*token.json*
+*credentials.json*
+
+# Logs and debug files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dump.rdb
+
+# System files
+.DS_Store
+*.pem
+
+# Python
+__pycache__/
+*pyc*
+venv/
+.venv/
+
+# Development tools
+chainlit.md
+.chainlit
+.ipynb_checkpoints/
+.ac
+
+# Deployment
+.vercel
+
+# Data and databases
+agenthub/agents/youtube/db
+
+# Archive files and large assets
+**/*.zip
+**/*.tar.gz
+**/*.tar
+**/*.tgz
+*.pack
+*.deb
+*.dylib
+
+# Build caches
+.cache/
+
+memory/test_credentials.md
+
+# Mobile development
+android-sdk/backend/uploads/wz_wz_a570ab2b34fb/wvid_a4ca51172c.mp4
+backend/uploads/wz_wz_a570ab2b34fb/wvid_a4ca51172c.mp4
+backend/uploads/wz_wz_15f7f179fff6/wvid_8aa54bb5f6.mp4
+backend/uploads/wz_wz_229dcc3592af/wvid_b15fe2a7d9.mp4
+backend/uploads/wz_wz_e19b57a1d6f8/wvid_d220640be8.mp4
+backend/uploads/wz_wz_e19b57a1d6f8/wvid_e8f5852838.mp4
+backend/uploads/wz_wz_8cd079532d95/wvid_18af0c964a.mp4
+backend/uploads/wz_wz_8cd079532d95/wvid_f89cef8922.mp4
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+backend/videos/
