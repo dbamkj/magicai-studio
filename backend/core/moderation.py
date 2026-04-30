@@ -224,6 +224,31 @@ def raise_if_blocked(res: ModerationResult, *, status_code: int = 400) -> None:
 # =====================================================================
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 
+
+def _emergent_llm_endpoint() -> str:
+    """Resolve the Emergent LLM gateway URL.
+
+    Priority:
+      1. `EMERGENT_LLM_ENDPOINT` env var (explicit override)
+      2. `{PUBLIC_BACKEND_URL}/v1/chat/completions` — when the preview/prod
+         backend proxies LLM traffic through itself.
+      3. Official Emergent integrations gateway (production default).
+
+    This avoids hardcoding a single preview URL which would break in any
+    other deployment environment.
+    """
+    override = os.environ.get("EMERGENT_LLM_ENDPOINT", "").strip()
+    if override:
+        return override
+    backend = (
+        os.environ.get("PUBLIC_BACKEND_URL")
+        or os.environ.get("EXPO_PUBLIC_BACKEND_URL")
+        or ""
+    ).strip().rstrip("/")
+    if backend:
+        return f"{backend}/v1/chat/completions"
+    return "https://integrations.emergentagent.com/v1/chat/completions"
+
 _TEXT_SYSTEM = (
     "You are a STRICT content moderator for a creator app. "
     "Reply ONLY with raw JSON: {\"flagged\": true|false, \"category\": str, \"confidence\": 0.0-1.0, \"reason\": str}. "
@@ -261,7 +286,7 @@ async def _llm_classify_text(text: str) -> Optional[ModerationResult]:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(6.0)) as c:
             r = await c.post(
-                "https://creative-plan-engine.preview.emergentagent.com/v1/chat/completions",
+                _emergent_llm_endpoint(),
                 headers={"Authorization": f"Bearer {EMERGENT_LLM_KEY}", "Content-Type": "application/json"},
                 json=payload,
             )
@@ -294,7 +319,7 @@ async def _llm_classify_image(b64: str, mime: str, *, source: str = "upload") ->
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as c:
             r = await c.post(
-                "https://creative-plan-engine.preview.emergentagent.com/v1/chat/completions",
+                _emergent_llm_endpoint(),
                 headers={"Authorization": f"Bearer {EMERGENT_LLM_KEY}", "Content-Type": "application/json"},
                 json=payload,
             )

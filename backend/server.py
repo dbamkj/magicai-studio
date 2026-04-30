@@ -3727,6 +3727,31 @@ app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], 
 async def _startup_scheduler():
     """Phase 3 — start nightly trending recompute loop."""
     try:
+        # V1.0 — auto-seed admin/demo/beta users on first boot in any
+        # non-DEV env (BETA / PROD). Safe: only runs if users collection
+        # is empty. This removes the need to SSH into the deployed pod
+        # and manually run scripts/seed_beta_users.py.
+        try:
+            from core.config import IS_DEV as _IS_DEV_STARTUP
+            if not _IS_DEV_STARTUP:
+                _user_count = await _mp_db.users.count_documents({}, limit=1)
+                if _user_count == 0:
+                    logger.info("auto-seed: empty users collection detected — seeding beta accounts")
+                    import subprocess as _subp
+                    import sys as _sys
+                    _env = os.environ.copy()
+                    _env['ENV'] = os.environ.get('ENV', 'BETA') or 'BETA'
+                    _r = _subp.run(
+                        [_sys.executable, '/app/backend/scripts/seed_beta_users.py'],
+                        env=_env, capture_output=True, text=True, timeout=60,
+                    )
+                    logger.info("auto-seed stdout: %s", (_r.stdout or '')[:400])
+                    if _r.returncode != 0:
+                        logger.warning("auto-seed stderr: %s", (_r.stderr or '')[:400])
+                else:
+                    logger.info("auto-seed: users already present (count>=1) — skipping")
+        except Exception as _e:
+            logger.warning("auto-seed skipped: %s", _e)
         # Phase-2 — idempotent marketplace seed
         try:
             res = await _mp_seed(_mp_db)

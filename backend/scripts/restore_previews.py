@@ -92,7 +92,11 @@ async def pick_video(image_q: str | None, video_q: str) -> tuple[str | None, str
 
 
 async def go():
-    backend = os.getenv('EXPO_PUBLIC_BACKEND_URL') or 'https://creative-plan-engine.preview.emergentagent.com'
+    backend = (
+        os.getenv('PUBLIC_BACKEND_URL')
+        or os.getenv('EXPO_PUBLIC_BACKEND_URL')
+        or 'http://localhost:8001'
+    )
     base = backend.rstrip('/') + '/api/serve-file'
     client = AsyncIOMotorClient(os.environ['MONGO_URL'])
     db = client['magicai_beta']
