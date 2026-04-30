@@ -42,6 +42,47 @@ db = client[os.environ.get('DB_NAME', 'videoai_database')]
 app = FastAPI(title="MagiCAi Studio API")
 api_router = APIRouter(prefix="/api")
 
+# ---------------------------------------------------------------------------
+# Public landing page at "/" — V1.0 Builders Contest deployment fix.
+# When users / contest judges visit https://creative-plan-engine.emergent.host/
+# they used to see a raw {"detail":"Not Found"} 404 because the FastAPI app
+# only defines /api/* routes. We now serve a polished marketing landing page
+# (HTML + assets baked into /app/backend/static/landing/) that highlights the
+# brand, CTAs, demo credentials, and links into the working share URL.
+# ---------------------------------------------------------------------------
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles as _StaticFiles
+_LANDING_DIR = ROOT_DIR / "static" / "landing"
+_LANDING_INDEX = _LANDING_DIR / "index.html"
+_LANDING_ASSETS_DIR = ROOT_DIR / "static" / "landing-assets"
+if _LANDING_ASSETS_DIR.exists():
+    app.mount("/landing-assets", _StaticFiles(directory=str(_LANDING_ASSETS_DIR)), name="landing-assets")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def landing_page():
+    """Serve the public marketing landing page. Also returned for /index.html."""
+    if _LANDING_INDEX.exists():
+        return HTMLResponse(_LANDING_INDEX.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        "<h1>MagiCAi Studio API</h1><p>API is live at <code>/api/</code>.</p>",
+        status_code=200,
+    )
+
+
+@app.get("/index.html", response_class=HTMLResponse)
+async def landing_alias():
+    return await landing_page()
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    fav = _LANDING_ASSETS_DIR / "app_icon_1024.png"
+    if fav.exists():
+        return FileResponse(str(fav), media_type="image/png")
+    raise HTTPException(status_code=404)
+# ---------------------------------------------------------------------------
+
 D_ID_API_KEY = os.environ.get('D_ID_API_KEY', '')
 D_ID_API_URL = os.environ.get('D_ID_API_URL', 'https://api.d-id.com')
 MAGIC_HOUR_API_KEY = os.environ.get('MAGIC_HOUR_API_KEY', '')

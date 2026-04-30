@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0418" />
+<title>MagiCAi Studio — Turn ideas into magic</title>
+<meta name="description" content="MagiCAi Studio — turn any idea into a directed AI video in 60 seconds. Built on Emergent for the Builders Contest 2026." />
+<meta property="og:title" content="MagiCAi Studio" />
+<meta property="og:description" content="AI video creator with Creative Plan Engine, Sarvam TTS, Pixabay & Gemini Nano Banana." />
+<meta property="og:image" content="/landing-assets/hero_banner_1080.png" />
+<link rel="icon" type="image/png" href="/landing-assets/app_icon_1024.png" />
+<link rel="apple-touch-icon" href="/landing-assets/app_icon_1024.png" />
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#070314;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.5;overflow-x:hidden}
+  body{min-height:100vh;background:radial-gradient(ellipse at 20% 10%,rgba(255,80,200,.35) 0%,transparent 45%),radial-gradient(ellipse at 80% 60%,rgba(90,220,255,.28) 0%,transparent 50%),radial-gradient(ellipse at 50% 100%,rgba(255,180,80,.22) 0%,transparent 55%),linear-gradient(180deg,#0a0418 0%,#1a0838 35%,#2a0a4a 60%,#08051c 100%);background-attachment:fixed}
+  .stars{position:fixed;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(2px 2px at 23% 17%,#fff,transparent),radial-gradient(1px 1px at 65% 32%,#fff,transparent),radial-gradient(1px 1px at 12% 78%,#fff,transparent),radial-gradient(2px 2px at 78% 81%,#fff,transparent),radial-gradient(1px 1px at 41% 56%,#fff,transparent),radial-gradient(1px 1px at 88% 12%,#fff,transparent),radial-gradient(1px 1px at 5% 38%,#fff,transparent),radial-gradient(1px 1px at 55% 90%,#fff,transparent);opacity:.6}
+  main{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:48px 24px 80px;text-align:center}
+  .icon-wrap{display:inline-flex;justify-content:center;align-items:center;width:180px;height:180px;border-radius:42px;margin:0 auto 24px;position:relative;filter:drop-shadow(0 0 60px rgba(255,80,200,.55))}
+  .icon-wrap img{width:100%;height:100%;border-radius:42px}
+  .wordmark{max-width:min(720px,90vw);width:100%;height:auto;display:block;margin:8px auto 28px;filter:drop-shadow(0 0 40px rgba(255,100,220,.35))}
+  h1.tagline{font-size:clamp(28px,5vw,52px);font-weight:800;line-height:1.18;margin:8px 0 14px;letter-spacing:-.02em}
+  h1.tagline .grad{background:linear-gradient(90deg,#ff6ad5,#ffb86b,#7afcff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  p.sub{font-size:clamp(15px,2vw,19px);color:#cbd2e8;max-width:640px;margin:0 auto 36px;opacity:.92}
+  .cta-row{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;margin:0 auto 50px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:16px 28px;border-radius:999px;text-decoration:none;font-weight:700;font-size:16px;transition:transform .15s ease,box-shadow .25s ease;cursor:pointer}
+  .btn-primary{background:linear-gradient(90deg,#ff5db1 0%,#ff8a4c 100%);color:#fff;box-shadow:0 8px 28px rgba(255,93,177,.45),0 0 30px rgba(255,138,76,.3)}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 36px rgba(255,93,177,.6),0 0 40px rgba(255,138,76,.45)}
+  .btn-ghost{background:rgba(255,255,255,.07);color:#fff;border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+  .btn-ghost:hover{background:rgba(255,255,255,.14);transform:translateY(-2px)}
+  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:40px 0 36px}
+  .card{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:22px 18px;text-align:center;transition:transform .15s,border-color .25s}
+  .card:hover{transform:translateY(-4px);border-color:rgba(255,140,220,.45)}
+  .card .ico{font-size:32px;margin-bottom:10px}
+  .card h3{font-size:16px;font-weight:700;margin-bottom:4px;color:#fff}
+  .card p{font-size:13px;color:#a8b1cc;line-height:1.4}
+  .demo-box{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:28px;padding:28px 24px;margin:28px 0;text-align:left}
+  .demo-box h2{font-size:18px;font-weight:700;margin-bottom:14px;color:#ffd17a;text-align:center;letter-spacing:.5px;text-transform:uppercase}
+  .demo-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px dashed rgba(255,255,255,.08);font-size:14px;flex-wrap:wrap;gap:8px}
+  .demo-row:last-child{border-bottom:none}
+  .demo-row .lbl{color:#9aa3c0;font-weight:600}
+  .demo-row code{background:rgba(0,0,0,.35);padding:4px 10px;border-radius:8px;font-size:13px;color:#7afcff;font-family:ui-monospace,Menlo,monospace}
+  .tech-stack{font-size:13px;color:#8a93b0;margin:24px 0;letter-spacing:.4px}
+  .tech-stack span{color:#cbd2e8;font-weight:600;margin:0 6px}
+  footer{margin-top:64px;padding-top:32px;border-top:1px solid rgba(255,255,255,.08);font-size:13px;color:#8a93b0;text-align:center}
+  footer a{color:#7afcff;text-decoration:none;font-weight:600}
+  footer a:hover{text-decoration:underline}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:rgba(255,215,120,.12);border:1px solid rgba(255,215,120,.3);border-radius:999px;font-size:13px;font-weight:700;color:#ffd17a;margin-bottom:18px}
+  @media(max-width:600px){
+    main{padding:32px 18px 60px}
+    .icon-wrap{width:140px;height:140px;border-radius:32px}
+    .icon-wrap img{border-radius:32px}
+    .btn{padding:14px 22px;font-size:15px}
+  }
+</style>
+</head>
+<body>
+<div class="stars"></div>
+<main>
+  <div class="badge">🏆 Emergent Builders Contest 2026</div>
+
+  <div class="icon-wrap">
+    <img src="/landing-assets/app_icon_1024.png" alt="MagiCAi Studio logo" />
+  </div>
+
+  <img class="wordmark" src="/landing-assets/newappdsg.png" alt="MagiCAi Studio — Turn Ideas Into Magic" />
+
+  <h1 class="tagline">Turn any idea into a <span class="grad">directed AI video</span><br />in 60 seconds.</h1>
+  <p class="sub">A premium mobile-first AI creator suite. Type an idea — our Creative Plan Engine (GPT-4o-mini) structures the script, picks the voice, narrates it with Sarvam AI, finds matching scenes from Pixabay, and renders a cinematic vertical video. Built end-to-end on Emergent.</p>
+
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://app.emergent.sh/share?app=creative-plan-engine" target="_blank" rel="noopener">▶ Try the App</a>
+    <a class="btn btn-ghost" href="https://github.com/dbamkj/magicai-studio" target="_blank" rel="noopener">⌥ View Source</a>
+    <a class="btn btn-ghost" href="https://app.emergent.sh/showcase/builder" target="_blank" rel="noopener">🗳️ Vote</a>
+  </div>
+
+  <div class="features">
+    <div class="card"><div class="ico">🧠</div><h3>Creative Plan Engine</h3><p>GPT-4o-mini outputs strict JSON: hook, script, scenes, voice, mood — every clip aligns.</p></div>
+    <div class="card"><div class="ico">🎬</div><h3>AI Video Generation</h3><p>Pixabay scenes + Sarvam TTS + BGM, rendered into a 9:16 vertical MP4 in 60s.</p></div>
+    <div class="card"><div class="ico">🎨</div><h3>Avatars & Thumbnails</h3><p>Gemini Nano Banana powers AI portraits, thumbnails, and brand assets in seconds.</p></div>
+    <div class="card"><div class="ico">📚</div><h3>Marketplace</h3><p>40+ pre-made templates: Bhajans, Festival Reels, Funny Dialogues, Motivational Shorts.</p></div>
+    <div class="card"><div class="ico">🇮🇳</div><h3>Indic-First TTS</h3><p>Expressive Hindi, Tamil, Telugu, Marathi voices via Sarvam AI — devotional content done right.</p></div>
+    <div class="card"><div class="ico">✨</div><h3>Premium Glass UI</h3><p>Aurora gradients + frosted-glass cards across 12 polished screens with spring animations.</p></div>
+  </div>
+
+  <div class="demo-box">
+    <h2>Try it with a demo account</h2>
+    <div class="demo-row"><span class="lbl">Email</span><code>demo_creator@test.com</code></div>
+    <div class="demo-row"><span class="lbl">Password</span><code>Test@123</code></div>
+    <div class="demo-row"><span class="lbl">Tier</span><code>Creator · 3,000 credits · all features unlocked</code></div>
+  </div>
+
+  <p class="tech-stack">
+    Built with
+    <span>React Native (Expo)</span> ·
+    <span>FastAPI</span> ·
+    <span>MongoDB Atlas</span> ·
+    <span>OpenAI GPT-4o-mini</span> ·
+    <span>Gemini Nano Banana</span> ·
+    <span>Sarvam AI</span> ·
+    <span>Pixabay</span>
+  </p>
+
+  <footer>
+    Made with 💜 by <a href="https://github.com/dbamkj" target="_blank" rel="noopener">@dbamkj</a> · Built end-to-end on <a href="https://emergent.sh" target="_blank" rel="noopener">Emergent</a> · 
+    <a href="/api/">API status</a>
+  </footer>
+</main>
+</body>
+</html>
