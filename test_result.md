@@ -574,21 +574,147 @@ phase4d_4f_emotions_upload_safety:
 
 
 
-metadata:
+v2_prompt_generator_session31:
+  - task: "V2.0 ChatGPT-style Prompt Generator (POST /api/generate-prompts)"
+    implemented: true
+    working: true
+    file: "backend/routes/prompts.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          FULL PASS 9/9 against https://creative-plan-engine.preview.emergentagent.com/api/generate-prompts.
+
+          T1 English happy path: idea='Monday motivation for busy professionals' lang=english →
+            200, source='llm', tokens_used=930, detected.category='motivational',
+            mood='energetic', scene_keywords=['office laptop coffee'], 3 prompts
+            (titles: 'Kickstart Your Week with Purpose', 'Boost Your Monday Vibes',
+            'Power Up Your Monday Mindset'). All required fields populated.
+          T2 Hindi: idea='Krishna bhajan devotional reel' lang=hindi → 3 prompts ALL
+            with Devanagari titles+hooks+cta (3/3 each, e.g. 'ओम नमो भगवते वासुदेवाय')
+            while voice_type/music_type/style_tag/mood/category/scene_keywords are
+            English ASCII. Bilingual rendering verified perfectly.
+          T3 Cache hit: re-issued T1 → cached=true source=cache tokens_used=0
+            latency=0.125s (well under the <0.5s spec).
+          T4 force_refresh=true → cached=false source=llm tok=946 (cache bypassed
+            and a fresh LLM round-trip executed).
+          T5 idea='ab' (2 chars) → 422 with pydantic 'string_too_short' detail.
+          T6 idea='x'*401 → 422 with 'string_too_too_long' detail.
+          T7 GET /api/generate-prompts/health → {ok:true, llm_key_configured:true,
+            cache_size:3}.
+          T8 Variance: idea='Diwali festive reel for instagram' → 3 prompts with
+            durations={15,20,30}, style_tag={cinematic,aesthetic,documentary},
+            mood={romantic,playful,energetic} — meaningfully DIFFERENT across
+            all three axes.
+          T9 Schema: ids exactly ['p1','p2','p3'], all duration values are int,
+            scene_keywords is list of str.
+
+          GPT-4o-mini via emergentintegrations + EMERGENT_LLM_KEY confirmed
+          working end-to-end. LRU 30-min cache, telemetry insert into
+          db.prompt_generations, fallback path all verified by code review.
+          Endpoint cold-call latency ~7-10s, cache hit ~125ms — both within
+          spec. Test artefact: /app/backend_test.py.
+
+  - task: "Phase-A Regression — root, login, creative-plan, marketplace, mode"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/routes/*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 5/5 (no regressions from Phase-A refactor).
+
+          REG1 GET /api/ → 200 {message:'MagiCAi Studio API', version:'7.1.0'}.
+          REG2 POST /api/auth/login {demo_creator@test.com / Test@123} → 200 with
+            token + user.subscription_tier='creator' + credits_balance=3000.
+          REG3 POST /api/creative-plan {idea:'quick test'} → 200 with all required
+            keys present {creative_plan_id, hook, script, scene_keywords,
+            voice_style, bgm_style, mood, ...}. No missing fields.
+          REG4 GET /api/marketplace/templates?limit=5 → 200 with 5 templates
+            returned.
+          REG5 GET /api/mode → 200 {env:'BETA', is_beta:true, is_dev:false,
+            is_prod:false, version:'v1.0-beta'}.
+
+  - task: "Landing pages (preview Expo + production HTML)"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/static/landing/index.html"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 3/3.
+
+          LAND1 GET https://creative-plan-engine.preview.emergentagent.com/ →
+            200 text/html 68277 bytes (Expo bundle, as expected for preview).
+          LAND2 GET https://creative-plan-engine.emergent.host/ → 200 HTML
+            10265 bytes with '<title>MagiCAi Studio' present in markup. NOT
+            returning {"detail":"Not Found"}. Production landing page is live
+            and correctly served from /app/backend/static/landing/index.html
+            via the FastAPI '/' route.
+          LAND3 GET https://creative-plan-engine.emergent.host/api/ → 200
+            {"message":"MagiCAi Studio API","version":"7.1.0"}. Production API
+            is live (Atlas MongoDB confirmed by successful response).
+
 metadata:
   created_by: "main_agent"
-  version: "2.5"
-  test_sequence: 7
+  version: "2.6"
+  test_sequence: 8
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Trending templates (GET /api/templates) + serve-file preview"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      Session 31 — V2.0 ChatGPT-style Prompt Generator validation + Phase-A
+      regression sweep COMPLETE. ALL 17/17 tests PASS.
+
+      ✅ NEW endpoint POST /api/generate-prompts (9/9):
+         - English happy path: 200, source=llm, tokens=930, 3 valid prompts.
+         - Hindi: 3/3 Devanagari titles+hooks+ctas, English tech fields verified.
+         - Cache hit: 125ms (<<500ms), cached=true, source=cache, tokens=0.
+         - force_refresh=true: bypasses cache, fresh LLM call.
+         - 422 for idea<3 and idea>400 chars (pydantic validation).
+         - GET /api/generate-prompts/health: {ok, llm_key_configured, cache_size}.
+         - Variance: durations/styles/moods all DIFFERENT across 3 prompts.
+         - Schema: ids=p1/p2/p3, duration int, scene_keywords list[str].
+
+      ✅ REGRESSION (5/5):
+         - GET /api/ → 200 (v7.1.0)
+         - POST /api/auth/login demo_creator → 200 (creator/3000cr)
+         - POST /api/creative-plan {idea:'quick test'} → 200 (all 6 keys present)
+         - GET /api/marketplace/templates?limit=5 → 200 (5 templates)
+         - GET /api/mode → 200 (BETA env)
+
+      ✅ LANDING (3/3):
+         - preview / → 200 HTML 68KB (Expo) ✓
+         - prod / → 200 HTML 10KB with '<title>MagiCAi Studio' ✓ (NOT 404)
+         - prod /api/ → 200 v7.1.0 ✓
+
+      No stuck tasks. No regressions detected from Phase-A refactor. The
+      earlier-noted dupe preview_urls in /api/templates (Session 30) and the
+      /api/wizard/jobs (plural) vs /job route-naming deviation are unchanged
+      and unrelated to this V2 change.
+
+      Test artefact: /app/backend_test.py (re-runnable).
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
   - agent: "testing"
     message: |
       v1.0 hardening sweep complete (Session 30). 26/29 backend checks PASS.
@@ -6350,3 +6476,116 @@ agent_communication:
         • Generate contest assets (icon, screenshots, 30-sec demo video).
         • Tag this state as v1.0 in git (or memory file) before starting
           v2.0 server.py refactor.
+
+
+# ───── Session 36 (May 1, 2026) — V2.0 Phase A + Phase B kickoff ─────
+
+agent_communication:
+  - agent: main
+    message: |
+      V2.0 kickoff. Three deliverables landed this session:
+
+      (A) PRODUCTION LANDING PAGE FIX
+          - Root path `/` on deployed prod `creative-plan-engine.emergent.host`
+            was serving `{"detail":"Not Found"}` 404 to contest judges.
+          - Added branded HTML landing (`/app/backend/static/landing/index.html`)
+            + registered GET `/` / `/index.html` / `/favicon.ico` in server.py.
+          - Mounted `/landing-assets/` for icon + wordmark + banner (transparent
+            neon variants).
+          - Production smoke-tested: `/` now returns 200 HTML.
+          - Atlas MongoDB wired via Emergent Deployment panel Secrets tab.
+
+      (B) PHASE-A SURGICAL REFACTOR
+          - Created `core/db.py` — centralised Motor client with ENV-aware
+            DB-name resolution (DEV → videoai_database, BETA → magicai_beta,
+            PROD → magicai_prod). Respects explicit `DB_NAME` override.
+          - Created `routes/prompts.py` with full contract (see C below).
+          - Wired `routes/prompts.router` into server.py include list.
+          - Zero behavioural change to existing endpoints — confirmed by
+            curl sweep: /api/, /api/auth/login, /api/creative-plan,
+            /api/marketplace/templates all still 200 with correct payloads.
+
+      (C) PHASE-B — V2.0 ChatGPT-style Prompt Generator (SHIPPED)
+          Backend: POST `/api/generate-prompts` in `routes/prompts.py`.
+            Schema:
+              request:  { idea, language, aspect, category_hint,
+                          force_refresh }
+              response: { detected: { category, mood, suggested_voice,
+                          scene_keywords }, prompts: PromptOption[3],
+                          cached, tokens_used, source }
+            Implementation:
+              - GPT-4o-mini via `emergentintegrations.llm.chat.LlmChat`.
+              - System prompt engineered to enforce strict JSON output + 3
+                distinct variants + language routing (hindi/hinglish/tamil
+                keep the hook/title/cta localised, technical fields stay
+                English).
+              - In-memory LRU cache (512 keys, 30-min TTL), keyed on
+                sha256(idea|language|aspect|category_hint).
+              - Telemetry row per call to `db.prompt_generations`
+                (best-effort, never fails the request).
+              - Graceful fallback to a deterministic 3-prompt template if
+                LLM key is missing or call fails.
+              - GET `/api/generate-prompts/health` sanity endpoint.
+
+          Frontend: new route `/app/frontend/app/ai-prompts.tsx`.
+            - Aurora+Glass screen consistent with the rest of the app.
+            - Textarea with 3-400 char validation + language pills
+              (English / Hindi / Hinglish / Tamil / Telugu / Marathi).
+            - "✨ Get 3 AI Prompts" CTA — toggles to "🔁 Regenerate 3 ideas"
+              after first call.
+            - Loading state: spinner + "AI is crafting 3 prompt options…".
+            - Detected context card (category / mood / voice pills +
+              scene keywords row).
+            - Three animated glass prompt cards with:
+                Option N · style_icon · duration · title · hook · voice ·
+                music · mood · hashtags · [Preview] [Use this ✨]
+            - "Use this" writes the picked prompt to AsyncStorage
+              (`magicai_picked_prompt_v1`) then navigates to /create-wizard.
+            - Stale-response guard via lastCallRef so fast regenerates
+              don't flash old data.
+            - Error banner for validation / network failures.
+            - Quick-idea chips shown when no result yet.
+
+          Home screen: new "AI Prompts" tile in Quick Access grid
+          (`QUICK_ACCESS` in `app/index.tsx`) — violet→cyan gradient between
+          Avatar Studio and AI Tools. NEW badge.
+
+          Verified end-to-end:
+            ✓ Real GPT-4o-mini call for "Krishna bhajan devotional reel"
+              in Hindi → 3 Hindi titles + hooks + CTAs + English technical
+              fields (temple / flute / candles scene keywords).
+            ✓ Cache hit on repeat → 0.02s vs 7.7s cold.
+            ✓ Playwright DOM assertion: 3 Option cards rendered with full
+              metadata + preview/use buttons.
+            ✓ Home Quick Access tile visible + route /ai-prompts reachable.
+
+      Still deferred to later sessions (not blocking V2.0 MVP):
+        • Wiring the picked prompt through /api/creative-plan → video
+          render (currently hands off to /create-wizard; deep integration
+          next).
+        • Light Mode theme.
+        • Bigger `server.py` file-split refactor (Phase A just did the
+          critical pieces needed to unblock Phase B).
+
+      Files touched this session:
+        • backend/server.py                   (landing route + prompts router)
+        • backend/static/landing/index.html   (NEW — contest landing)
+        • backend/static/landing-assets/*.png (NEW — transparent icon/banner)
+        • backend/core/db.py                  (NEW)
+        • backend/routes/prompts.py           (NEW — stub→full impl)
+        • frontend/app/ai-prompts.tsx         (NEW)
+        • frontend/app/index.tsx              (new Quick Access tile)
+        • contest_assets/app_icon_1024.png    (replaced w/ transparent neon)
+        • contest_assets/hero_banner_1080.png (rebuilt w/ new branding)
+        • contest_assets/screenshots_v2/*.png (15-17 mobile hi-res shots)
+
+      Ask testing agent to:
+        1. Validate POST /api/generate-prompts with a handful of ideas
+           (Krishna bhajan devotional reel / Monday motivation /
+           POV funny reel / empty string / too-long string).
+        2. Verify cache TTL + force_refresh=true bypasses cache.
+        3. Confirm language routing (hindi input → hindi titles).
+        4. Quick regression on /api/auth/login, /api/creative-plan,
+           /api/marketplace/templates, /api/mode.
+        5. Confirm landing page `/` returns 200 HTML on preview.
+

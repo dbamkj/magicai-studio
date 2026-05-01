@@ -80,6 +80,17 @@ const QUICK_ACCESS = [
     public: false,
   },
   {
+    id: 'ai-prompts',
+    title: 'AI Prompts',
+    subtitle: 'Let AI write your idea',
+    icon: 'color-wand' as const,
+    gradient: ['#7B5CFF', '#00C2FF'] as const,        // violet → cyan
+    glowColor: '#7B5CFF',
+    route: '/ai-prompts',
+    public: true,
+    badge: 'NEW',
+  },
+  {
     id: 'tools',
     title: 'AI Tools',
     subtitle: 'Voice, Swap, Enhance',
