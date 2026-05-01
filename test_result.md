@@ -7312,3 +7312,137 @@ frontend:
           messages.length>1 so welcome state doesn't autoscroll the page.
 
 
+#====================================================================================================
+# Session 20 — Phase D: Indian Cartoon style buckets + AI scene image generation
+#====================================================================================================
+
+backend:
+  - task: "Avatar Studio — 6 new IP-safe Indian cartoon style buckets"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Added 6 new entries to STYLES dict, each using visual-characteristic
+          prompts only (NO brand/IP names — safe from DMCA / app-store review):
+             • desi_toon (Motu/Bheem vibe, FREE)
+             • jungle_hero (Mowgli vibe, PREMIUM)
+             • robo_pal (Doraemon vibe, PREMIUM)
+             • mythological (Indian devotional art, PREMIUM)
+             • bollywood_poster (retro Bollywood caricature, FREE)
+             • cricket_champion (Indian sports cartoon, FREE)
+          Verified via GET /api/avatar/styles — endpoint now returns 11 styles
+          (5 original + 6 new). Frontend cartoon-avatar screen reads dynamically
+          from this endpoint so no FE change required.
+        -working: true
+        -agent: "testing"
+        -comment: |
+          PASS — Phase D focused regression (Session 20).
+          GET /api/avatar/styles → 200, count=11, all expected ids present
+          (pixar, anime, disney, caricature, comic, desi_toon, jungle_hero,
+          robo_pal, mythological, bollywood_poster, cricket_champion). All 6
+          new styles have non-empty label/icon/tagline and premium as bool.
+          NOTE: the public /styles serializer intentionally does NOT include
+          prompt_modifier in the response (it's an internal field used only by
+          /cartoonize). This is a deliberate design choice and not a bug.
+
+  - task: "POST /api/wizard/ai-images — gpt-image-1 scene generation"
+    implemented: true
+    working: true
+    file: "backend/routes/wizard.py, backend/server.py (serve-file patch)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          New endpoint that generates 1-4 scene images via gpt-image-1
+          (Emergent LLM Key). Creator+/Pro tier gated — free users get
+          HTTP 403 with code='tier_locked' and upgrade nudge. Caches by
+          sha256(prompt|size) on disk at /app/backend/uploads/ai_scene/.
+          Returns same {images:[{url, preview, tags, width, height, ai_generated}]}
+          shape as /preview-images for drop-in swap.
+          Patched /api/serve-file to also discover files inside ai_scene/
+          subdirs. URLs returned as RELATIVE paths (/api/serve-file/<file>)
+          so the FE resolves against its own origin (fixes preview-tunnel
+          cross-origin issue). Tested end-to-end:
+             • free user → 403 tier_locked (correct)
+             • creator user → 200, fresh image generated (~15s first call)
+             • same prompt repeated → 200 cached=true, <1s
+             • Hindi/multilingual prompts work (underlying gpt-image-1)
+        -working: true
+        -agent: "testing"
+        -comment: |
+          PASS — all 7 sub-cases (Session 20 Phase D focused regression).
+          1) No-auth → 403, detail.code='tier_locked', detail.required_tier='creator' ✅
+          2) demo_starter@test.com (starter tier) → 403 tier_locked ✅
+          3) demo_creator@test.com → 200, source='ai', tier='creator',
+             cached=False, images[0]={url:/api/serve-file/img_*.png,
+             width:1024, height:1536, ai_generated:true} (15.3s first call) ✅
+          4) Same payload repeat → 200, cached=true, 0.13s response (well
+             under <1s spec for cache hit; first network round-trip dominates) ✅
+          5) Empty image_query → 422 Unprocessable Entity ✅
+          6) GET /api/wizard/ai-images/health → 200, ok=true,
+             llm_key_configured=true, model='gpt-image-1', tier_gate='creator+' ✅
+          7) GET /api/serve-file/<returned_filename> → 200,
+             content-type=image/png, size=1.87 MB (>>1KB) ✅
+          End-to-end image-generation pipeline + tier gate + cache + serve-file
+          patch all verified working against the public preview URL.
+
+frontend:
+  - task: "ai-prompts.tsx — AI scene image preview button per prompt card"
+    implemented: true
+    working: true
+    file: "frontend/app/ai-prompts.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Added 3-button action row per prompt card: Audio (existing Sarvam
+          TTS) | AI (new, gpt-image-1) | Use ✨ (routes to wizard). The AI
+          button:
+             • Creator+/Pro → fetches /api/wizard/ai-images with bearer token,
+               shows loading spinner, renders the image below the card with
+               pink-glow border and "🪄 AI-generated preview — crafted from
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Session 20 Phase D focused regression — 13/13 PASS.
+        A) GET /api/avatar/styles → 11 buckets, all expected ids present, new
+           styles have label/icon/tagline/premium populated. Note: /styles
+           response intentionally omits prompt_modifier (internal field).
+        B) POST /api/wizard/ai-images full coverage:
+            • no-auth → 403 tier_locked.required_tier=creator ✅
+            • starter user (demo_starter) → 403 tier_locked ✅
+            • creator user (demo_creator) → 200, source=ai, tier=creator,
+              cached=False, 1024×1536 PNG, 15.3s ✅
+            • repeat → 200, cached=true, 0.13s ✅
+            • empty image_query → 422 ✅
+            • /ai-images/health → ok=true, model=gpt-image-1, tier_gate=creator+ ✅
+            • returned URL serves a 1.87 MB image/png via /api/serve-file/* ✅
+        C) Regression sanity:
+            • /generate-prompts/health → 200 ok=true ✅
+            • /marketplace/templates?limit=5 → 200, 5 templates ✅
+      No issues found. Phase D backend ready to ship. Test script at
+      /app/backend_test_phase_d.py for future re-runs.
+
+               your idea" caption. Tap sets per-prompt state keyed by p.id.
+             • Free/Starter → shows upgrade Alert with "Upgrade" CTA routing
+               to /subscription. Button shows a small 🔒 to make gating clear.
+          Uses useAuth().token for auth; relative URL from backend is
+          prefixed with BACKEND_URL client-side for <Image> compatibility.
+          Verified end-to-end with demo_creator@test.com — generated a
+          contextually-perfect flutist/temple/golden-hour image for
+          "Krishna bhajan devotional reel" prompt.
+
+

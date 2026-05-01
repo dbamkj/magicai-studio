@@ -440,6 +440,7 @@ const BENEFIT_ROWS: Array<{ label: string; values: [string, string, string, stri
   { label: 'Stock-clip Quick Reels',          values: ['✓', '✓', '✓', '✓'] },
   { label: 'AI Video Gen (Kling/Veo)',        values: ['—', 'Lite', '2.5', 'Pro / Veo'] },
   { label: 'AI Image Gen',                    values: ['5/mo + WM', '∞ no-WM', '∞ + 12 styles', '∞ + 24 styles'] },
+  { label: '🪄 AI Scene Visuals in Wizard',    values: ['—', '—', '✓ gpt-image-1', '✓ gpt-image-1'] },
   { label: 'Cartoon Avatars',                 values: ['3 styles + WM', '8 styles', '12 styles HD', '24 styles 4K'] },
   { label: 'Avatar Talking Lip-sync',         values: ['—', '—', '480p', '1080p'] },
   { label: 'Output resolution',               values: ['480p', '720p', '720p / 1080p', '1080p / 4K'] },

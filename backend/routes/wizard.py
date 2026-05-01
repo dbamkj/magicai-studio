@@ -502,7 +502,191 @@ async def post_preview_images(req: PreviewImagesRequest):
                 'width': h.get('imageWidth'),
                 'height': h.get('imageHeight'),
             })
-    return {'query': req.image_query, 'images': imgs}
+    return {'query': req.image_query, 'images': imgs, 'source': 'stock'}
+
+
+# =============================================================================
+#  Phase D2 — AI scene image generation (gpt-image-1 via Emergent LLM Key)
+# =============================================================================
+#
+# POST /api/wizard/ai-images
+#   Body: { image_query: str, count?: int=3, aspect?: "9:16"|"1:1"|"16:9",
+#           style_hint?: str, quality?: "low"|"medium"|"high" }
+#
+# Returns the SAME shape as /preview-images so the FE can swap between
+# stock ↔ AI without parsing two response schemas. Generated PNGs are
+# cached to disk under /app/backend/uploads/ai_scene/ by sha256(prompt|style|aspect)
+# so repeating the same query is free. Tier-gated: free & starter fall
+# back to stock (not exposed here — FE shouldn't show the button for them).
+
+
+class AiImagesRequest(BaseModel):
+    image_query: str = Field(..., min_length=3, max_length=300)
+    count: int = 3
+    aspect: Optional[str] = '9:16'    # '9:16' | '1:1' | '16:9'
+    style_hint: Optional[str] = None  # e.g. 'cinematic', 'aesthetic', 'documentary'
+    quality: Optional[str] = 'medium'  # 'low' | 'medium' | 'high' (maps to gpt-image-1)
+
+
+_AI_SCENE_DIR = Path('/app/backend/uploads/ai_scene')
+_AI_SCENE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ai_aspect_to_size(aspect: str) -> str:
+    """gpt-image-1 supports 1024x1024, 1024x1536, 1536x1024."""
+    a = (aspect or '9:16').strip()
+    if a == '1:1':  return '1024x1024'
+    if a == '16:9': return '1536x1024'
+    return '1024x1536'   # default to 9:16 portrait (reel default)
+
+
+def _ai_tier_allowed(tier: str) -> bool:
+    return (tier or 'free').lower() in ('creator', 'pro', 'elite')
+
+
+async def _resolve_ai_user(request: Request) -> dict:
+    """Read user tier from JWT if present; default to free otherwise."""
+    try:
+        from core.auth import decode_token  # type: ignore
+        auth = (request.headers.get('authorization') or '').strip()
+        if auth.lower().startswith('bearer '):
+            tok = auth.split(' ', 1)[1].strip()
+            data = decode_token(tok)
+            if data and data.get('sub'):
+                u = await db.users.find_one({'id': data['sub']}, {'_id': 0, 'password_hash': 0})
+                if u:
+                    return {
+                        'id': u.get('id'),
+                        'tier': (u.get('subscription_tier') or 'free').lower(),
+                    }
+    except Exception:
+        pass
+    return {'id': None, 'tier': 'free'}
+
+
+@router.post('/ai-images')
+async def post_ai_images(req: AiImagesRequest, request: Request):
+    """Generate 1-4 scene images via gpt-image-1. Creator+/Pro only.
+
+    Returns same shape as /preview-images so the FE can swap stock ↔ AI
+    without parsing two response schemas.
+    """
+    user = await _resolve_ai_user(request)
+    if not _ai_tier_allowed(user['tier']):
+        raise HTTPException(status_code=403, detail={
+            'code': 'tier_locked',
+            'message': 'AI-generated visuals are available on Creator and Pro plans. '
+                       'Upgrade to unlock premium unique imagery for your scenes.',
+            'tier': user['tier'],
+            'required_tier': 'creator',
+        })
+
+    api_key = os.environ.get('EMERGENT_LLM_KEY') or os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail='AI image generation not configured.')
+
+    count = max(1, min(int(req.count or 3), 4))
+    aspect = (req.aspect or '9:16').strip()
+    size = _ai_aspect_to_size(aspect)
+    style_hint = (req.style_hint or '').strip()
+
+    # Lightly enrich the prompt so gpt-image-1 produces scene-appropriate
+    # reel visuals, not portraits.
+    base_prompt = req.image_query.strip()
+    style_modifiers = {
+        'cinematic': 'cinematic wide-angle shot, dramatic lighting, rich contrast, shallow depth of field, 35mm film look',
+        'aesthetic': 'soft aesthetic warm tones, golden hour lighting, dreamy atmosphere, pastel palette, magazine-editorial quality',
+        'documentary': 'natural candid documentary-style photograph, realistic, unposed, authentic textures, photojournalism look',
+        'handheld':   'natural handheld shot, motion blur edges, authentic lifestyle feel',
+        'meme':       'bright saturated pop art meme aesthetic, playful, high-contrast internet-culture vibe',
+    }
+    style_suffix = style_modifiers.get(style_hint, 'high-quality photograph, vertical composition, reel-ready visual')
+    enriched = (
+        f"{base_prompt}. {style_suffix}. "
+        f"Vertical {aspect} aspect ratio composition, no text overlay, no logos, no watermarks, "
+        f"no human faces overlay text, production-ready social-media reel visual."
+    )
+
+    # Cache key — same prompt+size+style returns cached files
+    import hashlib
+    cache_root = _AI_SCENE_DIR / hashlib.sha256(f"{enriched}|{size}".encode()).hexdigest()[:16]
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    existing = sorted(cache_root.glob('img_*.png'))
+    imgs: list[dict] = []
+
+    # Import the generator lazily so failures don't take the whole route module down
+    try:
+        from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f'AI image module unavailable: {e}')
+
+    tokens_used = 0
+    if len(existing) >= count:
+        chosen = existing[:count]
+        cached = True
+    else:
+        # Need to generate new ones
+        gen = OpenAIImageGeneration(api_key=api_key)
+        try:
+            images = await gen.generate_images(
+                prompt=enriched,
+                model='gpt-image-1',
+                number_of_images=count,
+            )
+        except Exception as e:
+            log.exception('ai-images: generation failed: %s', e)
+            raise HTTPException(status_code=502, detail=f'AI image generation failed: {e}')
+
+        # Write bytes to disk
+        saved_paths: list[Path] = []
+        for idx, img_bytes in enumerate(images):
+            if not img_bytes:
+                continue
+            p = cache_root / f'img_{idx:02d}_{uuid.uuid4().hex[:6]}.png'
+            p.write_bytes(img_bytes)
+            saved_paths.append(p)
+        chosen = saved_paths[:count]
+        tokens_used = count * 1500   # approximate, gpt-image-1 is priced per image
+        cached = False
+
+    # Build URL list. We return RELATIVE /api/serve-file URLs so that the
+    # frontend resolves against its own origin (works with the reverse-proxy
+    # that routes /api/* to this backend) — returning localhost:8001 URLs
+    # would 404 in the browser preview.
+    for p in chosen:
+        url = f'/api/serve-file/{p.name}'
+        imgs.append({
+            'url': url,
+            'preview': url,
+            'tags': style_hint or 'ai-generated',
+            'user': 'MagiCAi AI',
+            'width': int(size.split('x')[0]),
+            'height': int(size.split('x')[1]),
+            'ai_generated': True,
+        })
+
+    return {
+        'query': req.image_query,
+        'images': imgs,
+        'source': 'ai',
+        'cached': cached,
+        'tokens_used': tokens_used,
+        'tier': user['tier'],
+        'style_hint': style_hint or 'default',
+    }
+
+
+@router.get('/ai-images/health')
+async def ai_images_health():
+    return {
+        'ok': True,
+        'llm_key_configured': bool(
+            os.environ.get('EMERGENT_LLM_KEY') or os.environ.get('OPENAI_API_KEY')
+        ),
+        'model': 'gpt-image-1',
+        'tier_gate': 'creator+',
+    }
 
 
 @router.post('/preview-videos')

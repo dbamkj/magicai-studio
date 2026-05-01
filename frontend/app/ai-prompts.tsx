@@ -21,7 +21,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable,
-  FlatList, ScrollView,
+  FlatList, ScrollView, Image, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack } from 'expo-router';
@@ -34,8 +34,10 @@ import Animated, {
 import { Audio } from 'expo-av';
 import AuroraBackground from '../src/AuroraBackground';
 import * as theme from '../src/theme';
+import { useAuth } from '../src/AuthContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const AI_IMAGES_TIERS = ['creator', 'pro', 'elite'] as const;
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -232,6 +234,12 @@ export default function AIPromptsScreen() {
   const [language, setLanguage] = useState<Lang>('english');
   const [styleBoost, setStyleBoost] = useState<StyleBoost>('default');
   const [isLoading, setIsLoading] = useState(false);
+  const { user, token } = useAuth();
+  const userTier = ((user?.subscription_tier || 'free') as string).toLowerCase();
+  const canUseAi = (AI_IMAGES_TIERS as readonly string[]).includes(userTier);
+
+  // AI scene image state — keyed by prompt.id.
+  const [aiImages, setAiImages] = useState<Record<string, { loading: boolean; url?: string; error?: string }>>({});
 
   const scrollRef = useRef<ScrollView>(null);
   const lastCallRef = useRef<string>('');
@@ -531,6 +539,69 @@ export default function AIPromptsScreen() {
     [language, playingPromptId],
   );
 
+  // ── Phase D2: AI-generated scene image preview ────────────────────────
+  // Creator+/Pro users can tap "🪄 AI Preview" to generate a unique scene
+  // image via gpt-image-1 that matches the prompt's hook/scene_keywords.
+  // Free/Starter users see the button but get an upgrade alert.
+  const onAiImage = useCallback(
+    async (p: PromptOption, det?: Detected) => {
+      if (!canUseAi) {
+        Alert.alert(
+          '🪄 AI Visuals — Creator Plan',
+          'AI-generated scene imagery is available on Creator and Pro plans. '
+          + 'Upgrade to unlock unique visuals crafted specifically for your idea.',
+          [
+            { text: 'Maybe Later', style: 'cancel' },
+            { text: 'Upgrade', onPress: () => router.push('/subscription') },
+          ],
+        );
+        return;
+      }
+      if (!token) {
+        Alert.alert('Log in', 'Please log in to use AI visuals.');
+        return;
+      }
+      const existing = aiImages[p.id];
+      if (existing?.loading) return;
+
+      setAiImages((s) => ({ ...s, [p.id]: { loading: true } }));
+      try {
+        const sceneKeywords = (det?.scene_keywords || []).slice(0, 3).join(' ');
+        const query = sceneKeywords || p.hook || p.title;
+        const { data } = await axios.post(
+          `${BACKEND_URL}/api/wizard/ai-images`,
+          {
+            image_query: query,
+            count: 1,
+            aspect: '9:16',
+            style_hint: p.style_tag || 'cinematic',
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: 60000,
+          },
+        );
+        const url = data?.images?.[0]?.url;
+        if (!url) throw new Error('No image returned');
+        // Backend may return relative URL; make it absolute so <Image> works.
+        const absUrl = url.startsWith('http') ? url : `${BACKEND_URL}${url}`;
+        setAiImages((s) => ({ ...s, [p.id]: { loading: false, url: absUrl } }));
+      } catch (e: any) {
+        const status = e?.response?.status;
+        const detail = e?.response?.data?.detail;
+        if (status === 403 && detail?.code === 'tier_locked') {
+          setAiImages((s) => ({ ...s, [p.id]: { loading: false, error: 'Upgrade to Creator+ to use AI visuals.' } }));
+          return;
+        }
+        setAiImages((s) => ({
+          ...s,
+          [p.id]: { loading: false, error: typeof detail === 'string' ? detail : (e?.message || 'Generation failed') },
+        }));
+      }
+    },
+    [canUseAi, token, aiImages],
+  );
+
   // ── Pick suggestion (welcome) ────────────────────────────────────────
   const onPickSuggestion = useCallback(
     (s: string) => {
@@ -570,6 +641,9 @@ export default function AIPromptsScreen() {
           onUseThis={(p) => onUseThis(p, ideaText, ai.detected)}
           onPreview={onPreview}
           playingPromptId={playingPromptId}
+          onAiImage={(p) => onAiImage(p, ai.detected)}
+          aiImages={aiImages}
+          canUseAi={canUseAi}
           onRegenerate={() => onRegenerate(ideaText)}
           onPickSuggestion={onPickSuggestion}
           onUpgrade={() => router.push('/subscription')}
@@ -582,6 +656,9 @@ export default function AIPromptsScreen() {
       onUseThis,
       onPreview,
       playingPromptId,
+      onAiImage,
+      aiImages,
+      canUseAi,
       onRegenerate,
       onPickSuggestion,
       recommendedIdFor,
@@ -757,6 +834,9 @@ type AiBubbleProps = {
   onUseThis: (p: PromptOption) => void;
   onPreview: (p: PromptOption) => void;
   playingPromptId: string | null;
+  onAiImage: (p: PromptOption) => void;
+  aiImages: Record<string, { loading: boolean; url?: string; error?: string }>;
+  canUseAi: boolean;
   onRegenerate: () => void;
   onPickSuggestion: (s: string) => void;
   onUpgrade: () => void;
@@ -765,6 +845,7 @@ type AiBubbleProps = {
 
 function AiBubble({
   msg, recommendedId, onUseThis, onPreview, playingPromptId,
+  onAiImage, aiImages, canUseAi,
   onRegenerate, onPickSuggestion, onUpgrade,
 }: AiBubbleProps) {
   return (
@@ -800,6 +881,9 @@ function AiBubble({
             onUseThis={onUseThis}
             onPreview={onPreview}
             playingPromptId={playingPromptId}
+            onAiImage={onAiImage}
+            aiImages={aiImages}
+            canUseAi={canUseAi}
             onRegenerate={onRegenerate}
           />
         )}
@@ -865,13 +949,17 @@ function RateLimitBlock({ msg, onUpgrade }: { msg: AiMsg; onUpgrade: () => void 
 }
 
 function SuccessBlock({
-  msg, recommendedId, onUseThis, onPreview, playingPromptId, onRegenerate,
+  msg, recommendedId, onUseThis, onPreview, playingPromptId,
+  onAiImage, aiImages, canUseAi, onRegenerate,
 }: {
   msg: AiMsg;
   recommendedId: string | null;
   onUseThis: (p: PromptOption) => void;
   onPreview: (p: PromptOption) => void;
   playingPromptId: string | null;
+  onAiImage: (p: PromptOption) => void;
+  aiImages: Record<string, { loading: boolean; url?: string; error?: string }>;
+  canUseAi: boolean;
   onRegenerate: () => void;
 }) {
   const det = msg.detected!;
@@ -913,6 +1001,9 @@ function SuccessBlock({
           onUse={() => onUseThis(p)}
           onPreview={() => onPreview(p)}
           isPlaying={playingPromptId === p.id}
+          onAiImage={() => onAiImage(p)}
+          aiImage={aiImages[p.id]}
+          canUseAi={canUseAi}
         />
       ))}
     </View>
@@ -921,9 +1012,13 @@ function SuccessBlock({
 
 function PromptCard({
   p, idx, isRecommended, onUse, onPreview, isPlaying,
+  onAiImage, aiImage, canUseAi,
 }: {
   p: PromptOption; idx: number; isRecommended: boolean;
   onUse: () => void; onPreview: () => void; isPlaying: boolean;
+  onAiImage: () => void;
+  aiImage?: { loading: boolean; url?: string; error?: string };
+  canUseAi: boolean;
 }) {
   return (
     <Animated.View
@@ -979,7 +1074,22 @@ function PromptCard({
             <Ionicons name="play" size={15} color={theme.text.primary} />
           )}
           <Text style={s.previewBtnText}>
-            {isPlaying ? 'Stop' : 'Preview'}
+            {isPlaying ? 'Stop' : 'Audio'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onAiImage}
+          style={[s.previewBtn, !canUseAi && { opacity: 0.75 }]}
+          activeOpacity={0.85}
+          disabled={aiImage?.loading}
+        >
+          {aiImage?.loading ? (
+            <ActivityIndicator size="small" color={theme.aurora.pink} />
+          ) : (
+            <Ionicons name="sparkles" size={14} color={theme.aurora.pink} />
+          )}
+          <Text style={[s.previewBtnText, { color: theme.aurora.pink }]}>
+            {aiImage?.loading ? '…' : (canUseAi ? 'AI' : 'AI 🔒')}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -987,9 +1097,22 @@ function PromptCard({
           style={s.useBtn}
           activeOpacity={0.85}
         >
-          <Text style={s.useBtnText}>Use this ✨</Text>
+          <Text style={s.useBtnText}>Use ✨</Text>
         </TouchableOpacity>
       </View>
+
+      {/* AI-generated scene preview */}
+      {aiImage?.url && (
+        <Animated.View entering={FadeIn.duration(240)} style={s.aiImageWrap}>
+          <Image source={{ uri: aiImage.url }} style={s.aiImage} resizeMode="cover" />
+          <Text style={s.aiImageCaption}>
+            🪄 AI-generated preview — crafted from your idea
+          </Text>
+        </Animated.View>
+      )}
+      {aiImage?.error && (
+        <Text style={s.aiImageError}>⚠️ {aiImage.error}</Text>
+      )}
     </Animated.View>
   );
 }
@@ -1328,6 +1451,37 @@ const s = StyleSheet.create({
     borderRadius: theme.radius.pill,
   },
   useBtnText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+
+  /* Phase D2 — AI scene image preview */
+  aiImageWrap: {
+    marginTop: 10,
+    borderRadius: theme.radius.lg,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: theme.aurora.pink,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  aiImage: {
+    width: '100%',
+    aspectRatio: 9 / 16,
+    maxHeight: 420,
+    backgroundColor: '#0B1120',
+  },
+  aiImageCaption: {
+    color: theme.aurora.pink,
+    fontSize: 11,
+    fontWeight: '700',
+    padding: 8,
+    textAlign: 'center',
+    letterSpacing: 0.3,
+  },
+  aiImageError: {
+    color: '#FCA5A5',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 8,
+    textAlign: 'center',
+  },
 
   /* Skeleton */
   skeletonCard: {

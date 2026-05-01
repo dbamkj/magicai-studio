@@ -2315,13 +2315,20 @@ async def serve_file(filename: str):
     # so we can ship locally-hosted royalty-free music + preview clips.
     fp = UPLOAD_DIR / filename
     if not fp.exists():
-        for alt in ("/app/backend/static/bgm", "/app/backend/static/previews"):
-            alt_p = Path(alt) / filename
-            if alt_p.exists():
-                fp = alt_p
-                break
-        else:
-            raise HTTPException(status_code=404, detail="File not found")
+        # Phase D2: also allow Pixabay/AI scene images cached inside /ai_scene/ subdir.
+        # We keep subdir navigation strictly inside UPLOAD_DIR to prevent path traversal.
+        if '/' not in filename and '..' not in filename:
+            nested = list(UPLOAD_DIR.glob(f"ai_scene/*/{filename}"))
+            if nested:
+                fp = nested[0]
+        if not fp.exists():
+            for alt in ("/app/backend/static/bgm", "/app/backend/static/previews"):
+                alt_p = Path(alt) / filename
+                if alt_p.exists():
+                    fp = alt_p
+                    break
+            else:
+                raise HTTPException(status_code=404, detail="File not found")
     if filename.endswith(".mp4"):
         ct = "video/mp4"
     elif filename.endswith(".mp3"):

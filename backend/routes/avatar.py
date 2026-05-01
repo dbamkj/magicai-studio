@@ -111,6 +111,88 @@ STYLES: dict[str, dict] = {
             "superhero illustration"
         ),
     },
+
+    # ---- Phase D1: Indian cartoon-inspired buckets ------------------------
+    # NOTE: these deliberately describe visual characteristics ONLY — no
+    # brand / IP names (Motu Patlu, Chhota Bheem, Doraemon, Mowgli). That
+    # keeps us safe on Play/App-Store review + DMCA, while users still get
+    # that familiar "desi cartoon" or "jungle kid" vibe from the portrait.
+    "desi_toon": {
+        "label": "Desi Toon",
+        "icon": "🇮🇳",
+        "tagline": "Indian TV cartoon — flat 2D, vibrant pop colors",
+        "premium": False,
+        "prompt_modifier": (
+            "as a flat 2D Indian television animated character in the style of "
+            "a modern Indian kids' cartoon, large round head, simple big eyes with "
+            "small pupils, thick black outlines, vibrant saturated pop colors, "
+            "bright yellow/red/blue palette, minimal shading, friendly expressive face, "
+            "clean children's animation aesthetic"
+        ),
+    },
+    "jungle_hero": {
+        "label": "Jungle Hero",
+        "icon": "🌳",
+        "tagline": "Adventurous jungle-child painterly look",
+        "premium": True,
+        "prompt_modifier": (
+            "as a semi-realistic painterly jungle-adventure animated character, "
+            "tousled hair, sun-kissed warm skin tone, lush tropical leaves and "
+            "dappled jungle light in background, storybook watercolor shading, "
+            "curious hopeful expression, classic jungle-adventure film aesthetic, "
+            "wholesome family-animation look"
+        ),
+    },
+    "robo_pal": {
+        "label": "Robo Pal",
+        "icon": "🤖",
+        "tagline": "Round cartoon robot friend — classic anime",
+        "premium": True,
+        "prompt_modifier": (
+            "as a chibi round-bodied cartoon robot-pal character, oversized friendly "
+            "head with large round black eyes, small smiling mouth, smooth pastel "
+            "blue-and-white color scheme, soft cell shading, retro classic Japanese "
+            "cartoon aesthetic, innocent cheerful expression, simple flat background"
+        ),
+    },
+    "mythological": {
+        "label": "Mythological",
+        "icon": "🕉️",
+        "tagline": "Divine Indian-mythology illustration",
+        "premium": True,
+        "prompt_modifier": (
+            "as a richly illustrated Indian mythology divine character, "
+            "ornate gold jewelry and silk garments, soft divine glow and halo, "
+            "traditional Indian classical art influence, intricate decorative borders, "
+            "serene reverent expression, painterly temple-mural texture, "
+            "devotional calendar art aesthetic"
+        ),
+    },
+    "bollywood_poster": {
+        "label": "Bollywood Poster",
+        "icon": "🎭",
+        "tagline": "Retro Bollywood hand-painted poster vibe",
+        "premium": False,
+        "prompt_modifier": (
+            "as a retro 70s Indian hand-painted Bollywood movie poster caricature, "
+            "exaggerated bold facial features, dramatic heroic expression, "
+            "saturated primary colors with grainy brush-stroke texture, "
+            "painted poster style, vintage cinema advertisement aesthetic, "
+            "bold stylized linework"
+        ),
+    },
+    "cricket_champion": {
+        "label": "Cricket Champion",
+        "icon": "🏏",
+        "tagline": "Indian sports-hero action cartoon",
+        "premium": False,
+        "prompt_modifier": (
+            "as a dynamic Indian sports cartoon hero character, confident victorious "
+            "pose, stylized speed-lines and action bursts in background, blue India "
+            "cricket-jersey colors, bold clean linework, energetic cheerful expression, "
+            "sports-comic magazine aesthetic"
+        ),
+    },
 }
 
 EMOTIONS: dict[str, str] = {
