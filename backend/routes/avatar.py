@@ -213,6 +213,99 @@ EMOTIONS: dict[str, str] = {
 
 
 # =====================================================================
+#  PERSONALITY ENGINE — maps style → category + voice/tone/mood/bgm
+# =====================================================================
+# Powers the AI Avatar Studio wizard:
+#   • category drives the Step-1 tab chips (Indian / Funny / Spiritual / Influencer)
+#   • personality drives the Step-4 auto-mapped voice + Step-6 BGM mood
+#   • the same mapping is echoed by GET /api/avatar/styles so the frontend
+#     never has to re-derive it.
+STYLE_CATEGORY: dict[str, str] = {
+    # Indian-cartoon bucket
+    "desi_toon":         "indian",
+    "jungle_hero":       "indian",
+    "bollywood_poster":  "indian",
+    "cricket_champion":  "indian",
+    # Spiritual
+    "mythological":      "spiritual",
+    # Funny / playful
+    "caricature":        "funny",
+    "comic":             "funny",
+    "robo_pal":          "funny",
+    # Influencer / aspirational
+    "pixar":             "influencer",
+    "anime":             "influencer",
+    "disney":            "influencer",
+}
+
+DEFAULT_PERSONALITY = {
+    "voice_id":    "en-US-JennyNeural",
+    "voice_style": "story",
+    "mood":        "inspiring",
+    "bgm_style":   "cinematic orchestral",
+    "tone":        "warm and friendly",
+}
+
+STYLE_PERSONALITY: dict[str, dict] = {
+    "pixar": {
+        "voice_id": "en-US-JennyNeural", "voice_style": "story",
+        "mood": "playful",  "bgm_style": "cinematic orchestral",
+        "tone": "warm, cinematic, imaginative",
+    },
+    "anime": {
+        "voice_id": "en-US-AriaNeural", "voice_style": "story",
+        "mood": "playful",  "bgm_style": "anime upbeat synth",
+        "tone": "expressive, youthful, bright",
+    },
+    "disney": {
+        "voice_id": "en-US-JennyNeural", "voice_style": "story",
+        "mood": "romantic", "bgm_style": "fairytale orchestral",
+        "tone": "whimsical, dreamy, heartfelt",
+    },
+    "caricature": {
+        "voice_id": "en-US-GuyNeural", "voice_style": "funny",
+        "mood": "playful",  "bgm_style": "upbeat funny cartoon",
+        "tone": "exaggerated, theatrical, fun",
+    },
+    "comic": {
+        "voice_id": "en-US-GuyNeural", "voice_style": "motivation",
+        "mood": "dramatic", "bgm_style": "cinematic epic trailer",
+        "tone": "bold, heroic, punchy",
+    },
+    "desi_toon": {
+        "voice_id": "hi-IN-SwaraNeural", "voice_style": "funny",
+        "mood": "playful",  "bgm_style": "upbeat funny indian cartoon",
+        "tone": "cheerful, desi-playful, warm",
+    },
+    "jungle_hero": {
+        "voice_id": "hi-IN-MadhurNeural", "voice_style": "story",
+        "mood": "inspiring", "bgm_style": "adventure tribal drums",
+        "tone": "curious, adventurous, hopeful",
+    },
+    "robo_pal": {
+        "voice_id": "en-US-GuyNeural", "voice_style": "funny",
+        "mood": "playful",  "bgm_style": "retro synth chiptune",
+        "tone": "quirky, robotic, friendly",
+    },
+    "mythological": {
+        "voice_id": "hi-IN-MadhurNeural", "voice_style": "devotional",
+        "mood": "spiritual", "bgm_style": "indian classical flute",
+        "tone": "reverent, calm, divine",
+    },
+    "bollywood_poster": {
+        "voice_id": "hi-IN-MadhurNeural", "voice_style": "motivation",
+        "mood": "dramatic", "bgm_style": "bollywood retro brass",
+        "tone": "theatrical, bold, vintage-drama",
+    },
+    "cricket_champion": {
+        "voice_id": "hi-IN-MadhurNeural", "voice_style": "motivation",
+        "mood": "energetic", "bgm_style": "sports stadium anthem",
+        "tone": "confident, victorious, energetic",
+    },
+}
+
+
+# =====================================================================
 #  PYDANTIC MODELS
 # =====================================================================
 class CartoonizeRequest(BaseModel):
@@ -260,10 +353,204 @@ async def list_styles():
             "icon": v["icon"],
             "tagline": v["tagline"],
             "premium": v["premium"],
+            "category": STYLE_CATEGORY.get(k, "funny"),
+            "personality": STYLE_PERSONALITY.get(k, DEFAULT_PERSONALITY),
         }
         for k, v in STYLES.items()
     ]
-    return {"styles": out, "emotions": list(EMOTIONS.keys()), "count": len(out)}
+    # Also return a category index so the frontend can render tabs directly.
+    categories = [
+        {"id": "indian",     "label": "Indian",     "icon": "🇮🇳"},
+        {"id": "funny",      "label": "Funny",      "icon": "😂"},
+        {"id": "spiritual",  "label": "Spiritual",  "icon": "🕉️"},
+        {"id": "influencer", "label": "Influencer", "icon": "✨"},
+    ]
+    return {
+        "styles": out,
+        "emotions": list(EMOTIONS.keys()),
+        "categories": categories,
+        "count": len(out),
+    }
+
+
+# =====================================================================
+#  AI AVATAR STUDIO — POST /api/avatar/dialogues
+# =====================================================================
+# Generates 3 short avatar-appropriate one-liners (8–15 words each)
+# tuned to the picked style's personality. Used by Step 3 of the
+# AI Avatar Studio wizard.  GPT-4o-mini via Emergent LLM Key.
+# Cached in-memory by sha256(style|idea|language|count) for 30 min.
+
+import hashlib as _hashlib_av
+import json as _json_av
+import time as _time_av
+from collections import OrderedDict as _OrderedDict_av
+
+
+class _DialogueLRU:
+    def __init__(self, max_size=256, ttl_s=30 * 60):
+        self._d: _OrderedDict = _OrderedDict_av()
+        self._max = max_size
+        self._ttl = ttl_s
+
+    def get(self, key):
+        item = self._d.get(key)
+        if not item:
+            return None
+        t, v = item
+        if _time_av.time() - t > self._ttl:
+            self._d.pop(key, None)
+            return None
+        self._d.move_to_end(key)
+        return v
+
+    def set(self, key, v):
+        self._d[key] = (_time_av.time(), v)
+        self._d.move_to_end(key)
+        while len(self._d) > self._max:
+            self._d.popitem(last=False)
+
+
+_dialogue_cache = _DialogueLRU()
+
+
+class AvatarDialoguesRequest(BaseModel):
+    style_id: str = Field(..., description="One of the STYLES ids (e.g. 'mythological').")
+    idea: str = Field(..., min_length=3, max_length=280)
+    language: Optional[str] = Field("english", description="english | hindi | hinglish")
+    count: Optional[int] = Field(3, ge=1, le=5)
+
+
+DIALOGUE_SYSTEM_PROMPT = """You are MagiCAi Studio's avatar scriptwriter.
+Given an avatar's personality + a user idea, produce short punchy ONE-LINERS
+that the avatar would say. These are spoken aloud by a cartoon/portrait
+avatar, so they MUST:
+ • Be 8–15 words per line (spoken in ~2.5–4 seconds).
+ • Be first-person, natural, creator-grade (NOT clickbait, NOT hashtag spam).
+ • Match the avatar's personality, tone, and cultural setting precisely.
+ • Avoid copyrighted names, songs, movies, or celebrity impersonations.
+
+Output STRICT JSON (no prose, no code fences). Schema:
+{
+  "dialogues": [
+    { "id": "d1", "text": "<one-liner>", "tone": "<one short descriptor>" },
+    { "id": "d2", "text": "...", "tone": "..." },
+    { "id": "d3", "text": "...", "tone": "..." }
+  ]
+}
+
+Language rules:
+ • english → write in English.
+ • hindi   → write in Devanagari.
+ • hinglish→ write Hindi words in Roman letters, mixed with English.
+ • 'tone' field is ALWAYS in English (short label: warm, playful, bold, ...).
+
+Make the 3 dialogues MEANINGFULLY different in angle (e.g. a warm opener,
+a bold hook, a playful tease) so the user has a real choice."""
+
+
+def _dialogue_fallback(style_id: str, idea: str, count: int, language: str) -> dict:
+    """Deterministic fallback when the LLM is unreachable — keeps UX alive."""
+    style = STYLES.get(style_id) or {}
+    label = style.get("label", "Avatar")
+    base = (idea or "your idea").strip()
+    if (language or "").lower() == "hindi":
+        items = [
+            {"id": "d1", "text": f"{base} — ये कहानी आज मैं सुनाता हूँ।", "tone": "warm"},
+            {"id": "d2", "text": f"रुकिए! {base} के बारे में एक राज़ है।",   "tone": "bold"},
+            {"id": "d3", "text": f"चलो मिलकर {base} का जादू महसूस करते हैं।", "tone": "playful"},
+        ]
+    else:
+        items = [
+            {"id": "d1", "text": f"Today I want to share a story about {base}.", "tone": "warm"},
+            {"id": "d2", "text": f"Wait — {base} is not what you think. Listen in.",        "tone": "bold"},
+            {"id": "d3", "text": f"Ever wondered what {label} would say about {base}?",    "tone": "playful"},
+        ]
+    return {"dialogues": items[:count]}
+
+
+@router.post("/dialogues")
+async def post_avatar_dialogues(req: AvatarDialoguesRequest):
+    """Generate 3 avatar-appropriate one-liners based on picked style + idea."""
+    if req.style_id not in STYLES:
+        raise HTTPException(status_code=400, detail=f"Unknown style. Use: {', '.join(STYLES.keys())}")
+    # Moderation — block abusive / unsafe ideas before any LLM spend.
+    from core.moderation import moderate_text, raise_if_blocked
+    raise_if_blocked(await moderate_text(req.idea, source="avatar.dialogues.idea"))
+
+    style = STYLES[req.style_id]
+    persona = STYLE_PERSONALITY.get(req.style_id, DEFAULT_PERSONALITY)
+    lang = (req.language or "english").strip().lower()
+    count = max(1, min(5, req.count or 3))
+
+    cache_key = _hashlib_av.sha256(
+        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}".encode()
+    ).hexdigest()[:24]
+    hit = _dialogue_cache.get(cache_key)
+    if hit:
+        return {**hit, "cached": True, "source": "cache"}
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        log.warning("avatar/dialogues: no EMERGENT_LLM_KEY — using fallback")
+        out = _dialogue_fallback(req.style_id, req.idea, count, lang)
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False, "source": "fallback", "personality": persona}
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"avd_{cache_key}",
+            system_message=DIALOGUE_SYSTEM_PROMPT,
+        ).with_model("openai", "gpt-4o-mini")
+        user_text = (
+            f"Avatar: {style['label']} ({style.get('tagline', '')})\n"
+            f"Personality tone: {persona.get('tone')}\n"
+            f"Voice style: {persona.get('voice_style')}, mood: {persona.get('mood')}\n"
+            f"User idea: {req.idea!r}\n"
+            f"language: {lang}\n"
+            f"count: {count}\n"
+            f"Return the JSON now."
+        )
+        resp = await chat.send_message(UserMessage(text=user_text))
+        text = (resp or "").strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1]
+            if text.startswith("json"):
+                text = text[4:].lstrip()
+            text = text.strip()
+        try:
+            data = _json_av.loads(text)
+        except _json_av.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                data = _json_av.loads(text[start : end + 1])
+            else:
+                raise
+        dlg = data.get("dialogues") or []
+        if not isinstance(dlg, list) or not dlg:
+            raise ValueError("missing dialogues[]")
+        # Pad/trim to requested count, guarantee `id` on every item.
+        while len(dlg) < count:
+            dlg.append({**dlg[-1], "id": f"d{len(dlg)+1}"})
+        dlg = dlg[:count]
+        for i, d in enumerate(dlg):
+            d.setdefault("id", f"d{i+1}")
+            d.setdefault("tone", persona.get("tone", "neutral"))
+            d["text"] = str(d.get("text", "")).strip()
+        out = {"dialogues": dlg, "personality": persona, "style_id": req.style_id, "language": lang}
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False, "source": "llm"}
+    except Exception as e:
+        log.exception("avatar/dialogues: LLM error — falling back: %s", e)
+        out = _dialogue_fallback(req.style_id, req.idea, count, lang)
+        out["personality"] = persona
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False, "source": "fallback"}
+
+
 
 
 @router.post("/cartoonize")

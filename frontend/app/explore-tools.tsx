@@ -7,8 +7,10 @@ import CosmicBackground from '../src/CosmicBackground';
 import AuroraBackground from '../src/AuroraBackground';
 
 const TOOLS = [
+  { route: '/avatar-studio', title: 'AI Avatar Studio', desc: '6-step talking avatar wizard (NEW)', icon: 'sparkles', color: '#EC4899' },
   { route: '/trending', title: 'Trending Templates', desc: 'Ready-made recipes (NEW)', icon: 'flame', color: '#EF4444' },
-  { route: '/avatar', title: 'Talking Avatar', desc: 'Photo → Talking character (NEW)', icon: 'happy', color: '#A855F7' },
+  { route: '/avatar', title: 'Talking Avatar', desc: 'Photo → Talking character', icon: 'happy', color: '#A855F7' },
+  { route: '/cartoon-avatar', title: 'Cartoon Avatar', desc: 'Cartoonize a portrait', icon: 'color-palette', color: '#7B5CFF' },
   { route: '/videogen', title: 'AI Video Gen', desc: 'Text/Image/Video → Video', icon: 'film', color: '#F97316' },
   { route: '/motion-control', title: 'Motion Control', desc: 'Photo → video · Free', icon: 'move', color: '#10B981' },
   { route: '/imagegen', title: 'AI Image Gen', desc: 'Generate from prompt', icon: 'sparkles', color: '#EC4899' },

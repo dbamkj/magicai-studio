@@ -194,9 +194,10 @@ function QuickActionSheet({
   visible, onClose, onPick,
 }: { visible: boolean; onClose: () => void; onPick: (route: string) => void }) {
   const actions = [
-    { key: 'reel',   icon: 'film',     label: 'Reel',   sub: 'Text → AI Video',          color: '#FF4D8D', route: '/create-wizard?mode=video' },
-    { key: 'avatar', icon: 'happy',    label: 'Avatar', sub: 'Cartoonize a portrait',    color: '#7B5CFF', route: '/cartoon-avatar' },
-    { key: 'voice',  icon: 'mic',      label: 'Voice',  sub: 'Lip sync · Re-dub · TTS',  color: '#FF9A3C', route: '/lipsync' },
+    { key: 'reel',   icon: 'film',     label: 'Reel',          sub: 'Text → AI Video',          color: '#FF4D8D', route: '/create-wizard?mode=video' },
+    { key: 'studio', icon: 'sparkles', label: 'Avatar Studio', sub: 'AI talking avatar in 6 steps', color: '#A855F7', route: '/avatar-studio' },
+    { key: 'avatar', icon: 'happy',    label: 'Avatar',        sub: 'Cartoonize a portrait',    color: '#7B5CFF', route: '/cartoon-avatar' },
+    { key: 'voice',  icon: 'mic',      label: 'Voice',         sub: 'Lip sync · Re-dub · TTS',  color: '#FF9A3C', route: '/lipsync' },
   ];
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>

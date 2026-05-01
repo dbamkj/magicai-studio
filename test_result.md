@@ -8265,3 +8265,303 @@ agent_communication:
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
 
+
+  - task: "AI Avatar Studio — unified 6-step wizard (merges cartoon-avatar + talking-avatar)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx, backend/routes/avatar.py, frontend/app/index.tsx, frontend/app/explore-tools.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — New "AI Avatar Studio" feature merges the two
+          legacy avatar screens (cartoon-avatar.tsx + avatar.tsx) into one
+          unified 6-step wizard at /avatar-studio.
+
+          Backend changes to /app/backend/routes/avatar.py:
+          1) New STYLE_CATEGORY map — tags each of the 11 existing STYLES
+             with a category (indian | funny | spiritual | influencer).
+             desi_toon/jungle_hero/bollywood_poster/cricket_champion →
+             indian; mythological → spiritual; caricature/comic/robo_pal
+             → funny; pixar/anime/disney → influencer.
+
+          2) New STYLE_PERSONALITY map — each style gets voice_id +
+             voice_style + mood + bgm_style + human-readable tone. This
+             powers the Step-4 auto-mapped voice. Examples:
+               • mythological → hi-IN-MadhurNeural, devotional, spiritual,
+                 "indian classical flute", "reverent calm divine"
+               • cricket_champion → hi-IN-MadhurNeural, motivation,
+                 energetic, "sports stadium anthem", "confident victorious"
+               • anime → en-US-AriaNeural, story, playful,
+                 "anime upbeat synth", "expressive youthful bright"
+
+          3) GET /api/avatar/styles now returns category + personality on
+             every style entry AND a top-level `categories: [...]` index
+             so the frontend can render category chips directly.
+
+          4) NEW POST /api/avatar/dialogues — GPT-4o-mini via the Emergent
+             LLM Key. Body: { style_id, idea, language, count=3 }.
+             Returns 3 short (8–15 word) avatar-appropriate one-liners
+             tuned to the style's personality. Cached 30 min by
+             sha256(style_id|idea|language|count). Fallback deterministic
+             one-liners if LLM fails. Moderation gate on idea.
+
+          5) Smoke-tested:
+             • GET /api/avatar/styles → returns categories[] and personality
+               on each of 11 styles.
+             • POST /api/avatar/dialogues with mythological + "Festival
+               greeting for Diwali" + hindi → 3 perfectly-toned Devanagari
+               one-liners. Backend logs: "LiteLLM completion() ... gpt-4o-mini
+               ... Wrapper: Completed Call, calling success_handler".
+
+          Frontend — new /app/frontend/app/avatar-studio.tsx (902 LOC):
+          • Step 0: Category chips + filtered avatar grid (2-col).
+            Active state + PRO pill + lock-on-premium for free users
+            (redirects to /subscription on tap).
+          • Step 1: Language toggle (English/हिंदी/Hinglish) + idea
+            textarea + 4 quick-start suggestion chips (contextual per
+            category).
+          • Step 2: Fetches POST /api/avatar/dialogues, renders 3
+            picker cards with numbered badges + tone tag; "Regenerate"
+            option.
+          • Step 3: Auto-mapped voice card (glow) + quoted dialogue
+            recap + "Play voice preview" CTA that calls the existing
+            /api/generate-prompts/preview-audio (Sarvam) endpoint
+            and plays inline via expo-av.
+          • Step 4: Upload photo (expo-image-picker → uploadImageFile
+            helper) → "Generate Avatar Video" CTA → POST to
+            /api/create-talking-avatar with personality-mapped
+            voice_id/voice_style. Polls /api/project/{id} every 3s,
+            shows animated progress bar + stage label. On completion
+            renders looping <Video> result + "Open in Library" CTA.
+            Free tier gets 480p; Pro gets 720p. Resolution hint line.
+          • AuthGateModal mounted — all primary actions gated via
+            requireLogin() helper for guests.
+          • Keyboard handling: KeyboardAvoidingView behavior='padding'
+            (matches the fix we applied to ai-prompts.tsx).
+          • Uses the new /src/ui/ primitives: Chip, GlassCard,
+            GradientButton, GhostButton, FieldLabel — no new inline
+            boilerplate.
+          • Bottom-nav bar with Back/Next for steps 0–3; step 4 has its
+            own Generate CTA.
+
+          Entry-point wiring (legacy screens kept per user choice 3b):
+          • app/index.tsx QuickActionSheet: new "Avatar Studio" tile
+            between "Reel" and the legacy "Avatar" tile so both are
+            discoverable.
+          • app/explore-tools.tsx: NEW first tile "AI Avatar Studio"
+            with "(NEW)" badge + the existing "Talking Avatar" and
+            "Cartoon Avatar" tiles still listed for power users.
+
+          Personality engine mapping validated on the backend
+          side — frontend consumes the same personality object
+          returned by /api/avatar/styles so a design-system change in
+          STYLE_PERSONALITY propagates to UI with zero frontend edits.
+
+          Verify (backend):
+            (1) GET /api/avatar/styles → 200 with categories[] + each
+                style includes category + personality.
+            (2) POST /api/avatar/dialogues with valid style+idea → 200
+                with 3 dialogues matching language.
+            (3) POST /api/avatar/dialogues with invalid style_id → 400.
+            (4) POST /api/avatar/dialogues twice same body → 2nd call
+                source='cache' (30-min LRU).
+            (5) Existing /api/avatar/cartoonize + /api/create-talking-avatar
+                unchanged — no regressions.
+
+          Verify (frontend, defer to user unless they say "test frontend"):
+            (1) Home → tap FAB → "Avatar Studio" tile → opens wizard.
+            (2) Step 1 category chips filter the avatar grid.
+            (3) PRO styles show lock + redirect guests to /subscription.
+            (4) Step 2 language toggle persists into dialogue request.
+            (5) Step 3 dialogue cards render and are pick-able.
+            (6) Step 4 "Play voice preview" plays the TTS clip inline.
+            (7) Step 5 upload → Generate → poll → video renders.
+
+
+
+
+ai_avatar_studio_backend_session:
+  - task: "AI Avatar Studio — styles schema update (GET /api/avatar/styles)"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 19/19. GET /api/avatar/styles → 200.
+          • Top-level `categories` array has exactly 4 entries with ids
+            {indian, funny, spiritual, influencer} — all have label+icon.
+          • All 11 styles carry `category` (non-empty) + `personality` dict
+            with all 5 keys populated (voice_id, voice_style, mood,
+            bgm_style, tone). No missing fields on any style.
+          • Specific mappings verified:
+              - mythological → category=spiritual,
+                personality.voice_id='hi-IN-MadhurNeural',
+                voice_style='devotional' ✓
+              - cricket_champion → category=indian,
+                voice_style='motivation', mood='energetic' ✓
+              - pixar → category=influencer ✓
+              - comic → category=funny ✓
+          • count=11 matches len(styles)=11.
+          • `emotions` top-level list still present (12 entries — unchanged
+            from Phase 4D).
+
+  - task: "AI Avatar Studio — POST /api/avatar/dialogues (new endpoint)"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          FULL PASS (all sub-tests). GPT-4o-mini via EMERGENT_LLM_KEY
+          produces well-formed language-specific one-liners, cache +
+          validation + moderation gates all fire correctly.
+
+          2a) Hindi / mythological / Diwali greeting / count=3 → 200,
+              dialogues[3] with ids d1/d2/d3, each text in Devanagari
+              (U+0900..U+097F confirmed on all 3 lines), each tone
+              non-empty (warm/bold/playful). personality.voice_id =
+              hi-IN-MadhurNeural ✓. On first-ever fresh idea:
+              source='llm', cached=false; on repeated same idea:
+              source='cache'.
+              Example d1: "दिवाली की मंगल कामनाएँ! रौशनी और प्रेम से भरा हो
+              आपका जीवन।"
+
+          2b) English / pixar / team-launch motivation / count=3 → 200,
+              3 English dialogues (no Devanagari). personality.tone =
+              "warm, cinematic, imaginative" (pixar mapping matched
+              exactly). source='llm'.
+
+          2c) Hinglish / desi_toon / funny office moment / count=3 →
+              200, 3 dialogues, source='llm'.
+              Example: "Office ki funny kahaniyaan toh meri chai ki
+              tarah hai, totally refreshing!"
+
+          3)  Caching — second identical POST returns
+              source='cache', cached=true, latency=253ms (<500ms spec).
+              Dialogue text byte-for-byte identical to first call on
+              all 3 lines. LRU + 30-min TTL working as designed.
+
+          4a) Unknown style_id='does_not_exist' → 400
+              detail="Unknown style. Use: pixar, anime, disney,
+              caricature, comic, desi_toon, jungle_hero, robo_pal,
+              mythological, bollywood_poster, cricket_champion" ✓
+              (detail enumerates valid style list as required).
+          4b) Empty idea '' → 422 (pydantic min_length=3) ✓
+          4c) count=10 (above max=5) → 422 ✓
+
+          5)  Moderation — idea "how to fuck someone up badly and hurt
+              them" → 400 with detail=
+                {"moderation_blocked": true,
+                 "categories": ["profanity"],
+                 "reason": "Your text contains language we don't allow..."}
+              Blocklist hit before any LLM spend. ✓
+
+          Test artefact: /app/backend_test_avatar_studio.py.
+
+  - task: "AI Avatar Studio — /openapi.json registration (exactly once)"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. http://localhost:8001/openapi.json → 200. Path
+          '/api/avatar/dialogues' present exactly once, methods=['post'].
+          No trailing-slash or duplicate variants detected. Lazy-import +
+          router.include_router pattern clean — no double registration.
+
+  - task: "AI Avatar Studio — regression on legacy avatar endpoints"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py, backend/routes/talking.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Full regression PASS (6/6). Legacy endpoints untouched by the
+          new dialogues addition and styles schema update.
+
+          • POST /api/avatar/cartoonize with {style:'pixar',
+            image_b64:<1x1 png>, emotion:'happy', prompt:'friendly
+            developer portrait'} + demo_creator Bearer → 200
+            {job_id:'av_abc6ed52184c', status:'queued', style:'pixar',
+            tier:'creator', watermark:false}.
+          • GET /api/avatar/jobs/av_abc6ed52184c → 200 with status
+            (job completed end-to-end in <15s, image_url=
+            /api/serve-file/av_abc6ed52184c.png, no watermark for
+            creator tier).
+          • POST /api/upload-image (multipart PNG) + demo_creator Bearer
+            → 200 with file_path.
+          • POST /api/create-talking-avatar {image_path:<uploaded>,
+            script:'hi there, quick test of talking avatar endpoint.',
+            voice_id:'hi-IN-SwaraNeural'} + demo_creator Bearer → 200
+            {project_id:'b09235bd-...', status:'processing',
+            credits_charged:200}. Background MH job not awaited per
+            review spec.
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      AI Avatar Studio backend verification — COMPLETE, ALL TASKS PASS.
+
+      ✅ GET /api/avatar/styles (schema update): 19/19 sub-checks.
+         • Top-level categories[] has 4 entries {indian, funny,
+           spiritual, influencer} with label+icon.
+         • All 11 styles carry category + full personality dict (5 keys).
+         • Specific mappings verified: mythological→spiritual/devotional/
+           MadhurNeural, cricket_champion→indian/motivation/energetic,
+           pixar→influencer, comic→funny.
+
+      ✅ POST /api/avatar/dialogues (new endpoint): FULL PASS.
+         • Hindi/mytho/Diwali: 3 Devanagari one-liners (warm/bold/playful),
+           voice_id=hi-IN-MadhurNeural, source='llm' on fresh idea,
+           'cache' on repeat.
+         • English/pixar: 3 ASCII dialogues, tone='warm, cinematic,
+           imaginative' (pixar persona).
+         • Hinglish/desi_toon: 3 roman-script mixed dialogues from LLM.
+         • Cache: 2nd identical call → source='cache', cached=true,
+           253ms latency (<500ms spec), bytes-identical text.
+         • Validation: unknown style_id→400 (detail lists valid styles),
+           empty idea→422, count=10→422.
+         • Moderation: profanity blocked →400 with detail.moderation_blocked
+           =true.
+
+      ✅ Regression: /api/avatar/cartoonize + /api/avatar/jobs/{id} +
+         /api/create-talking-avatar — all still working with demo_creator
+         Bearer token. Cartoonize actually completed end-to-end (clean
+         PNG served).
+
+      ✅ /openapi.json: /api/avatar/dialogues registered exactly once
+         with methods=['post']. No duplicate registrations.
+
+      Test artefact: /app/backend_test_avatar_studio.py (re-runnable).
+
+      Note on a single apparent "failure" in the raw test log
+      (dialogues.hindi.source reported 'cache' instead of 'llm'|'fallback'):
+      this was a test-artefact. The exact idea "Festival greeting for Diwali"
+      had been cached by an earlier preview run (30-min LRU). When re-run
+      with a unique idea string the endpoint correctly returned
+      source='llm' + cached=false + voice_id='hi-IN-MadhurNeural'. Not
+      a real bug — confirms cache is working as designed.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
