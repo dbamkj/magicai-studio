@@ -3756,6 +3756,10 @@ app.include_router(_avatar_router)
 from routes.creative_plan import router as _creative_plan_router
 app.include_router(_creative_plan_router)
 
+# V2.0 — ChatGPT-style Prompt Selection (POST /api/generate-prompts)
+from routes.prompts import router as _prompts_router
+app.include_router(_prompts_router)
+
 # Sprint 4 — BETA MODE metadata endpoint
 from core.config import ENV as _ENV, IS_BETA as _IS_BETA, IS_DEV as _IS_DEV, IS_PROD as _IS_PROD
 @app.get("/api/mode")
