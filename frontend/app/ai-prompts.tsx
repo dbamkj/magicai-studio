@@ -80,6 +80,50 @@ const MOOD_COLORS: Record<string, string> = {
   playful: '#FBBF24', dramatic: '#F43F5E',
 };
 
+// ─── Mappers from LLM-free-form fields to existing pipeline IDs ───────────
+// Keep these tiny & deterministic so the handoff stays predictable.
+
+function mapVoiceToId(voiceType: string, language: string): string {
+  const v = (voiceType || '').toLowerCase();
+  const isFemale = /female|anushka|manisha|vidya|jenny|inspiring_female|confident_female|gentle_female|enthusiastic_female/.test(v);
+  const lang = (language || 'english').toLowerCase();
+  // Hindi / Hinglish / Indic → Sarvam speakers
+  if (['hindi', 'hinglish', 'tamil', 'telugu', 'marathi'].includes(lang)) {
+    if (v.includes('warm') || v.includes('calm') || v.includes('storyteller')) {
+      return isFemale ? 'sarvam:manisha' : 'sarvam:meera';
+    }
+    if (v.includes('energetic') || v.includes('confident')) {
+      return isFemale ? 'sarvam:anushka' : 'sarvam:arvind';
+    }
+    return isFemale ? 'sarvam:manisha' : 'sarvam:meera';
+  }
+  // English fallback — MS Edge Neural
+  if (v.includes('warm') || v.includes('calm') || v.includes('storyteller'))
+    return isFemale ? 'en-US-JennyNeural' : 'en-US-GuyNeural';
+  if (v.includes('energetic') || v.includes('confident'))
+    return isFemale ? 'en-US-AriaNeural' : 'en-US-ChristopherNeural';
+  return isFemale ? 'en-US-JennyNeural' : 'en-US-GuyNeural';
+}
+
+function mapMusicToMood(musicType: string): string {
+  const m = (musicType || '').toLowerCase();
+  if (m.includes('sacred') || m.includes('devotional') || m.includes('bhajan'))  return 'devotional_peaceful';
+  if (m.includes('cinematic') || m.includes('orchestral') || m.includes('epic')) return 'cinematic_epic';
+  if (m.includes('upbeat') || m.includes('energetic') || m.includes('electronic')) return 'upbeat_pop';
+  if (m.includes('lofi') || m.includes('aesthetic') || m.includes('chill'))      return 'aesthetic_lofi';
+  if (m.includes('emotional') || m.includes('melodic') || m.includes('soft'))    return 'emotional_piano';
+  if (m.includes('inspirational') || m.includes('uplifting'))                    return 'inspirational_ambient';
+  return 'cinematic_epic';
+}
+
+function mapStyleToMotion(styleTag: string): string {
+  const s = (styleTag || '').toLowerCase();
+  if (s === 'cinematic' || s === 'documentary') return 'smooth_pan';
+  if (s === 'handheld' || s === 'meme')         return 'handheld';
+  if (s === 'aesthetic')                         return 'slow_zoom';
+  return 'auto';
+}
+
 export default function AIPromptsScreen() {
   const [idea, setIdea] = useState('');
   const [language, setLanguage] = useState<Lang>('english');
@@ -133,20 +177,61 @@ export default function AIPromptsScreen() {
 
   const onUseThis = useCallback((p: PromptOption) => {
     setSelectedId(p.id);
-    // Pass the picked prompt into the creative-plan wizard.
-    // We round-trip via query params — keep payload small; full prompt lives in
-    // AsyncStorage so downstream screens can lift it richly without URL bloat.
+    // D2 — One-tap auto-render:
+    // Convert the picked prompt into the wizard's existing `mp_template_prefill`
+    // shape. The wizard already watches for this key and auto-jumps to
+    // step='progress' → fires /api/wizard/create-reel. Zero-click magic.
     (async () => {
       try {
-        const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
-        await AsyncStorage.setItem(
-          'magicai_picked_prompt_v1',
-          JSON.stringify({ idea: idea.trim(), language, prompt: p, detected: result?.detected }),
-        );
+        const prefill = {
+          id: `aiprompt_${p.id}_${Date.now()}`,
+          title: p.title,
+          tagline: p.hook,
+          idea: idea.trim(),
+          script: p.hook || idea.trim(),
+          image_query:
+            (result?.detected?.scene_keywords || []).slice(0, 3).join(' ')
+            || p.title,
+          mode: 'video',
+          total_duration: Math.max(10, Math.min(30, p.duration || 20)),
+          voice_id: mapVoiceToId(p.voice_type, language),
+          voice_style: 'story',
+          music_mood: mapMusicToMood(p.music_type),
+          motion: mapStyleToMotion(p.style_tag),
+          aspect_ratio: '9:16',
+          lang: language,
+          // Extra metadata for the new cooking screen
+          ai_prompt_meta: {
+            prompt_id: p.id,
+            hook: p.hook,
+            mood: p.mood,
+            style_tag: p.style_tag,
+            hashtags: p.hashtags || [],
+            cta: p.cta || '',
+            detected_category: result?.detected?.category || '',
+            detected_mood: result?.detected?.mood || '',
+          },
+        };
+        // Web path — sessionStorage is what the wizard already reads on mount.
+        try {
+          if (typeof window !== 'undefined' && (window as any).sessionStorage) {
+            (window as any).sessionStorage.setItem(
+              'mp_template_prefill', JSON.stringify(prefill),
+            );
+          }
+        } catch {}
+        // Native path — keep the AsyncStorage token for future native runs.
+        try {
+          const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+          await AsyncStorage.setItem(
+            'magicai_picked_prompt_v1',
+            JSON.stringify({ idea: idea.trim(), language, prompt: p, detected: result?.detected, prefill }),
+          );
+        } catch {}
       } catch {}
       router.push({
         pathname: '/create-wizard',
-        params: { fromPrompt: '1', promptId: p.id, title: p.title.slice(0, 80) },
+        params: { fromPrompt: '1', promptId: p.id },
       });
     })();
   }, [idea, language, result]);

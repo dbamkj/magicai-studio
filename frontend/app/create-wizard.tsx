@@ -106,6 +106,18 @@ export default function CreateWizard() {
   // stashed the wizard payload in sessionStorage under `mp_template_prefill`.
   // We auto-start the reel on mount and jump straight to the progress screen.
   const [templateMeta, setTemplateMeta] = useState<{ id: string; title: string; tagline?: string } | null>(null);
+  // V2.0 — AI Prompt metadata surfaced on the progress screen when arriving
+  // from /ai-prompts. Populated by the auto-start useEffect below.
+  const [aiPromptMeta, setAiPromptMeta] = useState<{
+    prompt_id?: string;
+    hook?: string;
+    mood?: string;
+    style_tag?: string;
+    hashtags?: string[];
+    cta?: string;
+    detected_category?: string;
+    detected_mood?: string;
+  } | null>(null);
 
   const [options, setOptions] = useState<Option[]>([]);
   const [selected, setSelected] = useState<Option | null>(null);
@@ -171,11 +183,16 @@ export default function CreateWizard() {
   }, [params?.from, params?.prompt, params?.title]);
 
   // Phase-2 — auto-launch when arriving from /marketplace?from=template&id=...
+  //         OR from /ai-prompts?fromPrompt=1 (V2.0 ChatGPT-style prompt wizard).
+  // Both paths write `mp_template_prefill` into sessionStorage and expect the
+  // wizard to jump straight to step='progress' → fire the render.
   useEffect(() => {
-    if (params?.from !== 'template') return;
-    // 🔒 Guest gate — block template auto-start when not signed in
+    const fromTemplate = params?.from === 'template';
+    const fromAIPrompt = String(params?.fromPrompt || '') === '1';
+    if (!fromTemplate && !fromAIPrompt) return;
+    // 🔒 Guest gate — block auto-start when not signed in
     if (!user) {
-      setGateReason('Generating this template');
+      setGateReason(fromAIPrompt ? 'Creating your AI video' : 'Generating this template');
       setAuthGateOpen(true);
       return;
     }
@@ -187,11 +204,20 @@ export default function CreateWizard() {
       }
     } catch {}
     if (!prefill) return;
-    setTemplateMeta({ id: prefill.id, title: prefill.title, tagline: prefill.tagline });
+    setTemplateMeta({
+      id: prefill.id,
+      title: prefill.title,
+      tagline: prefill.tagline || prefill.script || '',
+    });
     // populate state for polish (so the progress screen shows the right idea text)
     setIdea(prefill.idea || prefill.title || '');
     setReelMode((prefill.mode === 'images') ? 'images' : 'video');
     setVoiceId(prefill.voice_id || 'en-US-JennyNeural');
+    // Stash AI-prompt metadata in React state so the progress screen can
+    // render the hook + hashtags + mood while the job renders.
+    if (prefill.ai_prompt_meta) {
+      setAiPromptMeta(prefill.ai_prompt_meta);
+    }
     // Auto-start the reel without going through prompt-generation/edit steps.
     (async () => {
       try {
@@ -219,11 +245,11 @@ export default function CreateWizard() {
           setJob({ job_id: jid, status: 'queued', progress: 0 } as any);
           startPolling(jid);
         } else {
-          setErr('Could not start reel from template.');
+          setErr(fromAIPrompt ? 'Could not start reel from your prompt.' : 'Could not start reel from template.');
           setStep('idea');
         }
       } catch (e: any) {
-        setErr(e?.response?.data?.detail || e?.message || 'Failed to start template reel.');
+        setErr(e?.response?.data?.detail || e?.message || (fromAIPrompt ? 'Failed to render your AI prompt.' : 'Failed to start template reel.'));
         setStep('idea');
       } finally {
         setBusy(false);
@@ -795,8 +821,44 @@ export default function CreateWizard() {
           {/* STEP 3: PROGRESS */}
           {step === 'progress' && (
             <View style={{ alignItems: 'center', paddingVertical: 30 }}>
+              {/* V2.0 — AI Prompt context card (only shown when arriving from
+                   /ai-prompts; renders the hook, mood, hashtags so the user
+                   has something beautiful to read while the job renders). */}
+              {aiPromptMeta?.hook ? (
+                <View style={aiMetaStyles.card}>
+                  <View style={aiMetaStyles.badgeRow}>
+                    <Text style={aiMetaStyles.badge}>✨ AI CRAFTED</Text>
+                    {aiPromptMeta.style_tag ? (
+                      <Text style={aiMetaStyles.styleTag}>{aiPromptMeta.style_tag}</Text>
+                    ) : null}
+                  </View>
+                  <Text style={aiMetaStyles.hook} numberOfLines={4}>
+                    “{aiPromptMeta.hook}”
+                  </Text>
+                  <View style={aiMetaStyles.chipsRow}>
+                    {aiPromptMeta.detected_category ? (
+                      <View style={aiMetaStyles.chip}>
+                        <Text style={aiMetaStyles.chipTxt}>🏷️ {aiPromptMeta.detected_category}</Text>
+                      </View>
+                    ) : null}
+                    {aiPromptMeta.mood ? (
+                      <View style={aiMetaStyles.chip}>
+                        <Text style={aiMetaStyles.chipTxt}>💫 {aiPromptMeta.mood}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  {Array.isArray(aiPromptMeta.hashtags) && aiPromptMeta.hashtags.length > 0 ? (
+                    <Text style={aiMetaStyles.hashtags} numberOfLines={1}>
+                      {aiPromptMeta.hashtags.slice(0, 4).join('  ')}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+
               <ActivityIndicator size="large" color="#8B5CF6" />
-              <Text style={s.progressTitle}>Building your reel…</Text>
+              <Text style={s.progressTitle}>
+                {aiPromptMeta?.hook ? 'AI is crafting your video…' : 'Building your reel…'}
+              </Text>
               <Text style={s.progressStage}>{job?.stage ? job.stage.replace(/_/g,' ') : 'queued'}</Text>
               <View style={s.barTrack}><View style={[s.barFill, { width: `${job?.progress || 5}%` }]} /></View>
               <Text style={s.progressPct}>{job?.progress || 0}%</Text>
@@ -1279,4 +1341,76 @@ const s = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8,
   },
   planSourcePillTxt: { color: '#34D399', fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
+});
+
+// V2.0 — Styles for the AI Prompt context card on the progress screen
+const aiMetaStyles = StyleSheet.create({
+  card: {
+    width: '100%',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(236,72,153,0.45)',
+    padding: 16,
+    marginBottom: 20,
+    shadowColor: '#EC4899',
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  badge: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(236,72,153,0.28)',
+    borderWidth: 1,
+    borderColor: 'rgba(236,72,153,0.6)',
+    borderRadius: 999,
+  },
+  styleTag: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'capitalize',
+    letterSpacing: 0.5,
+  },
+  hook: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontStyle: 'italic',
+    lineHeight: 22,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  chipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 8,
+  },
+  chip: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  chipTxt: { color: '#E2E8F0', fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  hashtags: {
+    color: '#60A5FA',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    marginTop: 2,
+  },
 });
