@@ -1684,130 +1684,6 @@ async def process_video_redub_bg(project_id, video_url, script_text, voice_id):
 async def root():
     return {"message": "MagiCAi Studio API", "version": "7.1.0"}
 
-@api_router.post("/upload-image")
-async def upload_image(file: UploadFile = File(...), request: Request = None):
-    from core.upload_safety import validate_image_upload
-    await get_current_user(request)
-    fid = str(uuid.uuid4()); ext = Path(file.filename or "img.jpg").suffix or ".jpg"; sp = UPLOAD_DIR / f"img_{fid}{ext}"
-    content = await file.read()
-    validate_image_upload(content, content_type=file.content_type, filename=file.filename)
-    with open(sp, "wb") as f: f.write(content)
-    try:
-        Image.open(sp)
-        if len(content)/(1024*1024) > 10: Image.open(sp).save(sp, "JPEG", quality=85)
-    except Exception:
-        pass
-    # Return a URL that can be used by Magic Hour (serve via our API)
-    serve_url = f"/api/serve-file/{sp.name}"
-    return {"url": serve_url, "file_id": fid, "file_path": str(sp), "file_type": "image"}
-
-
-class Base64UploadRequest(BaseModel):
-    base64: str
-    filename: Optional[str] = None
-
-
-class UploadFromUrlRequest(BaseModel):
-    url: str
-    filename: Optional[str] = None
-
-
-@api_router.post("/upload-from-url")
-async def upload_from_url(req: UploadFromUrlRequest, request: Request = None):
-    """Download a remote image (or short video) URL and stash it under
-    UPLOAD_DIR. Lets the frontend avoid browser CORS restrictions when
-    re-using template thumbnails / preview clips that live on an external
-    CDN (e.g. Pexels). Returns the same shape as /upload-image."""
-    await get_current_user(request)
-    url = (req.url or '').strip()
-    if not url or not url.lower().startswith(('http://', 'https://')):
-        raise HTTPException(status_code=400, detail='url must be http(s)')
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0), follow_redirects=True) as c:
-            r = await c.get(url)
-            if r.status_code != 200:
-                raise HTTPException(status_code=400, detail=f'fetch failed {r.status_code}')
-            data = r.content
-            ct = (r.headers.get('content-type') or '').lower()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'download error: {e}')
-    if len(data) < 200:
-        raise HTTPException(status_code=400, detail='empty payload')
-    if ct.startswith('video/'):
-        ext = '.mp4'
-        ftype = 'video'
-    elif ct.startswith('image/'):
-        ext = '.jpg' if 'jpeg' in ct or 'jpg' in ct else '.png' if 'png' in ct else '.webp' if 'webp' in ct else '.jpg'
-        ftype = 'image'
-    else:
-        # fall back to URL extension
-        low = url.lower().split('?')[0]
-        if low.endswith(('.mp4', '.mov', '.webm')):
-            ext = '.mp4'; ftype = 'video'
-        elif low.endswith(('.png', '.webp', '.jpg', '.jpeg')):
-            ext = '.' + low.rsplit('.', 1)[-1]; ftype = 'image'
-        else:
-            raise HTTPException(status_code=400, detail=f'unsupported content-type: {ct}')
-    fid = str(uuid.uuid4())
-    sp = UPLOAD_DIR / f'fromurl_{fid}{ext}'
-    with open(sp, 'wb') as f:
-        f.write(data)
-    # Down-size big images
-    if ftype == 'image':
-        try:
-            Image.open(sp)
-            if len(data) / (1024 * 1024) > 10:
-                Image.open(sp).save(sp, 'JPEG', quality=85)
-        except Exception:
-            pass
-    serve_url = f'/api/serve-file/{sp.name}'
-    return {'url': serve_url, 'file_id': fid, 'file_path': str(sp), 'file_type': ftype}
-
-
-@api_router.post("/upload-base64")
-async def upload_base64(req: Base64UploadRequest, request: Request = None):
-    """Simple base64 upload helper used by the Divine Transform wizard
-    (and any future screens that have images pre-loaded in memory).
-    Accepts raw base64 (no data: prefix) OR a dataURL (data:image/...;base64,...).
-    """
-    await get_current_user(request)
-    import base64 as _b64
-    raw = req.base64 or ""
-    if raw.startswith("data:"):
-        try:
-            raw = raw.split(",", 1)[1]
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid dataURL")
-    try:
-        blob = _b64.b64decode(raw, validate=False)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64")
-    if len(blob) < 128:
-        raise HTTPException(status_code=400, detail="Image too small")
-    if len(blob) > 15 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image too large (>15MB)")
-    fid = str(uuid.uuid4())
-    ext = Path(req.filename or "img.jpg").suffix.lower() or ".jpg"
-    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
-        ext = ".jpg"
-    sp = UPLOAD_DIR / f"b64_{fid}{ext}"
-    with open(sp, "wb") as f:
-        f.write(blob)
-    serve_url = f"/api/serve-file/{sp.name}"
-    return {"url": serve_url, "file_id": fid, "file_path": str(sp), "file_type": "image"}
-
-@api_router.post("/upload-face-image")
-async def upload_face_image(file: UploadFile = File(...), request: Request = None):
-    from core.upload_safety import validate_image_upload
-    await get_current_user(request)
-    fid = str(uuid.uuid4()); ext = Path(file.filename or "img.jpg").suffix or ".jpg"; sp = UPLOAD_DIR / f"{fid}{ext}"
-    content = await file.read()
-    validate_image_upload(content, content_type=file.content_type, filename=file.filename)
-    with open(sp, "wb") as f: f.write(content)
-    return {"file_id": fid, "file_path": str(sp), "file_type": "face_image"}
-
 @api_router.post("/upload-video")
 async def upload_video(file: UploadFile = File(...), request: Request = None):
     from core.upload_safety import validate_video_upload
@@ -3723,6 +3599,9 @@ async def create_ai_bg_lipsync(req: AIBgLipSyncRequest, background_tasks: Backgr
     return {"project_id": p.id, "credits_charged": cost}
 
 app.include_router(api_router)
+# Phase-B refactor (Session 22): extracted upload endpoints
+from routes.uploads import router as _uploads_router
+app.include_router(_uploads_router)
 # Sprint 6 — Content Intelligence: templates router (Batch 2 refactor seed)
 from routes.templates import router as _templates_router
 app.include_router(_templates_router)

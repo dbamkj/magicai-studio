@@ -680,6 +680,72 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+session_22_phaseb_uploads_refactor:
+  - task: "Phase-B routes/uploads.py extraction regression (Session 22)"
+    implemented: true
+    working: true
+    file: "backend/routes/uploads.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 22 — Phase-B refactor regression PASS 14/14 (1 infra caveat
+          on openapi, zero code-level failures).
+
+          A) OpenAPI sanity — All 6 required paths are present in the FastAPI
+             schema when queried on internal port (http://localhost:8001/openapi.json
+             → 200, 124 paths, includes /api/upload-image, /api/upload-from-url,
+             /api/upload-base64, /api/upload-face-image, /api/upload-video,
+             /api/upload-audio). NOTE: the public URL
+             https://creative-plan-engine.preview.emergentagent.com/openapi.json
+             returns 404 because the K8s ingress only proxies /api/* prefixes
+             and FastAPI does NOT register the schema behind /api — this is
+             infrastructure behaviour, not a refactor bug. If external OpenAPI
+             access is needed, main agent could pass openapi_url='/api/openapi.json'
+             to FastAPI(), but this is orthogonal to Phase-B.
+
+          B) Extracted endpoints still work (6/6):
+             1. POST /api/upload-base64 with auth + 644B JPEG base64 → 200 with
+                {url:/api/serve-file/b64_862fd312...jpg, file_id, file_path,
+                file_type:'image'}. GET the serve-file URL → 200
+                content-type=image/jpeg size=644B ✓.
+             2. POST /api/upload-base64 without auth → 401 ✓.
+             3. POST /api/upload-base64 with 1x1 PNG (69B decoded, <128B
+                threshold) → 400 {detail:'Image too small'} ✓.
+             4. POST /api/upload-base64 with garbage '!!!!not@@@base64###' →
+                400 {detail:'Invalid base64'} ✓. (Python b64decode raised on
+                the illegal chars before the length guard triggered.)
+             5. POST /api/upload-from-url with
+                https://images.unsplash.com/photo-1716504628105-bd76d91e85f2?w=200
+                → 200 with file_type='image', url=/api/serve-file/fromurl_*.jpg ✓.
+             6. POST /api/upload-from-url with url='' → 400
+                {detail:'url must be http(s)'} ✓.
+
+          C) Adjacent server.py endpoints NOT regressed (5/5):
+             1a. POST /api/upload-video (empty body) → 422 (not 404) — route
+                 still registered in server.py line 1687.
+             1b. POST /api/upload-audio (empty body) → 422 (not 404) — route
+                 still registered in server.py line 2005.
+             2.  GET /api/marketplace/templates?limit=3 → 200 with 3 templates.
+             3.  GET /api/avatar/styles → 200 with count=11.
+             4.  POST /api/generate-prompts {idea:'test'} → 200 (LLM path).
+             5.  GET /api/wizard/ai-images/health → 200
+                 {ok:true, llm_key_configured:true, model:'gpt-image-1',
+                 tier_gate:'creator+'}.
+
+          D) Backend startup log review: NO "route already exists" errors, NO
+             duplicate-route warnings, NO stacktraces during uvicorn reload
+             after routes/uploads.py was added. Clean reload observed at
+             12:47:35 and 12:48:27 on 2026-05-01 (application startup complete
+             both times, trending recomputed, scheduler started).
+
+          Test artefact: /app/backend_test_phaseb.py (re-runnable).
+
+
+
 frontend_session_32_mobile_retest:
   - task: "AI Prompts header position (ai-prompts)"
     implemented: true
