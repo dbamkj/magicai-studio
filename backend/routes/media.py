@@ -244,8 +244,10 @@ async def transcribe_audio(file: UploadFile = File(...)):
 async def merge_segments(project_id: str, request: Request = None):
     """Concat all segments of a multi-segment project into one MP4 via ffmpeg."""
     user = await get_current_user(request)
+    # core.auth.get_current_user returns user["id"] (not user["user_id"]).
+    # Legacy server.py wrapper populated both for backward compat.
     project = await db.video_projects.find_one(
-        {"id": project_id, "user_id": user["user_id"]},
+        {"id": project_id, "user_id": user["id"]},
         {"_id": 0},
     )
     if not project:

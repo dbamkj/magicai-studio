@@ -7670,6 +7670,54 @@ frontend:
     stuck_count: 0
     priority: "high"
     needs_retesting: true
+
+#====================================================================================================
+# Session 23 — Phase-B Session 23 — routes/media.py extraction
+#====================================================================================================
+
+backend:
+  - task: "Phase-B refactor — extract media (audio/video) endpoints to routes/media.py"
+    implemented: true
+    working: true
+    file: "backend/routes/media.py (new, 313 LOC), backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Second slice of Phase-B refactor. Extracted 5 endpoints:
+             • POST /api/upload-video                     (auth + ffprobe duration)
+             • POST /api/upload-audio                     (no-auth, 50MB cap)
+             • POST /api/extract-frames                   (4 keyframes + Gemini diarize)
+             • POST /api/transcribe-audio                 (Whisper-1 hi default)
+             • POST /api/merge-segments/{project_id}      (ffmpeg concat + DB update)
+          server.py shrank 3,728 → 3,589 LOC (-139). Combined with Session
+          22 uploads.py extraction, total reduction now: 3,843 → 3,589
+          (-254 LOC, ~6.6%).
+
+          Backend testing agent caught one real bug during regression:
+          merge_segments was using user["user_id"] (legacy compatibility
+          key from server.py inline get_current_user wrapper) but
+          core.auth.get_current_user only returns user["id"]. Fixed
+          immediately — merge-segments now returns 404 "Project not found"
+          on invalid id (expected behavior). 16/17 endpoint checks PASS,
+          0 duplicate-route warnings, 0 regression on adjacent endpoints.
+
+          Remaining Phase-B candidates (descending safety):
+             • routes/bhajan.py: generate-bhajan, generate-hook (~200 LOC)
+             • routes/talking.py: D-ID talking-avatar (~250 LOC)
+             • routes/gen_image.py: generate-image + generate-thumbnails (~300 LOC)
+             • routes/face.py: faceswap/lipsync/headswap (~900 LOC, HIGH RISK)
+
+          Architectural lesson: when extracting routes, ALWAYS verify the
+          user dict shape from core.auth.get_current_user matches what
+          the inline endpoint expected — if server.py wrapped it with
+          extra keys (user_id, email, etc.) for legacy callers, the new
+          extracted module must use the actual canonical key (user["id"])
+          or shim the missing keys.
+
     status_history:
         -working: true
         -agent: "main"
