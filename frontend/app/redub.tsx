@@ -13,11 +13,19 @@ import { useMhCapabilities } from '../src/useMhCapabilities';
 import VoicePicker from '../src/VoicePicker';
 import { findVoice } from '../src/voices';
 import AuroraBackground from '../src/AuroraBackground';
+import AuthGateModal from '../src/components/AuthGateModal';
+import { useAuth } from '../src/AuthContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function RedubScreen() {
   const router = useRouter();
+  const { user } = useAuth();
+  const [showAuthGate, setShowAuthGate] = useState(false);
+  const requireLogin = (): boolean => {
+    if (!user) { setShowAuthGate(true); return false; }
+    return true;
+  };
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoPath, setVideoPath] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -90,6 +98,7 @@ export default function RedubScreen() {
   }, [charType]);
 
   const pickVideo = async () => {
+    if (!requireLogin()) return;
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') { Alert.alert('Permission needed'); return; }
@@ -106,6 +115,7 @@ export default function RedubScreen() {
   };
 
   const startRecording = async () => {
+    if (!requireLogin()) return;
     try {
       const perm = await Audio.requestPermissionsAsync();
       if (perm.status !== 'granted') { Alert.alert('Microphone Permission', 'Please grant microphone access.'); return; }
@@ -162,6 +172,7 @@ export default function RedubScreen() {
   };
 
   const pickAudio = async () => {
+    if (!requireLogin()) return;
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: 'audio/*' });
       if (!result.canceled && result.assets && result.assets[0]) {
@@ -203,6 +214,7 @@ export default function RedubScreen() {
   };
 
   const startRedub = async () => {
+    if (!requireLogin()) return;
     if (!videoPath) { Alert.alert('Upload video first'); return; }
     if (scriptMode === 'text' && !script.trim()) { Alert.alert('Enter script'); return; }
     if (scriptMode === 'audio' && !audioPath) { Alert.alert('Upload audio'); return; }
@@ -428,6 +440,12 @@ export default function RedubScreen() {
           </View>
         </View></View>
       </Modal>
+      <AuthGateModal
+        visible={showAuthGate}
+        onClose={() => setShowAuthGate(false)}
+        reason="Video Re-dub"
+        nextRoute="/redub"
+      />
     </SafeAreaView>
     </AuroraBackground>
   );

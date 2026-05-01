@@ -9,6 +9,8 @@ import { uploadImageFile, uploadVideoFile } from '../src/uploadHelper';
 import ResolutionPicker from '../src/ResolutionPicker';
 import AuroraBackground from '../src/AuroraBackground';
 import GlassHeader from '../src/components/GlassHeader';
+import AuthGateModal from '../src/components/AuthGateModal';
+import { useAuth } from '../src/AuthContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const ASPECT_RATIOS = [
@@ -26,6 +28,12 @@ interface FaceEntry { id: string; uri: string; filePath: string | null; uploadin
 
 export default function FaceSwapScreen() {
   const router = useRouter();
+  const { user } = useAuth();
+  const [showAuthGate, setShowAuthGate] = useState(false);
+  const requireLogin = (): boolean => {
+    if (!user) { setShowAuthGate(true); return false; }
+    return true;
+  };
   const params = useLocalSearchParams<{ prefill?: string; edit_of?: string }>();
   const [targetMode, setTargetMode] = useState<'video' | 'image'>('video');
   const [faces, setFaces] = useState<FaceEntry[]>([]);
@@ -112,6 +120,7 @@ export default function FaceSwapScreen() {
   }, [projectId, processing]);
 
   const addFace = async (fromCamera: boolean) => {
+    if (!requireLogin()) return;
     try {
       const { status } = fromCamera
         ? await ImagePicker.requestCameraPermissionsAsync()
@@ -136,6 +145,7 @@ export default function FaceSwapScreen() {
   };
 
   const pickVideo = async (fromCamera: boolean) => {
+    if (!requireLogin()) return;
     try {
       const { status } = fromCamera
         ? await ImagePicker.requestCameraPermissionsAsync()
@@ -193,6 +203,7 @@ export default function FaceSwapScreen() {
   };
 
   const pickTargetImage = async (fromCamera: boolean) => {
+    if (!requireLogin()) return;
     const { status } = fromCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('Permission needed'); return; }
     const r = fromCamera ? await ImagePicker.launchCameraAsync({ allowsEditing: true, quality: 0.8 }) : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.8 });
@@ -207,6 +218,7 @@ export default function FaceSwapScreen() {
   };
 
   const createFaceSwap = async () => {
+    if (!requireLogin()) return;
     const up = faces.filter(f => f.uploaded && f.filePath);
     if (!up.length) { Alert.alert('Missing Faces'); return; }
     if (targetMode === 'video' && !videoPath) { Alert.alert('Missing Video'); return; }
@@ -447,6 +459,12 @@ export default function FaceSwapScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+      <AuthGateModal
+        visible={showAuthGate}
+        onClose={() => setShowAuthGate(false)}
+        reason="Face Swap"
+        nextRoute="/faceswap"
+      />
     </SafeAreaView>
     </AuroraBackground>
   );

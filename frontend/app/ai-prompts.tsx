@@ -673,9 +673,9 @@ export default function AIPromptsScreen() {
 
       <SafeAreaView style={s.flex1} edges={['top', 'left', 'right']}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
           style={s.flex1}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+          keyboardVerticalOffset={0}
         >
         {/* Header */}
         <View style={s.header}>

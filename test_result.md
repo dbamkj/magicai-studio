@@ -7857,3 +7857,49 @@ frontend:
              • Login: apply glow to gradient 'Get Started' CTA
 
 
+
+
+  - task: "P0 Bug Fixes — Keyboard overlap, Guest AuthGate, Subscription plan visibility"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/ai-prompts.tsx, frontend/app/redub.tsx, frontend/app/faceswap.tsx, frontend/app/subscription.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 16 — Three user-reported P0 bugs from screenshots
+          (aipr3.jpeg, vdre.jpeg, plan1.jpeg) addressed in a single batch.
+
+          1. AI Prompts keyboard overlap (ai-prompts.tsx)
+             • Switched KeyboardAvoidingView behavior to "padding" on both
+               iOS and Android (Android was using "height" which collapsed
+               flex layout). keyboardVerticalOffset = 0 since SafeAreaView
+               handles the top inset already.
+
+          2. Guest AuthGate on Re-dub (redub.tsx) and Face Swap (faceswap.tsx)
+             • Imported AuthGateModal + useAuth.
+             • Added `requireLogin()` helper at the top of the component
+               that flips a `showAuthGate` state when user is null and
+               returns false to short-circuit.
+             • Gated every primary entry point: pickVideo, startRecording,
+               pickAudio, startRedub (redub.tsx); addFace, pickVideo,
+               pickTargetImage, createFaceSwap (faceswap.tsx).
+             • Mounted <AuthGateModal /> in the JSX with route-aware
+               nextRoute so the user lands back here after login.
+             • Removes the old generic "Upload Error" alerts that hid the
+               real auth requirement and breaks the conversion funnel.
+
+          3. Subscription "Free Plan CURRENT" pill for guests (subscription.tsx)
+             • Added `isGuest = !user` derived flag.
+             • Header subtitle now shows "Guest · No active plan" instead
+               of "Currently · FREE" when not logged in.
+             • `isCurrent = !isGuest && p.id === currentTier`, so neither
+               the green CURRENT pill nor the "Downgrade to Free" CTA
+               render for guests; they see Upgrade CTAs on every plan.
+
+          User-verification pending. No backend changes; backend already
+          has 401 on the relevant POSTs which is the safety net.
+

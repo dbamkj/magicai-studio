@@ -182,6 +182,9 @@ export default function SubscriptionScreen() {
     );
   }
 
+  // Guest users (not logged in) should NOT see any plan as "current".
+  // Show their state as "Guest · No active plan" instead of "FREE".
+  const isGuest = !user;
   const currentTier = user?.subscription_tier || 'free';
 
   return (
@@ -195,7 +198,7 @@ export default function SubscriptionScreen() {
           <GlassHeader
             icon="diamond"
             title="Plans & Pricing"
-            subtitle={`Currently · ${currentTier.toUpperCase()}`}
+            subtitle={isGuest ? 'Guest · No active plan' : `Currently · ${currentTier.toUpperCase()}`}
             onBack={() => router.back()}
             style={{ marginBottom: 14, paddingHorizontal: 0 }}
           />
@@ -275,7 +278,7 @@ export default function SubscriptionScreen() {
           {/* Plan cards */}
           <View style={{ gap: 14, marginTop: 10 }}>
             {plans.map(p => {
-              const isCurrent = p.id === currentTier;
+              const isCurrent = !isGuest && p.id === currentTier;
               const accent = ACCENT_BY_TIER[p.id];
               const popular = !!p.highlight;
               const displayedPrice = billingCycle === 'annual' ? (p.price_annual_inr || p.price_inr * annualInfo.multiplier) : p.price_inr;
