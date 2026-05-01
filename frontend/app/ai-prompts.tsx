@@ -12,16 +12,17 @@
  *         → Creative Plan → Pixabay + Sarvam + BGM → MP4
  */
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
-  ActivityIndicator, KeyboardAvoidingView, Platform, Alert, Pressable,
+  ActivityIndicator, KeyboardAvoidingView, Platform, Pressable,
 } from 'react-native';
 import { router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import Animated, {
   FadeIn, FadeInDown, FadeOut, Layout,
+  useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming,
 } from 'react-native-reanimated';
 import AuroraBackground from '../src/AuroraBackground';
 import * as theme from '../src/theme';
@@ -86,6 +87,8 @@ export default function AIPromptsScreen() {
   const [result, setResult] = useState<Response | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [previewPrompt, setPreviewPrompt] = useState<PromptOption | null>(null);
+  const [lastIdea, setLastIdea] = useState<string>('');   // chat bubble persistence
   const lastCallRef = useRef<string>('');
 
   const canSubmit = idea.trim().length >= 3 && !loading;
@@ -100,6 +103,7 @@ export default function AIPromptsScreen() {
       const callId = `${trimmed}|${language}|${opts?.forceRefresh ? 'R' : ''}|${Date.now()}`;
       lastCallRef.current = callId;
       setLoading(true); setError(null); setSelectedId(null);
+      setLastIdea(trimmed);   // show as chat bubble
       try {
         const { data } = await axios.post<Response>(
           `${BACKEND_URL}/api/generate-prompts`,
@@ -148,12 +152,17 @@ export default function AIPromptsScreen() {
   }, [idea, language, result]);
 
   const onPreview = useCallback((p: PromptOption) => {
-    Alert.alert(
-      p.title,
-      `HOOK\n${p.hook}\n\nVOICE  ·  ${p.voice_type}\nMUSIC  ·  ${p.music_type}\nDURATION  ·  ${p.duration}s\nMOOD  ·  ${p.mood}\nSTYLE  ·  ${p.style_tag}${p.cta ? `\n\nCTA  ·  ${p.cta}` : ''}${p.hashtags?.length ? `\n\n${p.hashtags.join('  ')}` : ''}`,
-      [{ text: 'Close', style: 'cancel' }, { text: 'Use this', onPress: () => onUseThis(p) }],
-    );
-  }, [onUseThis]);
+    setPreviewPrompt(p);
+  }, []);
+
+  const closePreview = useCallback(() => setPreviewPrompt(null), []);
+  const useFromPreview = useCallback(() => {
+    if (previewPrompt) {
+      const p = previewPrompt;
+      setPreviewPrompt(null);
+      setTimeout(() => onUseThis(p), 150);
+    }
+  }, [previewPrompt, onUseThis]);
 
   const aspectLabel = useMemo(() => '9:16 (Reel)', []);
 
@@ -185,6 +194,41 @@ export default function AIPromptsScreen() {
               <Text style={s.title}>What do you want to create?</Text>
             </View>
           </View>
+
+          {/* Chat bubble — user's idea (chat-style feedback) */}
+          {(loading || result) && lastIdea && (
+            <Animated.View
+              entering={FadeInDown.duration(280)}
+              style={s.chatBubbleRow}
+            >
+              <View style={s.chatAvatarUser}>
+                <Text style={s.chatAvatarText}>YOU</Text>
+              </View>
+              <View style={s.chatBubbleUser}>
+                <Text style={s.chatBubbleText} numberOfLines={3}>
+                  {lastIdea}
+                </Text>
+              </View>
+            </Animated.View>
+          )}
+
+          {/* Chat bubble — AI thinking indicator (animated 3-dot typing) */}
+          {loading && (
+            <Animated.View
+              entering={FadeInDown.duration(280)}
+              style={[s.chatBubbleRow, s.chatBubbleRowAI]}
+            >
+              <View style={s.chatAvatarAI}>
+                <Ionicons name="sparkles" size={14} color="#fff" />
+              </View>
+              <View style={s.chatBubbleAI}>
+                <TypingDots />
+                <Text style={s.chatBubbleTextMuted}>
+                  Crafting 3 prompt options…
+                </Text>
+              </View>
+            </Animated.View>
+          )}
 
           {/* Input card */}
           <View style={s.inputCard}>
@@ -272,14 +316,7 @@ export default function AIPromptsScreen() {
             </Animated.View>
           )}
 
-          {/* Loading skeleton */}
-          {loading && (
-            <Animated.View entering={FadeIn} exiting={FadeOut} style={s.loadingBlock}>
-              <ActivityIndicator size="large" color={theme.aurora.pink} />
-              <Text style={s.loadingText}>AI is crafting 3 prompt options…</Text>
-              <Text style={s.loadingSub}>Analyzing category · mood · voice · scenes</Text>
-            </Animated.View>
-          )}
+          {/* Loading skeleton shown inline via chat bubble above */}
 
           {/* Detected context */}
           {result && !loading && (
@@ -387,6 +424,126 @@ export default function AIPromptsScreen() {
           <View style={{ height: 80 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Preview overlay — absolute-positioned View (works on web + native,
+             unlike React Native's <Modal> which can mis-render on web). */}
+      {previewPrompt && (
+        <Animated.View
+          entering={FadeIn.duration(180)}
+          exiting={FadeOut.duration(150)}
+          style={s.modalBackdrop}
+          pointerEvents="auto"
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closePreview}
+          />
+          <Animated.View
+            entering={FadeInDown.springify().damping(16)}
+            style={s.modalCard}
+          >
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 8 }}
+            >
+              <View style={s.modalHeader}>
+                <View style={s.modalBadge}>
+                  <Text style={s.modalBadgeText}>PREVIEW</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={closePreview}
+                  hitSlop={12}
+                  style={s.modalClose}
+                >
+                  <Ionicons name="close" size={20} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={s.modalTitle}>{previewPrompt.title}</Text>
+              <View style={s.modalHookBox}>
+                <Text style={s.modalHookLabel}>HOOK</Text>
+                <Text style={s.modalHook}>“{previewPrompt.hook}”</Text>
+              </View>
+
+              <View style={s.modalMetaGrid}>
+                <ModalMetaRow icon="🎙️" label="Voice"    value={previewPrompt.voice_type} />
+                <ModalMetaRow icon="🎵" label="Music"    value={previewPrompt.music_type} />
+                <ModalMetaRow icon="⏱️" label="Duration" value={`${previewPrompt.duration}s`} />
+                <ModalMetaRow icon="💫" label="Mood"     value={previewPrompt.mood} />
+                <ModalMetaRow icon="🎨" label="Style"    value={previewPrompt.style_tag} />
+                {previewPrompt.cta ? (
+                  <ModalMetaRow icon="📣" label="CTA"     value={previewPrompt.cta} />
+                ) : null}
+              </View>
+
+              {previewPrompt.hashtags && previewPrompt.hashtags.length > 0 && (
+                <Text style={s.modalHashtags}>
+                  {previewPrompt.hashtags.join('  ')}
+                </Text>
+              )}
+
+              <View style={s.modalActions}>
+                <TouchableOpacity
+                  onPress={closePreview}
+                  style={s.modalCloseBtn}
+                  activeOpacity={0.8}
+                >
+                  <Text style={s.modalCloseBtnText}>Close</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={useFromPreview}
+                  style={s.modalUseBtn}
+                  activeOpacity={0.85}
+                >
+                  <Text style={s.modalUseBtnText}>Use this ✨</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </Animated.View>
+        </Animated.View>
+      )}
+    </View>
+  );
+}
+
+// ────────────────────────────── TypingDots (animated 3-dot chat indicator) ──
+
+function TypingDots() {
+  const d1 = useSharedValue(0.35);
+  const d2 = useSharedValue(0.35);
+  const d3 = useSharedValue(0.35);
+
+  useEffect(() => {
+    const cfg = { duration: 360 };
+    d1.value = withRepeat(withSequence(withTiming(1, cfg), withTiming(0.35, cfg)), -1);
+    d2.value = withRepeat(withSequence(
+      withTiming(0.35, cfg), withTiming(1, cfg), withTiming(0.35, cfg),
+    ), -1);
+    d3.value = withRepeat(withSequence(
+      withTiming(0.35, cfg), withTiming(0.35, cfg),
+      withTiming(1, cfg), withTiming(0.35, cfg),
+    ), -1);
+  }, [d1, d2, d3]);
+
+  const s1 = useAnimatedStyle(() => ({ opacity: d1.value, transform: [{ scale: 0.8 + d1.value * 0.4 }] }));
+  const s2 = useAnimatedStyle(() => ({ opacity: d2.value, transform: [{ scale: 0.8 + d2.value * 0.4 }] }));
+  const s3 = useAnimatedStyle(() => ({ opacity: d3.value, transform: [{ scale: 0.8 + d3.value * 0.4 }] }));
+
+  return (
+    <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center', marginBottom: 6 }}>
+      <Animated.View style={[{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.aurora.pink }, s1]} />
+      <Animated.View style={[{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.aurora.pink }, s2]} />
+      <Animated.View style={[{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.aurora.pink }, s3]} />
+    </View>
+  );
+}
+
+function ModalMetaRow({ icon, label, value }: { icon: string; label: string; value: string }) {
+  return (
+    <View style={s.modalMetaRow}>
+      <Text style={s.modalMetaIcon}>{icon}</Text>
+      <Text style={s.modalMetaLabel}>{label}</Text>
+      <Text style={s.modalMetaValue} numberOfLines={2}>{value}</Text>
     </View>
   );
 }
@@ -638,4 +795,127 @@ const s = StyleSheet.create({
     color: theme.text.faint, fontSize: 12, textAlign: 'center',
     marginTop: theme.space.sm, marginBottom: theme.space.md,
   },
+
+  /* ── Chat bubbles (hybrid chat feel) ── */
+  chatBubbleRow: {
+    flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+    marginBottom: theme.space.sm,
+  },
+  chatBubbleRowAI: { marginBottom: theme.space.md },
+  chatAvatarUser: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: theme.aurora.orange,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  chatAvatarAI: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: theme.aurora.pink,
+    alignItems: 'center', justifyContent: 'center',
+    ...(theme.shadow.glow as any),
+  },
+  chatAvatarText: { color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  chatBubbleUser: {
+    flex: 1,
+    backgroundColor: `${theme.aurora.orange}1F`,
+    borderWidth: 1, borderColor: `${theme.aurora.orange}66`,
+    borderRadius: theme.radius.lg,
+    borderBottomLeftRadius: 4,
+    paddingHorizontal: 12, paddingVertical: 10,
+  },
+  chatBubbleAI: {
+    flex: 1,
+    backgroundColor: theme.glass.backgroundStrong,
+    borderWidth: 1, borderColor: theme.glass.borderStrong,
+    borderRadius: theme.radius.lg,
+    borderBottomLeftRadius: 4,
+    paddingHorizontal: 14, paddingVertical: 12,
+  },
+  chatBubbleText: { color: theme.text.primary, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  chatBubbleTextMuted: { color: theme.text.muted, fontSize: 13, fontWeight: '600' },
+
+  /* ── Preview overlay (absolute-positioned, web + native safe) ── */
+  modalBackdrop: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(4,2,16,0.78)',
+    justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: theme.space.md,
+    zIndex: 1000,
+  },
+  modalCard: {
+    width: '100%', maxWidth: 480, maxHeight: '88%',
+    backgroundColor: '#1A1446',
+    borderRadius: theme.radius.xl,
+    borderWidth: 1, borderColor: theme.glass.borderStrong,
+    padding: theme.space.md,
+    ...(theme.shadow.glow as any),
+  },
+  modalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: theme.space.sm,
+  },
+  modalBadge: {
+    paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: `${theme.aurora.pink}33`,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: `${theme.aurora.pink}77`,
+  },
+  modalBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  modalClose: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.glass.background,
+    borderWidth: 1, borderColor: theme.glass.border,
+  },
+  modalTitle: {
+    color: theme.text.primary, fontSize: 22, fontWeight: '800',
+    lineHeight: 28, marginBottom: 10,
+  },
+  modalHookBox: {
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    borderRadius: theme.radius.md,
+    padding: 12,
+    borderLeftWidth: 3, borderLeftColor: theme.aurora.pink,
+    marginBottom: theme.space.sm,
+  },
+  modalHookLabel: {
+    color: theme.aurora.pink, fontSize: 10, fontWeight: '800',
+    letterSpacing: 1.2, marginBottom: 4,
+  },
+  modalHook: {
+    color: theme.text.primary, fontSize: 15, fontStyle: 'italic', lineHeight: 22,
+  },
+  modalMetaGrid: { gap: 6, marginBottom: theme.space.sm },
+  modalMetaRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 6, paddingHorizontal: 10,
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    borderRadius: theme.radius.sm,
+  },
+  modalMetaIcon: { fontSize: 14 },
+  modalMetaLabel: {
+    color: theme.text.muted, fontSize: 11, fontWeight: '700',
+    textTransform: 'uppercase', letterSpacing: 0.6, width: 70,
+  },
+  modalMetaValue: { color: theme.text.primary, fontSize: 13, fontWeight: '700', flex: 1 },
+  modalHashtags: {
+    color: theme.aurora.blue, fontSize: 12, fontWeight: '700',
+    marginBottom: theme.space.sm, letterSpacing: 0.3,
+  },
+  modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  modalCloseBtn: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12,
+    backgroundColor: theme.glass.background,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.glass.border,
+  },
+  modalCloseBtnText: { color: theme.text.primary, fontSize: 14, fontWeight: '700' },
+  modalUseBtn: {
+    flex: 1.3, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12,
+    backgroundColor: theme.aurora.pink,
+    borderRadius: theme.radius.pill,
+    ...(theme.shadow.glow as any),
+  },
+  modalUseBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });
