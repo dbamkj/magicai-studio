@@ -8095,3 +8095,173 @@ backend:
           subtext, and the four feature chips at the bottom.
 
 
+
+
+session_creative_plan_engine_e2e:
+  - task: "Creative Plan Engine — POST /api/creative-plan + GET /api/creative-plan/{id} + wizard wiring"
+    implemented: true
+    working: true
+    file: "backend/routes/creative_plan.py, backend/routes/wizard.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          FULL PASS 30/30 against
+          https://creative-plan-engine.preview.emergentagent.com.
+          Creative Plan Engine end-to-end pipeline verified — including
+          actual reel completion within 30s.
+
+          === 1. POST /api/creative-plan ===
+          1a Krishna Hindi (idea='Krishna devotional bhajan' lang=hindi
+            duration=15 scene_count=3) → 200 in 5.28s, source=llm,
+            creative_plan_id=cp_396de7e37440. All 7 required keys
+            present. script has EXACTLY 3 entries in Devanagari
+            (sample: 'इस भजन में श्री कृष्ण की महिमा का गुणगान किया गया है।').
+            scene_keywords has 3 entries ALL in English
+            (['krishna idol temple', 'devotional music gathering',
+              'people praying with diyas']).
+            hook='भगवान श्री कृष्ण को समर्पित भजन का अद्भुत अनुभव!',
+            voice_style='devotional warm slow',
+            bgm_style='indian classical flute', mood='spiritual'.
+          1b SAME body re-issued → 200 in 0.05s, source='cache',
+            creative_plan_id IDENTICAL to 1a (cp_396de7e37440). Cache
+            hit verified by content-hash key.
+          1c template_id (mp_bhajan_01 from
+            /api/marketplace/templates) → 200, plan derived from
+            template (idea_len=184), all required fields populated.
+          1d Empty body (no idea, no template_id) → 400
+            {"detail":"Provide either 'idea' or 'template_id'."}.
+          1e English motivational (idea='Energetic morning workout
+            motivation' lang=english duration=20 scene_count=4) → 200,
+            script has 4 English entries (sample: "Rise and shine!
+            It's time to awaken your potential."), scene_keywords has
+            4 English entries (['sunrise workout',
+            'high intensity exercises', 'fitness motivation',
+            'victorious finish']), voice_style='energetic confident',
+            mood='energetic', bgm_style='upbeat motivational pop' —
+            all match motivational vibe.
+
+          === 2. GET /api/creative-plan/{plan_id} ===
+          2a Valid id (cp_396de7e37440) → 200 with full plan doc
+            (keys: creative_plan_id, cache_key, idea, template_id,
+            language, duration, scene_count, source, hook, script,
+            scene_keywords, voice_style, bgm_style, mood, created_at).
+          2b Bogus id (cp_bogusxxxxxx) → 404
+            {"detail":"Creative plan not found"}.
+
+          === 3. End-to-end /api/wizard/create-reel ===
+          NOTE on payload shape: CreateReelRequest (wizard.py:73-76)
+          still requires `script` (min_length=3) and `image_query`
+          (min_length=2) as Pydantic-required fields. The frontend
+          create-wizard.tsx (lines 318-329) sends cp.hook as `script`
+          and cp.scene_keywords[0] as `image_query` placeholders ALONG
+          WITH creative_plan_id. The worker then overrides both from
+          the plan inside _process_reel (wizard.py:837-841). The
+          review request body did NOT include those two fields, which
+          would 422 in production too — I matched the frontend's
+          actual payload shape.
+
+          3a Krishna Hindi plan available (cp_396de7e37440 from 1a).
+          3b POST /api/wizard/create-reel with auth (demo_creator)
+            body={creative_plan_id, script:<plan.hook>,
+                  image_query:'krishna idol temple', mode:'video',
+                  total_duration:10, voice_id:'en-US-JennyNeural',
+                  music_mood:'cinematic_epic', user_tier:'creator',
+                  lang:'hindi'}
+            → 200 {job_id:'wz_6474008ad625', status:'queued'}.
+          3c/3d Polled GET /api/wizard/job/{id} every 5s — completed
+            end-to-end in ~30s:
+              t+0s : stage=fetch_scenes status=processing progress=10%
+              t+20s: stage=tts          status=processing progress=70%
+              t+25s: stage=done         status=completed progress=100%
+            Stages traversed: fetch_scenes → tts → done.
+          3e CRITICAL — backend log inspection PASSED:
+            ✓ 'wizard: applied creative_plan cp_396de7e37440 —
+                voice_style=devotional music_mood=devotional_peaceful
+                scenes=3'
+              (proves the consumer is actually using the plan: voice
+               style mapped from 'devotional warm slow' →
+               'devotional', bgm 'indian classical flute' →
+               'devotional_peaceful', and scenes count derived from
+               the plan's scene_keywords array.)
+            ✓ 'wizard: auto-switched voice to Hindi
+                hi-IN-MadhurNeural for plan_lang=hindi'
+              (proves language-aware voice swap fired — the requested
+               voice_id en-US-JennyNeural was overridden because the
+               plan language is Hindi. MadhurNeural was chosen because
+               voice_style mapped to 'devotional' which routes to a
+               male voice per wizard.py:862-865.)
+
+          === 4. /openapi.json route registration ===
+          GET http://localhost:8001/openapi.json (124 paths total) —
+          /api/creative-plan registered EXACTLY once (POST),
+          /api/creative-plan/{plan_id} registered EXACTLY once (GET).
+          No duplicate registrations, no trailing-slash variants.
+          NOTE: Public preview URL /openapi.json returns 404 because
+          the K8s ingress only proxies /api/* prefixes — confirmed
+          internal port returns the full schema.
+
+          === Backend logs ===
+          NO 5xx errors during the test session. NO startup warnings,
+          NO duplicate-route errors. emergentintegrations + LiteLLM
+          gpt-4o-mini calls succeeded for both 1a (LLM) and 1e (LLM)
+          plans. All other plan requests (1b, 1c, 1e re-test) hit the
+          Mongo cache.
+
+          Test artefact: /app/backend_test_creative_plan.py (re-runnable).
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Creative Plan Engine end-to-end test COMPLETE. ALL 30/30 PASSED.
+
+      ✅ POST /api/creative-plan
+         - 1a Krishna Hindi → llm, 3 Devanagari script entries,
+              3 English scene_keywords, voice_style='devotional warm
+              slow', bgm_style='indian classical flute', mood='spiritual'
+         - 1b same body → cache hit, identical creative_plan_id
+         - 1c template_id (mp_bhajan_01) → derives idea, returns plan
+         - 1d empty body → 400
+         - 1e English motivational → 4 English scenes, 4 English
+              keywords, voice_style='energetic confident',
+              mood='energetic', bgm='upbeat motivational pop'
+
+      ✅ GET /api/creative-plan/{id}
+         - valid id → 200 full plan
+         - bogus id → 404
+
+      ✅ End-to-end /api/wizard/create-reel with creative_plan_id
+         - Returned 200 + job_id immediately
+         - Polled job: fetch_scenes (10%) → tts (70%) → done (100%)
+           in ~30s. status=completed (well within 90s timeout)
+         - Backend logs CONFIRM:
+           "wizard: applied creative_plan cp_396de7e37440 —
+            voice_style=devotional music_mood=devotional_peaceful
+            scenes=3"
+           "wizard: auto-switched voice to Hindi hi-IN-MadhurNeural
+            for plan_lang=hindi"
+
+      ✅ /openapi.json — both creative-plan paths registered EXACTLY
+         once.
+
+      Notes for main agent:
+        - The review request's create-reel body OMITTED `script` and
+          `image_query`, which causes 422 since CreateReelRequest
+          still has them as required fields. The frontend already
+          sends plan.hook as script and plan.scene_keywords[0] as
+          image_query placeholders — I matched that shape and the
+          job ran perfectly. If you'd like the API to accept
+          creative_plan_id as a true override (no placeholders), make
+          script + image_query Optional in CreateReelRequest and add
+          a 400 validator that requires either both fields OR a
+          valid creative_plan_id. Not blocking.
+        - Mode='video' produced a successful end-to-end reel with
+          Pixabay scene fetches + Sarvam/Edge TTS in ~30s.
+
+      Test artefact: /app/backend_test_creative_plan.py.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
