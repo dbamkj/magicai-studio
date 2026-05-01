@@ -1,33 +1,42 @@
 /**
- * AI Prompt Selection — V2.0 ChatGPT-style wizard.
+ * AI Prompts — V2.0 True Chat Architecture (Phase C+ & C++).
  *
- * User types an idea → we call POST /api/generate-prompts → show:
- *   • Auto-detected context pill (category · mood · voice · scenes)
- *   • 3 Glassmorphism prompt cards (title · hook · voice · music · duration · mood)
- *     each with "Preview" + "Use This" actions
- *   • "Regenerate" pill + quick-idea chips
+ * Hybrid ChatGPT-style conversation surface:
+ *   • Scrollable message list (FlatList) — each generation = a new turn
+ *     (user idea bubble + AI reply containing detected-context card + 3
+ *     prompt option cards stacked vertically inside the same bubble).
+ *   • Fixed bottom composer with: language picker, style boost toggles
+ *     (Emotional / Cinematic), Send button, suggestion chips on empty.
+ *   • Debounce auto-fire: if the user pauses typing 800ms with ≥ 12 chars,
+ *     we auto-call /api/generate-prompts (cache + LRU keep this cheap).
+ *   • Skeleton loading bubble while LLM is thinking.
+ *   • "Recommended" badge on the highest-scored prompt option.
+ *   • Per-prompt "Preview" plays a 2-sec Sarvam TTS hook clip via expo-av.
+ *   • 429 rate-limit → inline AI bubble with reset time + Upgrade CTA.
  *
- * Pipeline:  Idea → /api/generate-prompts (GPT-4o-mini)
- *         → user picks one → navigate('/create-wizard', { prompt: ... })
- *         → Creative Plan → Pixabay + Sarvam + BGM → MP4
+ * Picking a prompt → write `mp_template_prefill` → push /create-wizard.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
+  View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable,
+  FlatList, ScrollView,
 } from 'react-native';
 import { router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import Animated, {
-  FadeIn, FadeInDown, FadeOut, Layout,
+  FadeIn, FadeInDown, FadeOut,
   useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming,
 } from 'react-native-reanimated';
+import { Audio } from 'expo-av';
 import AuroraBackground from '../src/AuroraBackground';
 import * as theme from '../src/theme';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+
+// ─── Types ─────────────────────────────────────────────────────────────────
 
 type Detected = {
   category: string;
@@ -47,18 +56,67 @@ type PromptOption = {
   style_tag: string;
   hashtags?: string[];
   cta?: string;
+  score?: number;
 };
 
-type Response = {
+type StyleBoost = 'default' | 'emotional' | 'cinematic';
+
+type RateLimit = {
+  used: number;
+  limit: number;
+  remaining: number;
+  reset_at: string;
+  blocked?: boolean;
+  retry_after_s?: number;
+  tier?: string;
+};
+
+type ApiSuccess = {
   detected: Detected;
   prompts: PromptOption[];
   cached: boolean;
   tokens_used: number;
   source: 'llm' | 'cache' | 'fallback';
+  style_boost: StyleBoost;
+  rate_limit: RateLimit;
 };
 
-const LANGS = ['english', 'hindi', 'hinglish', 'tamil', 'telugu', 'marathi'] as const;
-type Lang = typeof LANGS[number];
+type Lang = 'english' | 'hindi' | 'hinglish' | 'tamil' | 'telugu' | 'marathi';
+const LANGS: Lang[] = ['english', 'hindi', 'hinglish', 'tamil', 'telugu', 'marathi'];
+
+// User turn: the idea they sent
+// AI turn: result | loading | error | rate_limited
+type UserMsg = {
+  id: string;
+  role: 'user';
+  text: string;
+  language: Lang;
+  style_boost: StyleBoost;
+  ts: number;
+};
+
+type AiMsg = {
+  id: string;
+  role: 'ai';
+  ts: number;
+  status: 'loading' | 'success' | 'error' | 'rate_limited' | 'welcome';
+  // success
+  detected?: Detected;
+  prompts?: PromptOption[];
+  source?: 'llm' | 'cache' | 'fallback';
+  tokens_used?: number;
+  style_boost?: StyleBoost;
+  // error
+  error?: string;
+  // rate_limited
+  rate_limit?: RateLimit;
+  // ref to the user turn
+  parentUserId?: string;
+};
+
+type ChatMsg = UserMsg | AiMsg;
+
+// ─── Constants ─────────────────────────────────────────────────────────────
 
 const QUICK_IDEAS = [
   'Krishna bhajan devotional reel',
@@ -80,24 +138,22 @@ const MOOD_COLORS: Record<string, string> = {
   playful: '#FBBF24', dramatic: '#F43F5E',
 };
 
-// ─── Mappers from LLM-free-form fields to existing pipeline IDs ───────────
-// Keep these tiny & deterministic so the handoff stays predictable.
+const DEBOUNCE_MS = 800;
+const MIN_AUTO_FIRE_LEN = 12;
+
+// ─── Mappers (LLM-free fields → existing pipeline IDs) ─────────────────────
 
 function mapVoiceToId(voiceType: string, language: string): string {
   const v = (voiceType || '').toLowerCase();
   const isFemale = /female|anushka|manisha|vidya|jenny|inspiring_female|confident_female|gentle_female|enthusiastic_female/.test(v);
   const lang = (language || 'english').toLowerCase();
-  // Hindi / Hinglish / Indic → Sarvam speakers
   if (['hindi', 'hinglish', 'tamil', 'telugu', 'marathi'].includes(lang)) {
-    if (v.includes('warm') || v.includes('calm') || v.includes('storyteller')) {
+    if (v.includes('warm') || v.includes('calm') || v.includes('storyteller'))
       return isFemale ? 'sarvam:manisha' : 'sarvam:meera';
-    }
-    if (v.includes('energetic') || v.includes('confident')) {
+    if (v.includes('energetic') || v.includes('confident'))
       return isFemale ? 'sarvam:anushka' : 'sarvam:arvind';
-    }
     return isFemale ? 'sarvam:manisha' : 'sarvam:meera';
   }
-  // English fallback — MS Edge Neural
   if (v.includes('warm') || v.includes('calm') || v.includes('storyteller'))
     return isFemale ? 'en-US-JennyNeural' : 'en-US-GuyNeural';
   if (v.includes('energetic') || v.includes('confident'))
@@ -124,74 +180,240 @@ function mapStyleToMotion(styleTag: string): string {
   return 'auto';
 }
 
+function formatRelativeReset(iso?: string): string {
+  if (!iso) return 'shortly';
+  try {
+    const dt = new Date(iso);
+    const now = new Date();
+    const diffMs = dt.getTime() - now.getTime();
+    if (diffMs <= 0) return 'now';
+    const m = Math.ceil(diffMs / 60000);
+    if (m < 60) return `in ~${m} min`;
+    const h = Math.ceil(m / 60);
+    return `in ~${h}h`;
+  } catch {
+    return 'shortly';
+  }
+}
+
+// Tiny pure-JS base64 encoder for native fallback when btoa is missing.
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function encodeBase64(input: string): string {
+  let out = '';
+  let i = 0;
+  while (i < input.length) {
+    const c1 = input.charCodeAt(i++) & 0xff;
+    const c2 = input.charCodeAt(i++) & 0xff;
+    const c3 = input.charCodeAt(i++) & 0xff;
+    const e1 = c1 >> 2;
+    const e2 = ((c1 & 3) << 4) | (c2 >> 4);
+    const e3 = ((c2 & 15) << 2) | (c3 >> 6);
+    const e4 = c3 & 63;
+    out += B64_CHARS[e1] + B64_CHARS[e2];
+    out += i - 1 > input.length ? '=' : B64_CHARS[e3];
+    out += i > input.length ? '=' : B64_CHARS[e4];
+  }
+  return out;
+}
+
+// ─── Screen ────────────────────────────────────────────────────────────────
+
 export default function AIPromptsScreen() {
-  const [idea, setIdea] = useState('');
+  const [messages, setMessages] = useState<ChatMsg[]>([
+    {
+      id: 'welcome',
+      role: 'ai',
+      ts: Date.now(),
+      status: 'welcome',
+    },
+  ]);
+  const [input, setInput] = useState('');
   const [language, setLanguage] = useState<Lang>('english');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<Response | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [previewPrompt, setPreviewPrompt] = useState<PromptOption | null>(null);
-  const [lastIdea, setLastIdea] = useState<string>('');   // chat bubble persistence
+  const [styleBoost, setStyleBoost] = useState<StyleBoost>('default');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const listRef = useRef<FlatList<ChatMsg>>(null);
   const lastCallRef = useRef<string>('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const canSubmit = idea.trim().length >= 3 && !loading;
+  // ── Audio preview (singleton) ──
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const [playingPromptId, setPlayingPromptId] = useState<string | null>(null);
 
-  const fetchPrompts = useCallback(
-    async (opts?: { forceRefresh?: boolean }) => {
-      const trimmed = idea.trim();
-      if (trimmed.length < 3) {
-        setError('Type at least 3 characters.');
-        return;
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (soundRef.current) {
+        soundRef.current.unloadAsync().catch(() => {});
       }
-      const callId = `${trimmed}|${language}|${opts?.forceRefresh ? 'R' : ''}|${Date.now()}`;
-      lastCallRef.current = callId;
-      setLoading(true); setError(null); setSelectedId(null);
-      setLastIdea(trimmed);   // show as chat bubble
+    };
+  }, []);
+
+  // Audio session config (iOS) — speakers, no recording.
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      shouldDuckAndroid: true,
+    }).catch(() => {});
+  }, []);
+
+  const scrollToEnd = useCallback(() => {
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated: true });
+    });
+  }, []);
+
+  // ── Send turn ─────────────────────────────────────────────────────────
+  const sendTurn = useCallback(
+    async (rawIdea: string, opts?: { forceRefresh?: boolean; isAuto?: boolean }) => {
+      const idea = rawIdea.trim();
+      if (idea.length < 3) return;
+
+      const userId = `u_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const aiId = `a_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const callKey = `${idea}|${language}|${styleBoost}|${opts?.forceRefresh ? 'R' : ''}`;
+      lastCallRef.current = callKey;
+
+      setMessages((prev) => [
+        // Drop stale loading bubbles from prior auto-fire so we never stack
+        ...prev.filter((m) => !(m.role === 'ai' && m.status === 'loading')),
+        {
+          id: userId, role: 'user', text: idea, language, style_boost: styleBoost,
+          ts: Date.now(),
+        } as UserMsg,
+        {
+          id: aiId, role: 'ai', status: 'loading',
+          ts: Date.now(), parentUserId: userId,
+        } as AiMsg,
+      ]);
+      setIsLoading(true);
+      scrollToEnd();
+
       try {
-        const { data } = await axios.post<Response>(
+        const { data } = await axios.post<ApiSuccess>(
           `${BACKEND_URL}/api/generate-prompts`,
           {
-            idea: trimmed,
-            language,
-            aspect: '9:16',
+            idea, language, aspect: '9:16',
+            style_boost: styleBoost,
             force_refresh: !!opts?.forceRefresh,
           },
           { timeout: 45000 },
         );
-        if (lastCallRef.current !== callId) return;    // stale
-        setResult(data);
+
+        // Stale-call guard — if the user has sent a newer turn, ignore this
+        if (lastCallRef.current !== callKey) return;
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === aiId
+              ? ({
+                  ...m,
+                  status: 'success',
+                  detected: data.detected,
+                  prompts: data.prompts,
+                  source: data.source,
+                  tokens_used: data.tokens_used,
+                  style_boost: data.style_boost,
+                  rate_limit: data.rate_limit,
+                } as AiMsg)
+              : m,
+          ),
+        );
       } catch (e: any) {
-        if (lastCallRef.current !== callId) return;
-        const msg = e?.response?.data?.detail?.message
-          || e?.response?.data?.detail
-          || e?.message
-          || 'Failed to generate prompts.';
-        setError(typeof msg === 'string' ? msg : JSON.stringify(msg));
+        if (lastCallRef.current !== callKey) return;
+        const status = e?.response?.status;
+        const detail = e?.response?.data?.detail;
+
+        if (status === 429 && detail && typeof detail === 'object') {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === aiId
+                ? ({
+                    ...m,
+                    status: 'rate_limited',
+                    rate_limit: detail.rate_limit,
+                    error: detail.message || 'Rate limit reached.',
+                  } as AiMsg)
+                : m,
+            ),
+          );
+        } else {
+          const msg =
+            (typeof detail === 'string' ? detail : detail?.message)
+            || e?.message
+            || 'Failed to generate prompts.';
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === aiId
+                ? ({ ...m, status: 'error', error: typeof msg === 'string' ? msg : JSON.stringify(msg) } as AiMsg)
+                : m,
+            ),
+          );
+        }
       } finally {
-        if (lastCallRef.current === callId) setLoading(false);
+        if (lastCallRef.current === callKey) setIsLoading(false);
+        scrollToEnd();
       }
     },
-    [idea, language],
+    [language, styleBoost, scrollToEnd],
   );
 
-  const onUseThis = useCallback((p: PromptOption) => {
-    setSelectedId(p.id);
-    // D2 — One-tap auto-render:
-    // Convert the picked prompt into the wizard's existing `mp_template_prefill`
-    // shape. The wizard already watches for this key and auto-jumps to
-    // step='progress' → fires /api/wizard/create-reel. Zero-click magic.
-    (async () => {
+  // ── Debounce auto-fire (Phase C+ #2) ─────────────────────────────────
+  const scheduleAutoFire = useCallback(
+    (text: string) => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      const t = text.trim();
+      if (t.length < MIN_AUTO_FIRE_LEN) return;
+      debounceRef.current = setTimeout(() => {
+        // Only auto-fire if user hasn't already sent this exact idea this session
+        const alreadySent = messages.some(
+          (m) => m.role === 'user' && (m as UserMsg).text === t,
+        );
+        if (!alreadySent && !isLoading) {
+          sendTurn(t, { isAuto: true });
+        }
+      }, DEBOUNCE_MS);
+    },
+    [messages, isLoading, sendTurn],
+  );
+
+  const onChangeIdea = useCallback(
+    (txt: string) => {
+      setInput(txt);
+      scheduleAutoFire(txt);
+    },
+    [scheduleAutoFire],
+  );
+
+  const onSend = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const t = input.trim();
+    if (!t) return;
+    sendTurn(t);
+    setInput('');
+  }, [input, sendTurn]);
+
+  const onRegenerate = useCallback(
+    (idea: string) => {
+      sendTurn(idea, { forceRefresh: true });
+    },
+    [sendTurn],
+  );
+
+  // ── Pick "Use this" ──────────────────────────────────────────────────
+  const onUseThis = useCallback(
+    async (p: PromptOption, ideaText: string, det?: Detected) => {
       try {
         const prefill = {
           id: `aiprompt_${p.id}_${Date.now()}`,
           title: p.title,
           tagline: p.hook,
-          idea: idea.trim(),
-          script: p.hook || idea.trim(),
+          idea: ideaText,
+          script: p.hook || ideaText,
           image_query:
-            (result?.detected?.scene_keywords || []).slice(0, 3).join(' ')
-            || p.title,
+            (det?.scene_keywords || []).slice(0, 3).join(' ') || p.title,
           mode: 'video',
           total_duration: Math.max(10, Math.min(30, p.duration || 20)),
           voice_id: mapVoiceToId(p.voice_type, language),
@@ -200,7 +422,6 @@ export default function AIPromptsScreen() {
           motion: mapStyleToMotion(p.style_tag),
           aspect_ratio: '9:16',
           lang: language,
-          // Extra metadata for the new cooking screen
           ai_prompt_meta: {
             prompt_id: p.id,
             hook: p.hook,
@@ -208,11 +429,11 @@ export default function AIPromptsScreen() {
             style_tag: p.style_tag,
             hashtags: p.hashtags || [],
             cta: p.cta || '',
-            detected_category: result?.detected?.category || '',
-            detected_mood: result?.detected?.mood || '',
+            detected_category: det?.category || '',
+            detected_mood: det?.mood || '',
+            style_boost: styleBoost,
           },
         };
-        // Web path — sessionStorage is what the wizard already reads on mount.
         try {
           if (typeof window !== 'undefined' && (window as any).sessionStorage) {
             (window as any).sessionStorage.setItem(
@@ -220,12 +441,13 @@ export default function AIPromptsScreen() {
             );
           }
         } catch {}
-        // Native path — keep the AsyncStorage token for future native runs.
         try {
-          const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+          const { default: AsyncStorage } = await import(
+            '@react-native-async-storage/async-storage'
+          );
           await AsyncStorage.setItem(
             'magicai_picked_prompt_v1',
-            JSON.stringify({ idea: idea.trim(), language, prompt: p, detected: result?.detected, prefill }),
+            JSON.stringify({ idea: ideaText, language, prompt: p, detected: det, prefill }),
           );
         } catch {}
       } catch {}
@@ -233,23 +455,135 @@ export default function AIPromptsScreen() {
         pathname: '/create-wizard',
         params: { fromPrompt: '1', promptId: p.id },
       });
-    })();
-  }, [idea, language, result]);
+    },
+    [language, styleBoost],
+  );
 
-  const onPreview = useCallback((p: PromptOption) => {
-    setPreviewPrompt(p);
+  // ── Audio preview (Phase C+ #6) ──────────────────────────────────────
+  const onPreview = useCallback(
+    async (p: PromptOption) => {
+      try {
+        // If something is playing — stop it
+        if (soundRef.current) {
+          try { await soundRef.current.unloadAsync(); } catch {}
+          soundRef.current = null;
+        }
+        if (playingPromptId === p.id) {
+          setPlayingPromptId(null);
+          return;
+        }
+        setPlayingPromptId(p.id);
+        const base = (BACKEND_URL || '').replace(/\/$/, '');
+        // Native expo-av can play remote URIs directly. We POST to fetch the
+        // mp3, but expo-av doesn't support POST — so use a fetch+blob URI on
+        // web, and a temp-file approach on native via base64 data URI.
+        const resp = await fetch(`${base}/api/generate-prompts/preview-audio`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: p.hook || p.title || 'Hello from MagiCAi',
+            voice_type: p.voice_type,
+            language,
+            max_seconds: 2.5,
+          }),
+        });
+        if (!resp.ok) throw new Error(`tts ${resp.status}`);
+        const buf = await resp.arrayBuffer();
+
+        let uri: string;
+        if (Platform.OS === 'web') {
+          const blob = new Blob([buf], { type: 'audio/mpeg' });
+          uri = URL.createObjectURL(blob);
+        } else {
+          // base64 data URI for native (small clip — fine inline)
+          const bytes = new Uint8Array(buf);
+          let bin = '';
+          for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+          // btoa is available on Hermes/JSC; fall back to a tiny pure-JS encoder otherwise.
+          const b64 = (typeof btoa === 'function') ? btoa(bin) : encodeBase64(bin);
+          uri = `data:audio/mpeg;base64,${b64}`;
+        }
+
+        const { sound } = await Audio.Sound.createAsync(
+          { uri },
+          { shouldPlay: true, volume: 1.0 },
+        );
+        soundRef.current = sound;
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (!status.isLoaded) return;
+          if (status.didJustFinish) {
+            setPlayingPromptId(null);
+            sound.unloadAsync().catch(() => {});
+            soundRef.current = null;
+          }
+        });
+      } catch (e) {
+        setPlayingPromptId(null);
+        soundRef.current = null;
+        // soft-fail — not worth a big modal
+      }
+    },
+    [language, playingPromptId],
+  );
+
+  // ── Pick suggestion (welcome) ────────────────────────────────────────
+  const onPickSuggestion = useCallback(
+    (s: string) => {
+      setInput('');
+      sendTurn(s);
+    },
+    [sendTurn],
+  );
+
+  // Highest-scored prompt id within an AI message — for "Recommended" badge
+  const recommendedIdFor = useCallback((m: AiMsg) => {
+    if (!m.prompts || m.prompts.length === 0) return null;
+    const sorted = [...m.prompts].sort(
+      (a, b) => (b.score ?? 0) - (a.score ?? 0),
+    );
+    return sorted[0].id;
   }, []);
 
-  const closePreview = useCallback(() => setPreviewPrompt(null), []);
-  const useFromPreview = useCallback(() => {
-    if (previewPrompt) {
-      const p = previewPrompt;
-      setPreviewPrompt(null);
-      setTimeout(() => onUseThis(p), 150);
-    }
-  }, [previewPrompt, onUseThis]);
+  // ── Renderers ─────────────────────────────────────────────────────────
+  const renderItem = useCallback(
+    ({ item, index }: { item: ChatMsg; index: number }) => {
+      if (item.role === 'user') {
+        return <UserBubble msg={item} />;
+      }
+      // AI bubble
+      const ai = item;
+      const parentUser = ai.parentUserId
+        ? (messages.find((m) => m.id === ai.parentUserId) as UserMsg | undefined)
+        : undefined;
+      const ideaText = parentUser?.text || '';
+      const recId = recommendedIdFor(ai);
 
-  const aspectLabel = useMemo(() => '9:16 (Reel)', []);
+      return (
+        <AiBubble
+          msg={ai}
+          recommendedId={recId}
+          onUseThis={(p) => onUseThis(p, ideaText, ai.detected)}
+          onPreview={onPreview}
+          playingPromptId={playingPromptId}
+          onRegenerate={() => onRegenerate(ideaText)}
+          onPickSuggestion={onPickSuggestion}
+          onUpgrade={() => router.push('/subscription')}
+          isLast={index === messages.length - 1}
+        />
+      );
+    },
+    [
+      messages,
+      onUseThis,
+      onPreview,
+      playingPromptId,
+      onRegenerate,
+      onPickSuggestion,
+      recommendedIdFor,
+    ],
+  );
+
+  const aspectLabel = useMemo(() => '9:16 · Reel', []);
 
   return (
     <View style={s.root}>
@@ -259,381 +593,423 @@ export default function AIPromptsScreen() {
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={s.flex1}
+        keyboardVerticalOffset={Platform.select({ ios: 0, android: 0 }) as number}
       >
-        <ScrollView
-          contentContainerStyle={s.scroll}
-          keyboardShouldPersistTaps="handled"
+        {/* Header */}
+        <View style={s.header}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            hitSlop={14}
+            style={s.iconBtn}
+          >
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </TouchableOpacity>
+          <View style={s.headerMiddle}>
+            <Text style={s.eyebrow}>AI PROMPT WIZARD · CHAT</Text>
+            <Text style={s.title}>What do you want to create?</Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => {
+              setMessages([{ id: 'welcome', role: 'ai', ts: Date.now(), status: 'welcome' }]);
+              setInput('');
+            }}
+            hitSlop={14}
+            style={s.iconBtn}
+          >
+            <Ionicons name="refresh-outline" size={20} color="#fff" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Message list */}
+        <FlatList
+          ref={listRef}
+          data={messages}
+          keyExtractor={(m) => m.id}
+          renderItem={renderItem}
+          contentContainerStyle={s.listContent}
+          style={s.flex1}
           showsVerticalScrollIndicator={false}
-        >
-          {/* Header */}
-          <View style={s.header}>
-            <TouchableOpacity
-              onPress={() => router.back()}
-              hitSlop={14}
-              style={s.backBtn}
-            >
-              <Ionicons name="chevron-back" size={22} color="#fff" />
-            </TouchableOpacity>
-            <View style={s.headerMiddle}>
-              <Text style={s.eyebrow}>AI PROMPT WIZARD</Text>
-              <Text style={s.title}>What do you want to create?</Text>
-            </View>
+          onContentSizeChange={scrollToEnd}
+          extraData={playingPromptId}
+        />
+
+        {/* Bottom composer */}
+        <View style={s.composerWrap}>
+          {/* Style boost row */}
+          <View style={s.boostRow}>
+            <BoostChip
+              label="Default"
+              icon="sparkles-outline"
+              active={styleBoost === 'default'}
+              onPress={() => setStyleBoost('default')}
+            />
+            <BoostChip
+              label="Emotional"
+              icon="heart-outline"
+              active={styleBoost === 'emotional'}
+              onPress={() => setStyleBoost('emotional')}
+              activeColor={theme.aurora.pink}
+            />
+            <BoostChip
+              label="Cinematic"
+              icon="film-outline"
+              active={styleBoost === 'cinematic'}
+              onPress={() => setStyleBoost('cinematic')}
+              activeColor={theme.aurora.purple}
+            />
+            <View style={s.boostSpacer} />
+            <Text style={s.aspectLabel}>{aspectLabel}</Text>
           </View>
 
-          {/* Chat bubble — user's idea (chat-style feedback) */}
-          {(loading || result) && lastIdea && (
-            <Animated.View
-              entering={FadeInDown.duration(280)}
-              style={s.chatBubbleRow}
-            >
-              <View style={s.chatAvatarUser}>
-                <Text style={s.chatAvatarText}>YOU</Text>
-              </View>
-              <View style={s.chatBubbleUser}>
-                <Text style={s.chatBubbleText} numberOfLines={3}>
-                  {lastIdea}
+          {/* Language picker (compact horizontal) */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={s.langStrip}
+            contentContainerStyle={s.langStripContent}
+          >
+            {LANGS.map((l) => (
+              <Pressable
+                key={l}
+                onPress={() => setLanguage(l)}
+                style={[s.langPill, language === l && s.langPillActive]}
+              >
+                <Text style={[s.langPillText, language === l && s.langPillTextActive]}>
+                  {l}
                 </Text>
-              </View>
-            </Animated.View>
-          )}
+              </Pressable>
+            ))}
+          </ScrollView>
 
-          {/* Chat bubble — AI thinking indicator (animated 3-dot typing) */}
-          {loading && (
-            <Animated.View
-              entering={FadeInDown.duration(280)}
-              style={[s.chatBubbleRow, s.chatBubbleRowAI]}
-            >
-              <View style={s.chatAvatarAI}>
-                <Ionicons name="sparkles" size={14} color="#fff" />
-              </View>
-              <View style={s.chatBubbleAI}>
-                <TypingDots />
-                <Text style={s.chatBubbleTextMuted}>
-                  Crafting 3 prompt options…
-                </Text>
-              </View>
-            </Animated.View>
-          )}
-
-          {/* Input card */}
-          <View style={s.inputCard}>
-            <Text style={s.lbl}>✨ Your idea</Text>
+          {/* Input row */}
+          <View style={s.composer}>
             <TextInput
-              value={idea}
-              onChangeText={setIdea}
-              placeholder="e.g. Krishna bhajan devotional reel"
+              value={input}
+              onChangeText={onChangeIdea}
+              placeholder="Type your idea… (auto-suggests after 800ms)"
               placeholderTextColor={theme.text.faint}
-              style={s.input}
+              style={s.composerInput}
               multiline
               maxLength={400}
-              returnKeyType="default"
-              autoCorrect
+              onSubmitEditing={onSend}
+              blurOnSubmit={false}
             />
-
-            {/* Language row */}
-            <Text style={s.lbl}>🗣️ Language</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={s.langRow}
-              contentContainerStyle={s.langRowContent}
-            >
-              {LANGS.map((l) => (
-                <Pressable
-                  key={l}
-                  onPress={() => setLanguage(l)}
-                  style={[s.langPill, language === l && s.langPillActive]}
-                >
-                  <Text style={[s.langPillText, language === l && s.langPillTextActive]}>
-                    {l}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            <View style={s.rowBetween}>
-              <Text style={s.muted}>{idea.trim().length}/400 chars</Text>
-              <Text style={s.muted}>Aspect · {aspectLabel}</Text>
-            </View>
-
             <TouchableOpacity
-              onPress={() => fetchPrompts()}
-              disabled={!canSubmit}
+              onPress={onSend}
+              disabled={input.trim().length < 3 || isLoading}
               activeOpacity={0.85}
-              style={[s.cta, !canSubmit && s.ctaDisabled]}
+              style={[
+                s.sendBtn,
+                (input.trim().length < 3 || isLoading) && s.sendBtnDisabled,
+              ]}
             >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
+              {isLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
               ) : (
-                <>
-                  <Ionicons name="sparkles" size={18} color="#fff" style={{ marginRight: 8 }} />
-                  <Text style={s.ctaText}>
-                    {result ? '🔁 Regenerate 3 ideas' : '✨ Get 3 AI Prompts'}
-                  </Text>
-                </>
+                <Ionicons name="arrow-up" size={20} color="#fff" />
               )}
             </TouchableOpacity>
           </View>
-
-          {/* Quick idea chips */}
-          {!result && !loading && (
-            <Animated.View entering={FadeIn.duration(300)} style={s.quickBlock}>
-              <Text style={s.quickTitle}>Try one of these:</Text>
-              <View style={s.quickRow}>
-                {QUICK_IDEAS.map((q) => (
-                  <Pressable
-                    key={q}
-                    onPress={() => { setIdea(q); }}
-                    style={s.quickChip}
-                  >
-                    <Text style={s.quickChipText}>{q}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </Animated.View>
-          )}
-
-          {/* Error banner */}
-          {error && (
-            <Animated.View entering={FadeInDown.duration(200)} style={s.errorBanner}>
-              <Ionicons name="alert-circle" size={16} color="#FCA5A5" />
-              <Text style={s.errorText}>{error}</Text>
-            </Animated.View>
-          )}
-
-          {/* Loading skeleton shown inline via chat bubble above */}
-
-          {/* Detected context */}
-          {result && !loading && (
-            <Animated.View
-              entering={FadeInDown.springify().damping(18)}
-              layout={Layout}
-              style={s.detectedCard}
-            >
-              <View style={s.detectedHeaderRow}>
-                <Text style={s.detectedEyebrow}>
-                  {result.cached ? '⚡ INSTANT (cached)' : `🧠 AI DETECTED · ${result.tokens_used} tokens`}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => fetchPrompts({ forceRefresh: true })}
-                  disabled={loading}
-                  style={s.regenPill}
-                >
-                  <Ionicons name="refresh" size={14} color="#fff" />
-                  <Text style={s.regenPillText}>regenerate</Text>
-                </TouchableOpacity>
-              </View>
-              <View style={s.detectedRow}>
-                <InfoPill icon="🏷️" label={result.detected.category} />
-                <InfoPill
-                  icon="💫"
-                  label={result.detected.mood}
-                  color={MOOD_COLORS[result.detected.mood]}
-                />
-                <InfoPill icon="🎙️" label={result.detected.suggested_voice} />
-              </View>
-              <Text style={s.sceneKw}>
-                Scene ideas: {result.detected.scene_keywords.join(' · ')}
-              </Text>
-            </Animated.View>
-          )}
-
-          {/* 3 Prompt cards */}
-          {result && !loading && result.prompts.map((p, idx) => (
-            <Animated.View
-              key={p.id}
-              entering={FadeInDown.delay(idx * 120).springify().damping(16)}
-              layout={Layout}
-              style={[
-                s.promptCard,
-                selectedId === p.id && s.promptCardSelected,
-              ]}
-            >
-              <View style={s.promptHeader}>
-                <View style={s.promptBadgeWrap}>
-                  <Text style={s.promptBadge}>Option {idx + 1}</Text>
-                </View>
-                <Text style={s.promptStyle}>
-                  {STYLE_ICON[p.style_tag] || '🎬'} {p.style_tag}
-                </Text>
-                <Text style={s.promptDuration}>{p.duration}s</Text>
-              </View>
-
-              <Text style={s.promptTitle}>{p.title}</Text>
-              <Text style={s.promptHook}>“{p.hook}”</Text>
-
-              <View style={s.metaGrid}>
-                <MetaChip icon="🎙️" label="Voice" value={p.voice_type} />
-                <MetaChip icon="🎵" label="Music" value={p.music_type} />
-                <MetaChip
-                  icon="💫"
-                  label="Mood"
-                  value={p.mood}
-                  color={MOOD_COLORS[p.mood]}
-                />
-              </View>
-
-              {p.hashtags && p.hashtags.length > 0 && (
-                <Text style={s.hashtags}>
-                  {p.hashtags.slice(0, 4).join('  ')}
-                </Text>
-              )}
-
-              <View style={s.promptActions}>
-                <TouchableOpacity
-                  onPress={() => onPreview(p)}
-                  style={s.previewBtn}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="eye-outline" size={16} color={theme.text.primary} />
-                  <Text style={s.previewBtnText}>Preview</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => onUseThis(p)}
-                  style={s.useBtn}
-                  activeOpacity={0.85}
-                >
-                  <Text style={s.useBtnText}>Use this ✨</Text>
-                </TouchableOpacity>
-              </View>
-            </Animated.View>
-          ))}
-
-          {/* Footer hint */}
-          {result && !loading && (
-            <Text style={s.footerHint}>
-              Not what you wanted? Edit your idea above & regenerate.
-            </Text>
-          )}
-
-          <View style={{ height: 80 }} />
-        </ScrollView>
+        </View>
       </KeyboardAvoidingView>
+    </View>
+  );
+}
 
-      {/* ── Preview overlay — absolute-positioned View (works on web + native,
-             unlike React Native's <Modal> which can mis-render on web). */}
-      {previewPrompt && (
-        <Animated.View
-          entering={FadeIn.duration(180)}
-          exiting={FadeOut.duration(150)}
-          style={s.modalBackdrop}
-          pointerEvents="auto"
-        >
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={closePreview}
+// ─── Components ────────────────────────────────────────────────────────────
+
+function UserBubble({ msg }: { msg: UserMsg }) {
+  return (
+    <Animated.View entering={FadeInDown.duration(220)} style={s.userRow}>
+      <View style={s.userBubble}>
+        <Text style={s.userText}>{msg.text}</Text>
+        {msg.style_boost && msg.style_boost !== 'default' ? (
+          <View style={s.userMetaRow}>
+            <Text style={s.userMetaText}>
+              {msg.style_boost === 'emotional' ? '❤️ emotional' : '🎬 cinematic'}
+              {' · '}{msg.language}
+            </Text>
+          </View>
+        ) : (
+          <Text style={s.userMetaText}>{msg.language}</Text>
+        )}
+      </View>
+      <View style={s.avatarUser}>
+        <Text style={s.avatarUserText}>YOU</Text>
+      </View>
+    </Animated.View>
+  );
+}
+
+type AiBubbleProps = {
+  msg: AiMsg;
+  recommendedId: string | null;
+  onUseThis: (p: PromptOption) => void;
+  onPreview: (p: PromptOption) => void;
+  playingPromptId: string | null;
+  onRegenerate: () => void;
+  onPickSuggestion: (s: string) => void;
+  onUpgrade: () => void;
+  isLast: boolean;
+};
+
+function AiBubble({
+  msg, recommendedId, onUseThis, onPreview, playingPromptId,
+  onRegenerate, onPickSuggestion, onUpgrade,
+}: AiBubbleProps) {
+  return (
+    <Animated.View entering={FadeInDown.duration(280)} style={s.aiRow}>
+      <View style={s.avatarAI}>
+        <Ionicons name="sparkles" size={14} color="#fff" />
+      </View>
+      <View style={s.aiBubble}>
+        {msg.status === 'welcome' && <WelcomeBlock onPick={onPickSuggestion} />}
+
+        {msg.status === 'loading' && <LoadingBlock />}
+
+        {msg.status === 'error' && (
+          <View>
+            <Text style={s.aiText}>
+              ⚠️ {msg.error || 'Something went wrong.'}
+            </Text>
+            <Pressable onPress={onRegenerate} style={s.regenChip}>
+              <Ionicons name="refresh" size={13} color="#fff" />
+              <Text style={s.regenChipText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {msg.status === 'rate_limited' && (
+          <RateLimitBlock msg={msg} onUpgrade={onUpgrade} />
+        )}
+
+        {msg.status === 'success' && msg.detected && msg.prompts && (
+          <SuccessBlock
+            msg={msg}
+            recommendedId={recommendedId}
+            onUseThis={onUseThis}
+            onPreview={onPreview}
+            playingPromptId={playingPromptId}
+            onRegenerate={onRegenerate}
           />
-          <Animated.View
-            entering={FadeInDown.springify().damping(16)}
-            style={s.modalCard}
-          >
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: 8 }}
-            >
-              <View style={s.modalHeader}>
-                <View style={s.modalBadge}>
-                  <Text style={s.modalBadgeText}>PREVIEW</Text>
-                </View>
-                <TouchableOpacity
-                  onPress={closePreview}
-                  hitSlop={12}
-                  style={s.modalClose}
-                >
-                  <Ionicons name="close" size={20} color="#fff" />
-                </TouchableOpacity>
-              </View>
+        )}
+      </View>
+    </Animated.View>
+  );
+}
 
-              <Text style={s.modalTitle}>{previewPrompt.title}</Text>
-              <View style={s.modalHookBox}>
-                <Text style={s.modalHookLabel}>HOOK</Text>
-                <Text style={s.modalHook}>“{previewPrompt.hook}”</Text>
-              </View>
+function WelcomeBlock({ onPick }: { onPick: (s: string) => void }) {
+  return (
+    <View>
+      <Text style={s.aiText}>
+        Hi 👋 I'm your AI creative producer. Type any idea and I'll craft 3
+        ready-to-shoot reel concepts — voice, music, mood and all.
+      </Text>
+      <Text style={s.aiSubtle}>Try one of these to start:</Text>
+      <View style={s.suggestionsWrap}>
+        {QUICK_IDEAS.map((q) => (
+          <Pressable key={q} onPress={() => onPick(q)} style={s.suggestionChip}>
+            <Text style={s.suggestionChipText}>{q}</Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
 
-              <View style={s.modalMetaGrid}>
-                <ModalMetaRow icon="🎙️" label="Voice"    value={previewPrompt.voice_type} />
-                <ModalMetaRow icon="🎵" label="Music"    value={previewPrompt.music_type} />
-                <ModalMetaRow icon="⏱️" label="Duration" value={`${previewPrompt.duration}s`} />
-                <ModalMetaRow icon="💫" label="Mood"     value={previewPrompt.mood} />
-                <ModalMetaRow icon="🎨" label="Style"    value={previewPrompt.style_tag} />
-                {previewPrompt.cta ? (
-                  <ModalMetaRow icon="📣" label="CTA"     value={previewPrompt.cta} />
-                ) : null}
-              </View>
+function LoadingBlock() {
+  return (
+    <View>
+      <View style={s.loadingHeader}>
+        <TypingDots />
+        <Text style={s.aiSubtleInline}>Crafting 3 prompt options…</Text>
+      </View>
+      {/* 3 skeleton cards */}
+      <SkeletonCard delay={0} />
+      <SkeletonCard delay={120} />
+      <SkeletonCard delay={240} />
+    </View>
+  );
+}
 
-              {previewPrompt.hashtags && previewPrompt.hashtags.length > 0 && (
-                <Text style={s.modalHashtags}>
-                  {previewPrompt.hashtags.join('  ')}
-                </Text>
-              )}
+function RateLimitBlock({ msg, onUpgrade }: { msg: AiMsg; onUpgrade: () => void }) {
+  const reset = formatRelativeReset(msg.rate_limit?.reset_at);
+  const used = msg.rate_limit?.used ?? 0;
+  const limit = msg.rate_limit?.limit ?? 20;
+  return (
+    <View>
+      <Text style={s.aiText}>
+        🚦 You've hit your hourly limit ({used}/{limit} ideas). Resets {reset}.
+      </Text>
+      <Text style={s.aiSubtle}>
+        Want unlimited ideas, faster renders & no watermark? Upgrade to Pro.
+      </Text>
+      <View style={s.rateActions}>
+        <Pressable onPress={onUpgrade} style={s.upgradeBtn}>
+          <Ionicons name="star" size={14} color="#fff" />
+          <Text style={s.upgradeBtnText}>Upgrade</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
-              <View style={s.modalActions}>
-                <TouchableOpacity
-                  onPress={closePreview}
-                  style={s.modalCloseBtn}
-                  activeOpacity={0.8}
-                >
-                  <Text style={s.modalCloseBtnText}>Close</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={useFromPreview}
-                  style={s.modalUseBtn}
-                  activeOpacity={0.85}
-                >
-                  <Text style={s.modalUseBtnText}>Use this ✨</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </Animated.View>
-        </Animated.View>
+function SuccessBlock({
+  msg, recommendedId, onUseThis, onPreview, playingPromptId, onRegenerate,
+}: {
+  msg: AiMsg;
+  recommendedId: string | null;
+  onUseThis: (p: PromptOption) => void;
+  onPreview: (p: PromptOption) => void;
+  playingPromptId: string | null;
+  onRegenerate: () => void;
+}) {
+  const det = msg.detected!;
+  const cached = msg.source === 'cache';
+  return (
+    <View>
+      <View style={s.detectedHeader}>
+        <Text style={s.detectedEyebrow}>
+          {cached ? '⚡ INSTANT' : `🧠 AI · ${msg.tokens_used ?? 0} tok`}
+          {msg.style_boost && msg.style_boost !== 'default'
+            ? ` · ${msg.style_boost === 'emotional' ? '❤️ emotional' : '🎬 cinematic'}`
+            : ''}
+        </Text>
+        <Pressable onPress={onRegenerate} hitSlop={8} style={s.regenChip}>
+          <Ionicons name="refresh" size={13} color="#fff" />
+          <Text style={s.regenChipText}>regenerate</Text>
+        </Pressable>
+      </View>
+
+      <View style={s.detectedRow}>
+        <InfoPill icon="🏷️" label={det.category} />
+        <InfoPill
+          icon="💫"
+          label={det.mood}
+          color={MOOD_COLORS[det.mood]}
+        />
+        <InfoPill icon="🎙️" label={det.suggested_voice} />
+      </View>
+      <Text style={s.sceneKw}>
+        Scene ideas: {det.scene_keywords.join(' · ')}
+      </Text>
+
+      {msg.prompts!.map((p, idx) => (
+        <PromptCard
+          key={p.id}
+          p={p}
+          idx={idx}
+          isRecommended={recommendedId === p.id}
+          onUse={() => onUseThis(p)}
+          onPreview={() => onPreview(p)}
+          isPlaying={playingPromptId === p.id}
+        />
+      ))}
+    </View>
+  );
+}
+
+function PromptCard({
+  p, idx, isRecommended, onUse, onPreview, isPlaying,
+}: {
+  p: PromptOption; idx: number; isRecommended: boolean;
+  onUse: () => void; onPreview: () => void; isPlaying: boolean;
+}) {
+  return (
+    <Animated.View
+      entering={FadeInDown.delay(idx * 90).duration(280)}
+      style={[s.promptCard, isRecommended && s.promptCardRecommended]}
+    >
+      {isRecommended && (
+        <View style={s.recommendedBadge}>
+          <Ionicons name="star" size={11} color="#fff" />
+          <Text style={s.recommendedBadgeText}>RECOMMENDED</Text>
+        </View>
       )}
-    </View>
+
+      <View style={s.promptHeader}>
+        <View style={s.optionPill}>
+          <Text style={s.optionPillText}>Option {idx + 1}</Text>
+        </View>
+        <Text style={s.promptStyle}>
+          {STYLE_ICON[p.style_tag] || '🎬'} {p.style_tag}
+        </Text>
+        <Text style={s.promptDuration}>{p.duration}s</Text>
+      </View>
+
+      <Text style={s.promptTitle}>{p.title}</Text>
+      <Text style={s.promptHook}>“{p.hook}”</Text>
+
+      <View style={s.metaGrid}>
+        <MetaChip icon="🎙️" label="Voice" value={p.voice_type} />
+        <MetaChip icon="🎵" label="Music" value={p.music_type} />
+        <MetaChip
+          icon="💫"
+          label="Mood"
+          value={p.mood}
+          color={MOOD_COLORS[p.mood]}
+        />
+      </View>
+
+      {p.hashtags && p.hashtags.length > 0 && (
+        <Text style={s.hashtags}>
+          {p.hashtags.slice(0, 4).join('  ')}
+        </Text>
+      )}
+
+      <View style={s.promptActions}>
+        <TouchableOpacity
+          onPress={onPreview}
+          style={s.previewBtn}
+          activeOpacity={0.85}
+        >
+          {isPlaying ? (
+            <Ionicons name="stop" size={15} color={theme.text.primary} />
+          ) : (
+            <Ionicons name="play" size={15} color={theme.text.primary} />
+          )}
+          <Text style={s.previewBtnText}>
+            {isPlaying ? 'Stop' : 'Preview'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onUse}
+          style={s.useBtn}
+          activeOpacity={0.85}
+        >
+          <Text style={s.useBtnText}>Use this ✨</Text>
+        </TouchableOpacity>
+      </View>
+    </Animated.View>
   );
 }
 
-// ────────────────────────────── TypingDots (animated 3-dot chat indicator) ──
+// ─── Tiny components ───────────────────────────────────────────────────────
 
-function TypingDots() {
-  const d1 = useSharedValue(0.35);
-  const d2 = useSharedValue(0.35);
-  const d3 = useSharedValue(0.35);
-
-  useEffect(() => {
-    const cfg = { duration: 360 };
-    d1.value = withRepeat(withSequence(withTiming(1, cfg), withTiming(0.35, cfg)), -1);
-    d2.value = withRepeat(withSequence(
-      withTiming(0.35, cfg), withTiming(1, cfg), withTiming(0.35, cfg),
-    ), -1);
-    d3.value = withRepeat(withSequence(
-      withTiming(0.35, cfg), withTiming(0.35, cfg),
-      withTiming(1, cfg), withTiming(0.35, cfg),
-    ), -1);
-  }, [d1, d2, d3]);
-
-  const s1 = useAnimatedStyle(() => ({ opacity: d1.value, transform: [{ scale: 0.8 + d1.value * 0.4 }] }));
-  const s2 = useAnimatedStyle(() => ({ opacity: d2.value, transform: [{ scale: 0.8 + d2.value * 0.4 }] }));
-  const s3 = useAnimatedStyle(() => ({ opacity: d3.value, transform: [{ scale: 0.8 + d3.value * 0.4 }] }));
-
+function BoostChip({
+  label, icon, active, onPress, activeColor,
+}: {
+  label: string; icon: any; active: boolean;
+  onPress: () => void; activeColor?: string;
+}) {
   return (
-    <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center', marginBottom: 6 }}>
-      <Animated.View style={[{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.aurora.pink }, s1]} />
-      <Animated.View style={[{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.aurora.pink }, s2]} />
-      <Animated.View style={[{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.aurora.pink }, s3]} />
-    </View>
+    <Pressable
+      onPress={onPress}
+      style={[
+        s.boostChip,
+        active && {
+          backgroundColor: `${activeColor || theme.aurora.orange}25`,
+          borderColor: activeColor || theme.aurora.orange,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={13} color={active ? '#fff' : theme.text.muted} />
+      <Text style={[s.boostChipText, active && { color: '#fff', fontWeight: '800' }]}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
-
-function ModalMetaRow({ icon, label, value }: { icon: string; label: string; value: string }) {
-  return (
-    <View style={s.modalMetaRow}>
-      <Text style={s.modalMetaIcon}>{icon}</Text>
-      <Text style={s.modalMetaLabel}>{label}</Text>
-      <Text style={s.modalMetaValue} numberOfLines={2}>{value}</Text>
-    </View>
-  );
-}
-
-// ────────────────────────────── Sub-components ──────────────────────────────
 
 function InfoPill({ icon, label, color }: { icon: string; label: string; color?: string }) {
   return (
@@ -657,7 +1033,7 @@ function MetaChip({
   return (
     <View style={s.metaChip}>
       <Text style={s.metaIcon}>{icon}</Text>
-      <View style={s.flex1}>
+      <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={s.metaLabel}>{label}</Text>
         <Text
           style={[s.metaValue, color ? { color } : null]}
@@ -670,55 +1046,321 @@ function MetaChip({
   );
 }
 
-// ────────────────────────────── Styles ──────────────────────────────────────
+function TypingDots() {
+  const d1 = useSharedValue(0.35);
+  const d2 = useSharedValue(0.35);
+  const d3 = useSharedValue(0.35);
+
+  useEffect(() => {
+    const cfg = { duration: 360 };
+    d1.value = withRepeat(withSequence(withTiming(1, cfg), withTiming(0.35, cfg)), -1);
+    d2.value = withRepeat(withSequence(
+      withTiming(0.35, cfg), withTiming(1, cfg), withTiming(0.35, cfg),
+    ), -1);
+    d3.value = withRepeat(withSequence(
+      withTiming(0.35, cfg), withTiming(0.35, cfg),
+      withTiming(1, cfg), withTiming(0.35, cfg),
+    ), -1);
+  }, [d1, d2, d3]);
+
+  const s1 = useAnimatedStyle(() => ({ opacity: d1.value, transform: [{ scale: 0.8 + d1.value * 0.4 }] }));
+  const s2 = useAnimatedStyle(() => ({ opacity: d2.value, transform: [{ scale: 0.8 + d2.value * 0.4 }] }));
+  const s3 = useAnimatedStyle(() => ({ opacity: d3.value, transform: [{ scale: 0.8 + d3.value * 0.4 }] }));
+
+  return (
+    <View style={s.typingDotsRow}>
+      <Animated.View style={[s.typingDot, s1]} />
+      <Animated.View style={[s.typingDot, s2]} />
+      <Animated.View style={[s.typingDot, s3]} />
+    </View>
+  );
+}
+
+function SkeletonCard({ delay }: { delay: number }) {
+  const o = useSharedValue(0.4);
+  useEffect(() => {
+    const cfg = { duration: 1100 };
+    o.value = withRepeat(
+      withSequence(withTiming(0.85, cfg), withTiming(0.4, cfg)),
+      -1,
+    );
+  }, [o]);
+  const animStyle = useAnimatedStyle(() => ({ opacity: o.value }));
+
+  return (
+    <Animated.View
+      entering={FadeIn.delay(delay).duration(220)}
+      style={s.skeletonCard}
+    >
+      <Animated.View style={[s.skeletonLine, { width: '40%' }, animStyle]} />
+      <Animated.View style={[s.skeletonLine, { width: '88%', height: 18 }, animStyle]} />
+      <Animated.View style={[s.skeletonLine, { width: '70%', height: 14 }, animStyle]} />
+      <View style={s.skeletonRow}>
+        <Animated.View style={[s.skeletonChip, animStyle]} />
+        <Animated.View style={[s.skeletonChip, animStyle]} />
+        <Animated.View style={[s.skeletonChip, animStyle]} />
+      </View>
+    </Animated.View>
+  );
+}
+
+// ─── Styles ────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.aurora.bg0 },
   flex1: { flex: 1 },
-  scroll: {
-    paddingTop: Platform.select({ ios: 64, android: 40, default: 32 }),
-    paddingBottom: 40,
-    paddingHorizontal: theme.space.md,
-  },
 
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: theme.space.lg, gap: theme.space.md },
-  backBtn: {
-    width: 40, height: 40, borderRadius: theme.radius.pill,
+  /* Header */
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingTop: Platform.select({ ios: 56, android: 36, default: 28 }),
+    paddingHorizontal: theme.space.md,
+    paddingBottom: theme.space.sm,
+    gap: theme.space.sm,
+  },
+  iconBtn: {
+    width: 38, height: 38, borderRadius: theme.radius.pill,
     backgroundColor: theme.glass.background,
     borderWidth: 1, borderColor: theme.glass.border,
     alignItems: 'center', justifyContent: 'center',
   },
   headerMiddle: { flex: 1 },
   eyebrow: {
-    color: theme.aurora.orange, fontSize: 11, fontWeight: '800',
-    letterSpacing: 1.5, marginBottom: 4,
+    color: theme.aurora.orange, fontSize: 10, fontWeight: '800',
+    letterSpacing: 1.2, marginBottom: 2,
   },
   title: {
-    color: theme.text.primary, fontSize: 22, fontWeight: '800', lineHeight: 28,
+    color: theme.text.primary, fontSize: 18, fontWeight: '800', lineHeight: 22,
   },
 
-  inputCard: {
-    backgroundColor: theme.glass.backgroundStrong,
-    borderRadius: theme.radius.xl,
-    borderWidth: 1, borderColor: theme.glass.border,
-    padding: theme.space.md,
-    marginBottom: theme.space.md,
+  /* List */
+  listContent: {
+    paddingHorizontal: theme.space.md,
+    paddingBottom: theme.space.md,
     gap: theme.space.sm,
   },
-  lbl: { color: theme.text.secondary, fontSize: 13, fontWeight: '700' },
-  input: {
-    backgroundColor: 'rgba(0,0,0,0.25)',
+
+  /* User bubble */
+  userRow: {
+    flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'flex-end',
+    gap: 8, marginVertical: 6,
+  },
+  userBubble: {
+    maxWidth: '78%',
+    backgroundColor: `${theme.aurora.orange}1F`,
+    borderWidth: 1, borderColor: `${theme.aurora.orange}66`,
     borderRadius: theme.radius.lg,
-    borderWidth: 1, borderColor: theme.glass.border,
-    padding: theme.space.md,
-    color: theme.text.primary, fontSize: 16,
-    minHeight: 80, textAlignVertical: 'top',
+    borderBottomRightRadius: 4,
+    paddingHorizontal: 14, paddingVertical: 10,
+  },
+  userText: { color: theme.text.primary, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  userMetaRow: { marginTop: 4 },
+  userMetaText: { color: theme.text.muted, fontSize: 10, fontWeight: '600', marginTop: 4, textTransform: 'capitalize' },
+  avatarUser: {
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: theme.aurora.orange,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  avatarUserText: { color: '#fff', fontSize: 8, fontWeight: '800', letterSpacing: 0.5 },
+
+  /* AI bubble */
+  aiRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    marginVertical: 6,
+  },
+  avatarAI: {
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: theme.aurora.pink,
+    alignItems: 'center', justifyContent: 'center',
+    marginTop: 2,
+  },
+  aiBubble: {
+    flex: 1,
+    backgroundColor: theme.glass.backgroundStrong,
+    borderWidth: 1, borderColor: theme.glass.borderStrong,
+    borderRadius: theme.radius.lg,
+    borderTopLeftRadius: 4,
+    paddingHorizontal: 14, paddingVertical: 12,
+  },
+  aiText: { color: theme.text.primary, fontSize: 14, lineHeight: 20, fontWeight: '500' },
+  aiSubtle: { color: theme.text.muted, fontSize: 12, marginTop: 8, fontStyle: 'italic' },
+  aiSubtleInline: { color: theme.text.muted, fontSize: 13, fontWeight: '600' },
+
+  loadingHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: theme.space.sm },
+  typingDotsRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  typingDot: {
+    width: 6, height: 6, borderRadius: 999, backgroundColor: theme.aurora.pink,
   },
 
-  langRow: { maxHeight: 44 },
-  langRowContent: { gap: 8, paddingVertical: 4 },
+  /* Welcome */
+  suggestionsWrap: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8,
+  },
+  suggestionChip: {
+    paddingHorizontal: 10, paddingVertical: 6,
+    backgroundColor: theme.glass.background,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.glass.border,
+  },
+  suggestionChipText: { color: theme.text.secondary, fontSize: 11, fontWeight: '600' },
+
+  /* Error / Rate-limited */
+  regenChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: theme.glass.background,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.glass.border,
+    alignSelf: 'flex-start', marginTop: 8,
+  },
+  regenChipText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
+  rateActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  upgradeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 9,
+    backgroundColor: theme.aurora.pink,
+    borderRadius: theme.radius.pill,
+  },
+  upgradeBtnText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+
+  /* Detected */
+  detectedHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: theme.space.sm,
+  },
+  detectedEyebrow: {
+    color: theme.aurora.orange, fontSize: 10, fontWeight: '800', letterSpacing: 1,
+  },
+  detectedRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6,
+  },
+  infoPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: theme.glass.background,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.glass.border,
+    maxWidth: 200,
+  },
+  infoPillIcon: { fontSize: 11 },
+  infoPillText: { color: theme.text.primary, fontSize: 11, fontWeight: '700' },
+  sceneKw: { color: theme.text.muted, fontSize: 11, lineHeight: 16, marginBottom: theme.space.sm },
+
+  /* Prompt cards */
+  promptCard: {
+    backgroundColor: 'rgba(0,0,0,0.18)',
+    borderRadius: theme.radius.lg,
+    borderWidth: 1, borderColor: theme.glass.border,
+    padding: 12,
+    marginTop: theme.space.sm,
+  },
+  promptCardRecommended: {
+    borderColor: theme.aurora.orange,
+    borderWidth: 1.5,
+    backgroundColor: `${theme.aurora.orange}10`,
+  },
+  recommendedBadge: {
+    position: 'absolute', top: -10, left: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3,
+    backgroundColor: theme.aurora.orange,
+    borderRadius: theme.radius.pill,
+    zIndex: 5,
+  },
+  recommendedBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+
+  promptHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginBottom: 6,
+  },
+  optionPill: {
+    paddingHorizontal: 8, paddingVertical: 3,
+    backgroundColor: `${theme.aurora.pink}33`,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: `${theme.aurora.pink}77`,
+  },
+  optionPillText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
+  promptStyle: { color: theme.text.secondary, fontSize: 11, fontWeight: '600', textTransform: 'capitalize' },
+  promptDuration: { marginLeft: 'auto', color: theme.aurora.orange, fontSize: 12, fontWeight: '800' },
+
+  promptTitle: { color: theme.text.primary, fontSize: 15, fontWeight: '800', lineHeight: 20, marginBottom: 4 },
+  promptHook: { color: theme.text.secondary, fontSize: 13, fontStyle: 'italic', lineHeight: 18, marginBottom: 8 },
+
+  metaGrid: { flexDirection: 'row', gap: 6, marginBottom: 8 },
+  metaChip: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 8, paddingVertical: 6,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    borderRadius: theme.radius.md,
+    minWidth: 0,
+  },
+  metaIcon: { fontSize: 12 },
+  metaLabel: { color: theme.text.faint, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  metaValue: { color: theme.text.primary, fontSize: 11, fontWeight: '700' },
+
+  hashtags: { color: theme.aurora.blue, fontSize: 10, fontWeight: '700', marginBottom: 8, letterSpacing: 0.3 },
+
+  promptActions: { flexDirection: 'row', gap: 8 },
+  previewBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: 9,
+    backgroundColor: theme.glass.background,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.glass.border,
+  },
+  previewBtnText: { color: theme.text.primary, fontSize: 13, fontWeight: '700' },
+  useBtn: {
+    flex: 1.2, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 9,
+    backgroundColor: theme.aurora.pink,
+    borderRadius: theme.radius.pill,
+  },
+  useBtnText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+
+  /* Skeleton */
+  skeletonCard: {
+    backgroundColor: 'rgba(0,0,0,0.18)',
+    borderRadius: theme.radius.lg,
+    borderWidth: 1, borderColor: theme.glass.border,
+    padding: 12, marginTop: theme.space.sm,
+    gap: 8,
+  },
+  skeletonLine: {
+    height: 12, borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  skeletonRow: { flexDirection: 'row', gap: 6 },
+  skeletonChip: {
+    flex: 1, height: 28, borderRadius: theme.radius.md,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+
+  /* Composer */
+  composerWrap: {
+    paddingHorizontal: theme.space.md,
+    paddingTop: theme.space.sm,
+    paddingBottom: Platform.select({ ios: theme.space.lg, android: theme.space.md, default: theme.space.md }) as number,
+    backgroundColor: 'rgba(15,12,41,0.85)',
+    borderTopWidth: 1, borderTopColor: theme.glass.border,
+  },
+  boostRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  boostSpacer: { flex: 1 },
+  aspectLabel: { color: theme.text.muted, fontSize: 10, fontWeight: '700' },
+
+  boostChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 6,
+    backgroundColor: theme.glass.background,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.glass.border,
+  },
+  boostChipText: { color: theme.text.muted, fontSize: 11, fontWeight: '700' },
+
+  langStrip: { maxHeight: 36, marginBottom: 6 },
+  langStripContent: { gap: 6, paddingVertical: 2 },
   langPill: {
-    paddingHorizontal: 14, paddingVertical: 8,
+    paddingHorizontal: 12, paddingVertical: 6,
     borderRadius: theme.radius.pill,
     backgroundColor: theme.glass.background,
     borderWidth: 1, borderColor: theme.glass.border,
@@ -727,280 +1369,26 @@ const s = StyleSheet.create({
     backgroundColor: `${theme.aurora.pink}33`,
     borderColor: theme.aurora.pink,
   },
-  langPillText: { color: theme.text.muted, fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
+  langPillText: { color: theme.text.muted, fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
   langPillTextActive: { color: '#fff' },
 
-  rowBetween: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginTop: theme.space.xs,
-  },
-  muted: { color: theme.text.muted, fontSize: 11 },
-
-  cta: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: theme.aurora.pink,
-    borderRadius: theme.radius.pill,
-    paddingVertical: 14,
-    marginTop: theme.space.sm,
-    ...(theme.shadow.glow as any),
-  },
-  ctaDisabled: { opacity: 0.5 },
-  ctaText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-
-  quickBlock: { marginBottom: theme.space.md },
-  quickTitle: {
-    color: theme.text.muted, fontSize: 12, fontWeight: '700',
-    textTransform: 'uppercase', letterSpacing: 1,
-    marginBottom: theme.space.sm, marginLeft: 4,
-  },
-  quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  quickChip: {
-    paddingHorizontal: 12, paddingVertical: 8,
-    backgroundColor: theme.glass.background,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: theme.glass.border,
-  },
-  quickChipText: { color: theme.text.secondary, fontSize: 12, fontWeight: '600' },
-
-  errorBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: 'rgba(252,165,165,0.12)',
-    borderWidth: 1, borderColor: 'rgba(252,165,165,0.35)',
-    borderRadius: theme.radius.md,
-    padding: 10, marginBottom: theme.space.sm,
-  },
-  errorText: { color: '#FCA5A5', fontSize: 13, flex: 1 },
-
-  loadingBlock: { alignItems: 'center', paddingVertical: 40, gap: 10 },
-  loadingText: { color: theme.text.primary, fontSize: 15, fontWeight: '700', marginTop: 6 },
-  loadingSub: { color: theme.text.muted, fontSize: 12 },
-
-  detectedCard: {
-    backgroundColor: theme.glass.backgroundStrong,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1, borderColor: `${theme.aurora.orange}55`,
-    padding: theme.space.md,
-    marginBottom: theme.space.md,
-  },
-  detectedHeaderRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: theme.space.sm,
-  },
-  detectedEyebrow: {
-    color: theme.aurora.orange, fontSize: 10, fontWeight: '800', letterSpacing: 1.2,
-  },
-  regenPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 6,
-    backgroundColor: theme.glass.background,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: theme.glass.border,
-  },
-  regenPillText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-
-  detectedRow: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 8,
-    marginBottom: theme.space.sm,
-  },
-  infoPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: 10, paddingVertical: 6,
-    backgroundColor: theme.glass.background,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: theme.glass.border,
-    maxWidth: 180,
-  },
-  infoPillIcon: { fontSize: 12 },
-  infoPillText: { color: theme.text.primary, fontSize: 12, fontWeight: '700' },
-  sceneKw: { color: theme.text.muted, fontSize: 12, lineHeight: 18 },
-
-  promptCard: {
-    backgroundColor: theme.glass.backgroundStrong,
-    borderRadius: theme.radius.xl,
-    borderWidth: 1, borderColor: theme.glass.border,
-    padding: theme.space.md,
-    marginBottom: theme.space.md,
-    ...(theme.shadow.soft as any),
-  },
-  promptCardSelected: {
-    borderColor: theme.aurora.pink, borderWidth: 2,
-  },
-  promptHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    marginBottom: theme.space.sm,
-  },
-  promptBadgeWrap: {
-    paddingHorizontal: 10, paddingVertical: 4,
-    backgroundColor: `${theme.aurora.pink}33`,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: `${theme.aurora.pink}77`,
-  },
-  promptBadge: { color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.8 },
-  promptStyle: { color: theme.text.secondary, fontSize: 12, fontWeight: '600', textTransform: 'capitalize' },
-  promptDuration: {
-    marginLeft: 'auto',
-    color: theme.aurora.orange, fontSize: 13, fontWeight: '800',
-  },
-  promptTitle: { color: theme.text.primary, fontSize: 18, fontWeight: '800', lineHeight: 24, marginBottom: 6 },
-  promptHook: { color: theme.text.secondary, fontSize: 14, fontStyle: 'italic', lineHeight: 20, marginBottom: theme.space.sm },
-
-  metaGrid: { flexDirection: 'row', gap: 8, marginBottom: theme.space.sm },
-  metaChip: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 10, paddingVertical: 8,
-    backgroundColor: 'rgba(0,0,0,0.2)',
-    borderRadius: theme.radius.md,
-    minWidth: 0,
-  },
-  metaIcon: { fontSize: 14 },
-  metaLabel: { color: theme.text.faint, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
-  metaValue: { color: theme.text.primary, fontSize: 12, fontWeight: '700' },
-
-  hashtags: { color: theme.aurora.blue, fontSize: 11, fontWeight: '700', marginBottom: theme.space.sm, letterSpacing: 0.3 },
-
-  promptActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
-  previewBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 11,
-    backgroundColor: theme.glass.background,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: theme.glass.border,
-  },
-  previewBtnText: { color: theme.text.primary, fontSize: 14, fontWeight: '700' },
-  useBtn: {
-    flex: 1.2, alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 11,
-    backgroundColor: theme.aurora.pink,
-    borderRadius: theme.radius.pill,
-    ...(theme.shadow.glow as any),
-  },
-  useBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
-
-  footerHint: {
-    color: theme.text.faint, fontSize: 12, textAlign: 'center',
-    marginTop: theme.space.sm, marginBottom: theme.space.md,
-  },
-
-  /* ── Chat bubbles (hybrid chat feel) ── */
-  chatBubbleRow: {
+  composer: {
     flexDirection: 'row', alignItems: 'flex-end', gap: 8,
-    marginBottom: theme.space.sm,
   },
-  chatBubbleRowAI: { marginBottom: theme.space.md },
-  chatAvatarUser: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: theme.aurora.orange,
-    alignItems: 'center', justifyContent: 'center',
+  composerInput: {
+    flex: 1,
+    minHeight: 44, maxHeight: 120,
+    backgroundColor: 'rgba(0,0,0,0.30)',
+    borderRadius: theme.radius.lg,
+    borderWidth: 1, borderColor: theme.glass.border,
+    paddingHorizontal: 14, paddingVertical: 10,
+    color: theme.text.primary, fontSize: 14,
+    textAlignVertical: 'top',
   },
-  chatAvatarAI: {
-    width: 32, height: 32, borderRadius: 16,
+  sendBtn: {
+    width: 44, height: 44, borderRadius: 22,
     backgroundColor: theme.aurora.pink,
     alignItems: 'center', justifyContent: 'center',
-    ...(theme.shadow.glow as any),
   },
-  chatAvatarText: { color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
-  chatBubbleUser: {
-    flex: 1,
-    backgroundColor: `${theme.aurora.orange}1F`,
-    borderWidth: 1, borderColor: `${theme.aurora.orange}66`,
-    borderRadius: theme.radius.lg,
-    borderBottomLeftRadius: 4,
-    paddingHorizontal: 12, paddingVertical: 10,
-  },
-  chatBubbleAI: {
-    flex: 1,
-    backgroundColor: theme.glass.backgroundStrong,
-    borderWidth: 1, borderColor: theme.glass.borderStrong,
-    borderRadius: theme.radius.lg,
-    borderBottomLeftRadius: 4,
-    paddingHorizontal: 14, paddingVertical: 12,
-  },
-  chatBubbleText: { color: theme.text.primary, fontSize: 14, lineHeight: 20, fontWeight: '600' },
-  chatBubbleTextMuted: { color: theme.text.muted, fontSize: 13, fontWeight: '600' },
-
-  /* ── Preview overlay (absolute-positioned, web + native safe) ── */
-  modalBackdrop: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(4,2,16,0.78)',
-    justifyContent: 'center', alignItems: 'center',
-    paddingHorizontal: theme.space.md,
-    zIndex: 1000,
-  },
-  modalCard: {
-    width: '100%', maxWidth: 480, maxHeight: '88%',
-    backgroundColor: '#1A1446',
-    borderRadius: theme.radius.xl,
-    borderWidth: 1, borderColor: theme.glass.borderStrong,
-    padding: theme.space.md,
-    ...(theme.shadow.glow as any),
-  },
-  modalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: theme.space.sm,
-  },
-  modalBadge: {
-    paddingHorizontal: 10, paddingVertical: 5,
-    backgroundColor: `${theme.aurora.pink}33`,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: `${theme.aurora.pink}77`,
-  },
-  modalBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  modalClose: {
-    width: 32, height: 32, borderRadius: 16,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: theme.glass.background,
-    borderWidth: 1, borderColor: theme.glass.border,
-  },
-  modalTitle: {
-    color: theme.text.primary, fontSize: 22, fontWeight: '800',
-    lineHeight: 28, marginBottom: 10,
-  },
-  modalHookBox: {
-    backgroundColor: 'rgba(0,0,0,0.28)',
-    borderRadius: theme.radius.md,
-    padding: 12,
-    borderLeftWidth: 3, borderLeftColor: theme.aurora.pink,
-    marginBottom: theme.space.sm,
-  },
-  modalHookLabel: {
-    color: theme.aurora.pink, fontSize: 10, fontWeight: '800',
-    letterSpacing: 1.2, marginBottom: 4,
-  },
-  modalHook: {
-    color: theme.text.primary, fontSize: 15, fontStyle: 'italic', lineHeight: 22,
-  },
-  modalMetaGrid: { gap: 6, marginBottom: theme.space.sm },
-  modalMetaRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    paddingVertical: 6, paddingHorizontal: 10,
-    backgroundColor: 'rgba(0,0,0,0.2)',
-    borderRadius: theme.radius.sm,
-  },
-  modalMetaIcon: { fontSize: 14 },
-  modalMetaLabel: {
-    color: theme.text.muted, fontSize: 11, fontWeight: '700',
-    textTransform: 'uppercase', letterSpacing: 0.6, width: 70,
-  },
-  modalMetaValue: { color: theme.text.primary, fontSize: 13, fontWeight: '700', flex: 1 },
-  modalHashtags: {
-    color: theme.aurora.blue, fontSize: 12, fontWeight: '700',
-    marginBottom: theme.space.sm, letterSpacing: 0.3,
-  },
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
-  modalCloseBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 12,
-    backgroundColor: theme.glass.background,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1, borderColor: theme.glass.border,
-  },
-  modalCloseBtnText: { color: theme.text.primary, fontSize: 14, fontWeight: '700' },
-  modalUseBtn: {
-    flex: 1.3, alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 12,
-    backgroundColor: theme.aurora.pink,
-    borderRadius: theme.radius.pill,
-    ...(theme.shadow.glow as any),
-  },
-  modalUseBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  sendBtnDisabled: { opacity: 0.45 },
 });
