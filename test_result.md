@@ -680,6 +680,93 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+session_23_phaseb_media_refactor:
+  - task: "Phase-B routes/media.py extraction regression (Session 23)"
+    implemented: true
+    working: false
+    file: "backend/routes/media.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Session 23 — Phase-B media.py extraction regression: 16/17 PASS,
+          1 REAL BUG found in /api/merge-segments/{project_id}.
+
+          ❌ BUG — backend/routes/media.py:248 uses `user["user_id"]` but
+             `core.auth.get_current_user` returns `user["id"]` (see
+             core/auth.py:64). Server.py's legacy get_current_user
+             populates BOTH `id` and `user_id` (server.py:200) for backwards
+             compat, but the extracted media.py imports from core.auth
+             which does NOT, so every authenticated merge-segments call
+             raises KeyError and returns 500. Backend traceback:
+               File "/app/backend/routes/media.py", line 248, in merge_segments
+                 {"id": project_id, "user_id": user["user_id"]},
+               KeyError: 'user_id'
+
+             FIX (1-char): change `user["user_id"]` → `user["id"]` on
+             media.py line 248. This is the ONLY usage of that key in
+             media.py — upload_video (line 77) only calls
+             get_current_user() without reading keys so it's unaffected.
+
+          ✅ All other extracted endpoints working correctly:
+
+          A) OpenAPI sanity — PASS. All 5 required paths present in
+             http://localhost:8001/openapi.json (124 total paths):
+             /api/upload-video, /api/upload-audio, /api/extract-frames,
+             /api/transcribe-audio, /api/merge-segments/{project_id}.
+
+          B) /api/upload-video (3/3):
+             - No auth → 401 ✓
+             - With auth + real ffmpeg-built 1s MP4 (160x120, h264+aac) →
+               200 with {file_id, file_path, file_type:'video',
+               size_mb:0.01, duration:1.0} — all 4 required keys present,
+               duration>0 ✓
+             - No file + auth → 422 ✓
+
+          C) /api/upload-audio (2/2, no auth required):
+             - Valid 1s MP3 (ffmpeg lavfi sine 440Hz) → 200 with
+               {file_id, file_path} ✓
+             - 51MB payload → 400 {"detail":"Max 50MB"} ✓
+
+          D) /api/transcribe-audio (2/2, no auth):
+             - With valid MP3 → 200 (not 404) ✓
+             - Empty body → 422 (not 404) ✓
+             Endpoint registered correctly.
+
+          E) /api/extract-frames (2/2, no auth):
+             - Empty body → 422 (not 404) ✓
+             - With valid MP4 → 200 (Gemini diarization ran) ✓
+
+          F) /api/merge-segments/{project_id} (1/2):
+             - No auth → 401 ✓
+             - With auth + bogus project_id → expected 404, got 500 ❌
+               (KeyError 'user_id' in media.py:248 — see BUG above)
+
+          G) Regression — adjacent endpoints NOT regressed (5/5):
+             - POST /api/upload-image (PIL-built PNG) → 200 ✓
+             - POST /api/upload-base64 (885B JPEG, field name 'base64' per
+               uploads.py:44) → 200 ✓ (NOTE: earlier probe used field
+               'data' which is incorrect; uploads.py requires 'base64'.)
+             - GET /api/marketplace/templates?limit=3 → 200 (4 templates) ✓
+             - GET /api/avatar/styles → 200 count=11 ✓
+             - POST /api/auth/login demo_creator@test.com/Test@123 → 200
+               with token in response.token field ✓
+
+          H) Backend startup log: NO "already exists" / "duplicate route"
+             / "already registered" / "duplicate operation" warnings. Clean
+             reload after routes/media.py added. Uvicorn reloaded at
+             13:45:14 → 13:46:26 multiple times as main agent pushed
+             changes; every reload completed with "Application startup
+             complete" + trending recompute succeeded. No stacktraces
+             except the merge-segments KeyError (which is a runtime bug,
+             not a startup issue).
+
+          Test artefact: /app/backend_test.py (re-runnable).
+
+
 session_22_phaseb_uploads_refactor:
   - task: "Phase-B routes/uploads.py extraction regression (Session 22)"
     implemented: true
@@ -857,6 +944,65 @@ frontend_session_32_mobile_retest:
           pointerEvents deprecation warnings. Main agent: add
           data-testid='auth-gate-trigger-*' on gated home CTAs for
           automation.
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Session 23 — Phase-B media.py extraction regression test COMPLETE.
+      16/17 checks PASS, 1 REAL BUG found.
+
+      ❌ CRITICAL FIX NEEDED (1-character fix):
+         backend/routes/media.py line 248 — `user["user_id"]` causes
+         KeyError 500 on every authenticated POST /api/merge-segments/{id}
+         because `core.auth.get_current_user` returns `user["id"]` (not
+         `user_id`). Server.py's legacy `get_current_user` populates both
+         keys (server.py:200) for backwards compat, but the extracted
+         routes/media.py imports the core.auth version which doesn't.
+
+         FIX: change line 248 from
+           {"id": project_id, "user_id": user["user_id"]},
+         to
+           {"id": project_id, "user_id": user["id"]},
+
+         Backend traceback already captured in /var/log/supervisor/backend.err.log.
+         Expected behaviour: bogus project_id + auth → 404 "Project not
+         found". Observed: 500 Internal Server Error.
+
+      ✅ Everything else passing:
+
+         A) OpenAPI — all 5 extracted paths present in openapi.json
+            (/api/upload-video, /api/upload-audio, /api/extract-frames,
+            /api/transcribe-audio, /api/merge-segments/{project_id}).
+
+         B) /api/upload-video (auth): no-auth → 401 ✓, valid 1s MP4 →
+            200 with {file_id, file_path, duration:1.0, size_mb:0.01} ✓,
+            no-file → 422 ✓.
+
+         C) /api/upload-audio (no auth): valid MP3 → 200 ✓,
+            51MB → 400 "Max 50MB" ✓.
+
+         D) /api/transcribe-audio: valid MP3 → 200 ✓, empty → 422
+            (not 404) — route exists.
+
+         E) /api/extract-frames: empty → 422, valid MP4 → 200
+            (Gemini diarization ran) — route exists.
+
+         F) /api/merge-segments: no-auth → 401 ✓, auth+bogus → 500 ❌
+            (the bug above).
+
+         G) Regression sanity (5/5 PASS):
+            - /api/upload-image (auth, PNG) → 200
+            - /api/upload-base64 (auth, 885B JPEG, field 'base64') → 200
+            - /api/marketplace/templates?limit=3 → 200
+            - /api/avatar/styles → 200 count=11
+            - /api/auth/login demo_creator → 200 with token
+
+         H) Backend startup log: NO duplicate-route / "already exists"
+            warnings. Clean reload after media.py registered.
+
+      Test artefact: /app/backend_test.py (re-runnable).
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
 
 agent_communication:
   - agent: "testing"
