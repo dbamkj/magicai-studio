@@ -232,7 +232,7 @@ export default function AIPromptsScreen() {
   const [styleBoost, setStyleBoost] = useState<StyleBoost>('default');
   const [isLoading, setIsLoading] = useState(false);
 
-  const listRef = useRef<FlatList<ChatMsg>>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const lastCallRef = useRef<string>('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -261,7 +261,7 @@ export default function AIPromptsScreen() {
 
   const scrollToEnd = useCallback(() => {
     requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated: true });
+      scrollRef.current?.scrollToEnd({ animated: true });
     });
   }, []);
 
@@ -620,20 +620,22 @@ export default function AIPromptsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Message list */}
-        <View style={s.flex1}>
-          <FlatList
-            ref={listRef}
-            data={messages}
-            keyExtractor={(m) => m.id}
-            renderItem={renderItem}
-            contentContainerStyle={s.listContent}
-            style={s.flex1}
-            showsVerticalScrollIndicator={false}
-            onContentSizeChange={scrollToEnd}
-            extraData={playingPromptId}
-          />
-        </View>
+        {/* Message list — ScrollView so content always anchors at TOP and
+             grows downward, no flex tricks needed. Reliable on iOS/Android/web. */}
+        <ScrollView
+          ref={scrollRef}
+          style={s.flex1}
+          contentContainerStyle={s.listContent}
+          showsVerticalScrollIndicator={false}
+          onContentSizeChange={scrollToEnd}
+          keyboardShouldPersistTaps="handled"
+        >
+          {messages.map((m, idx) => (
+            <View key={m.id}>
+              {renderItem({ item: m, index: idx })}
+            </View>
+          ))}
+        </ScrollView>
 
         {/* Bottom composer */}
         <View style={s.composerWrap}>
@@ -1137,6 +1139,7 @@ const s = StyleSheet.create({
 
   /* List */
   listContent: {
+    flexGrow: 1,
     paddingHorizontal: theme.space.md,
     paddingBottom: theme.space.md,
     gap: theme.space.sm,

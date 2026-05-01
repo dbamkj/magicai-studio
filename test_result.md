@@ -668,15 +668,161 @@ v2_prompt_generator_session31:
 
 metadata:
   created_by: "main_agent"
-  version: "2.6"
-  test_sequence: 8
-  run_ui: false
+  version: "2.7"
+  test_sequence: 9
+  run_ui: true
 
 test_plan:
-  current_focus: []
-  stuck_tasks: []
+  current_focus:
+    - "AI Prompts header position (ai-prompts)"
+  stuck_tasks:
+    - "AI Prompts header position (ai-prompts)"
   test_all: false
   test_priority: "high_first"
+
+frontend_session_32_mobile_retest:
+  - task: "AI Prompts header position (ai-prompts)"
+    implemented: true
+    working: false
+    file: "frontend/app/ai-prompts.tsx"
+    stuck_count: 2
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          FAIL on iPhone 12 (390x844). After login as demo_creator@test.com,
+          /ai-prompts eyebrow 'AI PROMPT WIZARD · CHAT' has getBoundingClientRect().y
+          = 451.5 (spec requires y<100). Entire header+title block is rendered
+          in the LOWER HALF of the viewport, with a large empty black space
+          above (top ~430px blank). Welcome AI bubble ('Hi 👋 I'm your AI
+          creative producer…') is NOT visible — bubble_y=0. Screenshot
+          confirms blank top, then the AI PROMPT WIZARD block, then sample
+          prompt chips, then input at bottom. ScrollView replacement of
+          FlatList did NOT fix this. Likely root cause: parent container
+          has justifyContent:'flex-end' or the ScrollView contentContainerStyle
+          uses flexGrow:1 + justifyContent pushing children down. On Galaxy
+          S21 (360x800) eyebrow element couldn't be located (rendered
+          off-viewport) — same FAIL.
+
+  - task: "ImageGen resolution labels (imagegen)"
+    implemented: true
+    working: true
+    file: "frontend/app/imagegen.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS on iPhone 12 (390x844). /imagegen after login:
+          has_model_detail=True (inner picker 'Model Detail' label present),
+          has_section_4=True ('4. Output Quality' header), has_subtitle=True
+          ("Final image size you'll download…"), count_res=0 (no stray
+          'Resolution' standalone duplicates). S21 DOM-query came back empty
+          but this is timing/viewport — iPhone 12 pass is definitive.
+
+  - task: "Login flow via /login?mode=login"
+    implemented: true
+    working: true
+    file: "frontend/app/login.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. /login?mode=login renders form with testIDs login-email-input,
+          login-password-input, login-submit-button. demo_creator@test.com /
+          Test@123 submit → routed to / (home).
+
+  - task: "Quick Access 2x2 grid (home)"
+    implemented: true
+    working: true
+    file: "frontend/app/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS (verified via screenshot iPhone 12 390x844). Home Quick Access:
+          Row 1: [Templates · 1000+ Reels] [Avatar Studio · Cartoon & Realistic]
+          Row 2: [AI Prompts · Let AI write your idea] [AI Tools · Voice, Swap, Enhance]
+          All 4 tiles show full title + full subtitle, NO truncation. Note:
+          tiles lack data-testid='quick-access-*' attrs — add for future
+          automation.
+
+  - task: "Home hero saree image (2nd carousel card)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/index.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: |
+          NOT FULLY VERIFIED. 1st carousel card 'Turn Ideas Into Magic' shows
+          child-Krishna image. 2nd card 'Your Face, Animated' wasn't swiped
+          to — need to confirm saree vs halter dress. Carousel has 3 cards
+          (1/3 dots visible).
+
+  - task: "AuthGate guest 'Maybe later' onClose fix"
+    implemented: true
+    working: "NA"
+    file: "frontend/components/AuthGateModal.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: |
+          UNABLE TO TRIGGER. Couldn't locate 'Make Avatar' / 'Use Template' /
+          auth-gate-trigger testids on home as guest. NO 'onClose is not a
+          function' console errors were emitted during the full test session
+          (login + /ai-prompts + /imagegen + / home). Only expo-av/shadow*/
+          pointerEvents deprecation warnings. Main agent: add
+          data-testid='auth-gate-trigger-*' on gated home CTAs for
+          automation.
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Session 32 — FOCUSED mobile re-test (iPhone 12 + Galaxy S21) on 6 items.
+
+      📱 iPhone 12 (390x844):
+        1. AI Prompts header position ........ ❌ FAIL (eyebrow_y=451.5, spec<100)
+        2. ImageGen resolution labels ........ ✅ PASS (Model Detail + 4. Output Quality)
+        3. Login flow /login?mode=login ...... ✅ PASS
+        4. Quick Access 2x2 grid ............. ✅ PASS (visually confirmed, all 4 tiles no truncation)
+        5. AuthGate 'Maybe later' onClose .... ⚠️ UNABLE TO TRIGGER (no visible gated CTA, but NO onClose errors in console during full session)
+        6. Hero saree image (2nd card) ....... ⚠️ NOT VERIFIED (didn't swipe carousel)
+
+      📱 Galaxy S21 (360x800):
+        1. AI Prompts header ................. ❌ FAIL (same issue, eyebrow not in viewport)
+        2. ImageGen labels ................... ⚠️ timing issue in eval; iPhone pass is definitive
+
+      🔴 CRITICAL FIX NEEDED:
+        /ai-prompts still renders the header+title block at mid-screen
+        (y=451) with empty space on top. ScrollView replacement of FlatList
+        did NOT fix it. Inspect parent container — likely justifyContent or
+        flexGrow:1 on contentContainerStyle pushing content down.
+
+      📝 Main-agent action items:
+        1. Fix /ai-prompts header layout (see stack_count bump).
+        2. Add data-testid='auth-gate-trigger-*' to gated home CTAs so
+           AuthGateModal 'Maybe later' behaviour can be tested.
+        3. Add data-testid='quick-access-{n}' to home Quick Access tiles.
+        4. Manually swipe carousel to 2nd card and visually confirm the
+           'Your Face, Animated' image shows an Indian woman in saree
+           (not black halter dress).
 
 agent_communication:
   - agent: "testing"
@@ -7042,6 +7188,47 @@ agent_communication:
          'Resolution' (480p/720p/1080p/4K) — exactly the duplicate the fix
          was meant to eliminate. Either rename was reverted or bundle was
          not rebuilt.
+
+#====================================================================================================
+# Session 19B-2 — frontend test follow-up after first agent run
+#====================================================================================================
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Frontend testing agent run #1 reported 3 issues. Fixes applied:
+
+      1) AI Prompts header rendering at y≈457 (mid-screen) on iPhone 12.
+         FIX: Replaced FlatList with ScrollView in /app/frontend/app/ai-prompts.tsx.
+         ScrollView renders children top-down naturally without flex-grow tricks.
+         Ref renamed listRef → scrollRef. scrollToEnd handler updated.
+
+      2) ImageGen showed two 'Resolution' sections.
+         Source had already been updated (ImageModelPicker shows 'Model Detail',
+         outer header shows '4. Output Quality') but bundle was stale.
+         FIX: expo restart forced bundle refresh. Re-verified strings present
+         in source via grep.
+
+      3) Login form not reachable for testing agent.
+         FIX: Added testIDs to login.tsx — login-email-input,
+         login-password-input, login-submit-button. The login form is
+         conditionally rendered (only when ?mode=login or ?mode=register),
+         so test agents should navigate to /login?mode=login DIRECTLY to
+         see the form without going through onboarding.
+
+      Please re-test ONLY these 3 areas + the previously-blocked items:
+        a) AI Prompts: header at TOP of viewport (y < 100), welcome bubble
+           visible right under header.
+        b) ImageGen: confirm 'Model Detail' label AND '4. Output Quality'
+           section header (not two 'Resolution' labels).
+        c) Login flow: navigate to /login?mode=login → submit
+           demo_creator@test.com / Test@123 (testIDs available).
+        d) Then: /  → Quick Access 2x2 grid, /marketplace → tier badges,
+           AuthGate guest crash, hero saree image.
+
+      Skip the working items (chat LLM call, prompt cards, recommended
+      badge, marketplace tier display) — those are already green.
+
 
       ❓ NOT VERIFIABLE THIS RUN (login interception):
 

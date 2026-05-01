@@ -317,6 +317,7 @@ export default function LandingScreen() {
                       <View style={s.inputWrap}>
                         <Ionicons name="mail-outline" size={16} color="#94A3B8" />
                         <TextInput
+                          testID="login-email-input"
                           style={s.input} placeholder="Email" placeholderTextColor="#64748B"
                           keyboardType="email-address" autoCapitalize="none"
                           value={email}
@@ -325,7 +326,7 @@ export default function LandingScreen() {
                       </View>
                       <View style={s.inputWrap}>
                         <Ionicons name="lock-closed-outline" size={16} color="#94A3B8" />
-                        <TextInput style={s.input} placeholder="Password" placeholderTextColor="#64748B" secureTextEntry value={password} onChangeText={setPassword} />
+                        <TextInput testID="login-password-input" style={s.input} placeholder="Password" placeholderTextColor="#64748B" secureTextEntry value={password} onChangeText={setPassword} />
                       </View>
 
                       {authMode === 'register' && (
@@ -379,7 +380,7 @@ export default function LandingScreen() {
                         </View>
                       )}
 
-                      <TouchableOpacity onPress={submit} disabled={busy} activeOpacity={0.85} style={{ marginTop: 6 }}>
+                      <TouchableOpacity testID="login-submit-button" onPress={submit} disabled={busy} activeOpacity={0.85} style={{ marginTop: 6 }}>
                         <LinearGradient colors={['#FF6B08', '#FF007F', '#AE29FF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.primaryCta}>
                           {busy ? <ActivityIndicator color="#fff" /> : (
                             <>
