@@ -8058,3 +8058,40 @@ backend:
                 import pattern.
 
 
+
+  - task: "Track 1A — login.tsx adopts /src/ui/ primitives (Chip, GhostButton)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/login.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — First real screen-level adoption of the
+          /src/ui/index.tsx primitives library that was scaffolded last
+          session. login.tsx (–28 LOC of inline boilerplate):
+
+          • Replaced inline "Continue as guest" TouchableOpacity (with its
+            ad-hoc `s.guestBtn` + `s.guestBtnText` styles) with the
+            <GhostButton/> primitive (icon="person-outline", size="md").
+            Removed the now-dead `guestBtn`/`guestBtnText` style entries.
+          • Replaced the bottom "feature chip strip" (4 inline
+            View/Text combos with `s.featureChip` + `s.featureChipText`)
+            with <Chip/> primitives. Removed dead style entries.
+          • testID="continue-as-guest-button" preserved on the GhostButton
+            so the existing E2E hook (login flow) keeps working.
+
+          Visual diff: identical glass pill + same frosted look, but now
+          theme-driven. Future tweaks to the design system propagate to
+          login automatically.
+
+          Verified via screenshot — entire screen renders correctly:
+          BETA chip, hero, brand logo, feature carousel, "Get Started"
+          CTA, "I already have an account · Log in", "or", Google
+          button, the new "Continue as guest" GhostButton, the helper
+          subtext, and the four feature chips at the bottom.
+
+

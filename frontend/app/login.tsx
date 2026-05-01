@@ -14,6 +14,7 @@ import { useAuth } from '../src/AuthContext';
 import MagicAiLogo from '../src/MagicAiLogo';
 import BrandLogo from '../src/BrandLogo';
 import AuroraBackground from '../src/AuroraBackground';
+import { Chip, GhostButton } from '../src/ui';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -293,22 +294,21 @@ export default function LandingScreen() {
 
                       {/* Continue as Guest — browse home without account.
                           Login is still required for create / generate features. */}
-                      <TouchableOpacity
-                        onPress={async () => {
-                          // mark onboarding done so RouteGuard doesn't loop
-                          try {
-                            const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-                            await AsyncStorage.setItem('magicai.onboarded', '1');
-                          } catch {}
-                          router.replace('/' as any);
-                        }}
-                        style={s.guestBtn}
-                        activeOpacity={0.7}
-                        testID="continue-as-guest-button"
-                      >
-                        <Ionicons name="person-outline" size={14} color="#94A3B8" />
-                        <Text style={s.guestBtnText}>Continue as guest</Text>
-                      </TouchableOpacity>
+                      <View style={{ marginTop: 14 }}>
+                        <GhostButton
+                          label="Continue as guest"
+                          icon="person-outline"
+                          size="md"
+                          onPress={async () => {
+                            try {
+                              const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+                              await AsyncStorage.setItem('magicai.onboarded', '1');
+                            } catch {}
+                            router.replace('/' as any);
+                          }}
+                          testID="continue-as-guest-button"
+                        />
+                      </View>
                       <Text style={s.guestSubtext}>
                         Browse the home screen — sign up to create magic ✨
                       </Text>
@@ -445,10 +445,11 @@ export default function LandingScreen() {
             {/* Feature chip strip */}
             <View style={s.featureChipRow}>
               {FEATURES.slice(0, 4).map(f => (
-                <View key={f.title} style={s.featureChip}>
-                  <Text style={{ fontSize: 16 }}>{f.icon}</Text>
-                  <Text style={s.featureChipText}>{f.title}</Text>
-                </View>
+                <Chip
+                  key={f.title}
+                  label={`${f.icon}  ${f.title}`}
+                  style={{ paddingHorizontal: 12, paddingVertical: 7 }}
+                />
               ))}
             </View>
 
@@ -532,14 +533,6 @@ const s = StyleSheet.create({
   googleBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 13, borderRadius: 14, backgroundColor: '#fff' },
   googleIconBox: { width: 22, height: 22, borderRadius: 4, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
   googleText: { color: '#0A0118', fontSize: 14, fontWeight: '700' },
-  guestBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 11, marginTop: 14,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',
-  },
-  guestBtnText: { color: '#CBD5E1', fontSize: 13, fontWeight: '700' },
   guestSubtext: { color: '#64748B', fontSize: 11, fontWeight: '500', textAlign: 'center', marginTop: 6, letterSpacing: 0.2 },
 
   /* Inputs */
@@ -566,8 +559,6 @@ const s = StyleSheet.create({
 
   /* Feature chip strip below card */
   featureChipRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 20, maxWidth: 440 },
-  featureChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  featureChipText: { color: '#E5E7EB', fontSize: 12, fontWeight: '600' },
 
   /* Footer */
   footer: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, justifyContent: 'center' },
