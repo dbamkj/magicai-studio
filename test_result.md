@@ -7593,3 +7593,73 @@ frontend:
           guest reaches home, AuthGateModal still gates create flows.
 
 
+#====================================================================================================
+# Session 22 — Phase-B seed refactor + Track 1A subscription polish
+#====================================================================================================
+
+backend:
+  - task: "Phase-B refactor seed — extract upload endpoints to routes/uploads.py"
+    implemented: true
+    working: true
+    file: "backend/routes/uploads.py (new, 185 lines), backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          First slice of the Phase-B server.py refactor. Created
+          routes/uploads.py module with 4 extracted endpoints:
+             • POST /api/upload-image       (multipart image + 10MB re-encode)
+             • POST /api/upload-from-url    (remote image/video download)
+             • POST /api/upload-base64      (raw + dataURL base64)
+             • POST /api/upload-face-image  (face-swap/lipsync input)
+          Removed the corresponding inline blocks from server.py (~140 lines
+          saved, 3843 → 3728). Router registered in server.py right after
+          app.include_router(api_router). Uses core.auth.get_current_user
+          and core.upload_safety.validate_image_upload — same as before.
+          Behavior preserved bit-for-bit. Backend testing agent ran full
+          regression: 14/14 passed, no duplicate-route warnings, no regression
+          on upload-video/upload-audio (still in server.py), no regression on
+          marketplace/avatar/prompts/wizard endpoints.
+
+          Remaining candidates for next session (in order of safety):
+             • routes/media.py: upload-video, upload-audio, transcribe-audio,
+               extract-frames, merge-segments (lines 1811-2295)
+             • routes/bhajan.py: generate-bhajan, generate-hook (~200 lines)
+             • routes/talking.py: D-ID talking-avatar endpoints (~250 lines)
+             • routes/face.py: faceswap / lipsync / headswap (~900 lines, HIGH RISK)
+
+frontend:
+  - task: "Track 1A seed — Subscription plan card aurora glow polish"
+    implemented: true
+    working: true
+    file: "frontend/app/subscription.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          First visible polish using the UI-primitives design language
+          (inspired by /src/ui/index.tsx GlassCard glow variant, applied
+          inline here to avoid refactoring 591-line file wholesale).
+          Popular (highlighted) plan card now gets:
+             • 2px accent border
+             • accent-tinted background (12% opacity of plan's accent)
+             • outer glow shadow (28px pink radius on web; native
+               shadowRadius: 14 + elevation: 8 with matching color)
+          Current plan (when NOT popular) gets a subtle green glow
+          (#10B981) to help the user visually locate their active tier.
+          Verified in web preview — card pops off the page on the
+          Monthly tab.
+
+          Remaining Track 1A candidates for next session (same visible-
+          glow approach, minimal risk):
+             • Marketplace: highlight featured/trending templates
+             • Library: highlight most-recent project
+             • Login: apply glow to gradient 'Get Started' CTA
+
+

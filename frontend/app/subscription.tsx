@@ -283,7 +283,25 @@ export default function SubscriptionScreen() {
               const effMonthly = billingCycle === 'annual' && p.price_inr > 0 ? Math.round(displayedPrice / 12) : null;
               const trialEligibleHere = !!p.trial_eligible && !balance?.trial_used && currentTier === 'free';
               return (
-                <View key={p.id} style={[s.planCard, { borderColor: popular ? accent : 'rgba(255,255,255,0.1)' }]}>
+                <View
+                  key={p.id}
+                  style={[
+                    s.planCard,
+                    { borderColor: popular ? accent : 'rgba(255,255,255,0.1)' },
+                    popular && {
+                      borderWidth: 2,
+                      backgroundColor: `${accent}12`,
+                      ...Platform.select({
+                        web: { boxShadow: `0 0 28px ${accent}55` as any },
+                        default: { shadowColor: accent, shadowOpacity: 0.45, shadowRadius: 14, shadowOffset: { width: 0, height: 0 }, elevation: 8 },
+                      }),
+                    },
+                    isCurrent && !popular && {
+                      borderColor: '#10B981',
+                      backgroundColor: 'rgba(16,185,129,0.06)',
+                    },
+                  ]}
+                >
                   {popular && (
                     <View style={[s.popularBadge, { backgroundColor: accent }]}>
                       <Ionicons name="star" size={10} color="#fff" />
