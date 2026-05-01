@@ -7277,3 +7277,38 @@ agent_communication:
       incremented to 1).
 
 
+#====================================================================================================
+# Session 19B-3 — AI Prompts layout root-cause RESOLVED
+#====================================================================================================
+
+frontend:
+  - task: "AI Prompts — mobile layout (FlatList stretches properly)"
+    implemented: true
+    working: true
+    file: "frontend/app/ai-prompts.tsx, frontend/src/AuroraBackground.tsx (no change, props usage corrected)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "main"
+        -comment: "First 2 fix attempts (FlatList+flex chain, ScrollView swap, KAV behavior change, SafeAreaView wrap, Stack.Screen position) all failed. Header still at y≈451 mid-viewport on iPhone 12."
+        -working: true
+        -agent: "main"
+        -comment: |
+          ROOT CAUSE FOUND (via troubleshoot_agent + DOM inspection):
+          AuroraBackground component supports two modes — 'absolute overlay'
+          and 'wrapper-with-children'. When called as <AuroraBackground />
+          (no `absolute` prop, no children), it falls through to wrapper
+          mode and renders an EMPTY flex:1 sibling that consumes 50% of
+          parent's height. This pushed SafeAreaView (also flex:1) into the
+          BOTTOM half of the viewport — exactly the y=540 / y=569 readings
+          we kept seeing. Fix: changed `<AuroraBackground />` →
+          `<AuroraBackground absolute />` so it renders as
+          position:absolute, fillObject — taking zero flex space. Verified
+          via web preview screenshot: eyebrow now at y=29.5 (right under
+          status bar), welcome bubble + suggestions visible immediately
+          below, composer at bottom. Bonus fix: scrollToEnd guarded with
+          messages.length>1 so welcome state doesn't autoscroll the page.
+
+

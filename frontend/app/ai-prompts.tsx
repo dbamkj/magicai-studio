@@ -23,6 +23,7 @@ import {
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable,
   FlatList, ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
@@ -260,10 +261,14 @@ export default function AIPromptsScreen() {
   }, []);
 
   const scrollToEnd = useCallback(() => {
+    // Only scroll when there are actual conversation messages, not just
+    // the welcome bubble. Otherwise the ScrollView's auto-scroll on web
+    // would shift the entire page down by hundreds of pixels.
+    if (messages.length <= 1) return;
     requestAnimationFrame(() => {
       scrollRef.current?.scrollToEnd({ animated: true });
     });
-  }, []);
+  }, [messages.length]);
 
   // ── Send turn ─────────────────────────────────────────────────────────
   const sendTurn = useCallback(
@@ -587,14 +592,14 @@ export default function AIPromptsScreen() {
 
   return (
     <View style={s.root}>
-      <AuroraBackground />
-      <Stack.Screen options={{ headerShown: false }} />
+      <AuroraBackground absolute />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={s.flex1}
-        keyboardVerticalOffset={0}
-      >
+      <SafeAreaView style={s.flex1} edges={['top', 'left', 'right']}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={s.flex1}
+          keyboardVerticalOffset={0}
+        >
         {/* Header */}
         <View style={s.header}>
           <TouchableOpacity
@@ -716,7 +721,8 @@ export default function AIPromptsScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
-    </View>
+        </SafeAreaView>
+      </View>
   );
 }
 
