@@ -2498,109 +2498,10 @@ def apply_motion_to_video_clip(src_video: Path, motion_id: str, out_path: Option
     return None
 
 
-class CreateTalkingAvatarRequest(BaseModel):
-    image_path: str              # uploaded image path
-    script: str                  # script text (supports [pause:X.Xs] markers)
-    voice_id: Optional[str] = "hi-IN-SwaraNeural"
-    voice_style: Optional[str] = None
-    voice_rate: Optional[str] = None
-    voice_pitch: Optional[str] = None
-    motion: Optional[str] = None  # ffmpeg motion preset for output video; None/'none' = static
-    aspect_ratio: Optional[str] = "9:16"
-    resolution: Optional[str] = "720p"
-    parent_id: Optional[str] = None
+# NOTE: /api/create-talking-avatar moved to routes/talking.py (Phase-B Session 24).
+# CreateTalkingAvatarRequest model lives in core/models.py.
 
 
-@api_router.post("/create-talking-avatar")
-async def create_talking_avatar(req: CreateTalkingAvatarRequest, background_tasks: BackgroundTasks, request: Request = None):
-    """One-click Talking Avatar: image + script → MH lip-sync + optional ffmpeg camera motion.
-    Composes Sprint 2 (voice_style, pauses, rate/pitch) + Sprint 3 Phase A (motion) + MH lip-sync."""
-    # Robust path resolution (Batch 3: consolidated to _resolve_upload_path).
-    img_abs = _resolve_upload_path(req.image_path)
-    if not img_abs.exists():
-        raise HTTPException(status_code=400, detail=f"Image not found: {req.image_path}")
-    if not (req.script or "").strip():
-        raise HTTPException(status_code=400, detail="Script is required")
-    user, cost = await preflight_and_reserve(request, job_type='lipsync', feature='lip_sync')
-
-    p = VideoProject(
-        name=f"TalkingAvatar_{datetime.now(timezone.utc).strftime('%H%M%S')}",
-        type="talking_avatar",
-        user_id=user["user_id"],
-        input_payload=req.dict(),
-        endpoint="/api/create-talking-avatar",
-    )
-    await db.video_projects.insert_one(p.dict())
-    await _link_as_version(p.id, req.parent_id)
-
-    async def _bg():
-        try:
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"status": "processing", "progress": 10}})
-            mh = MagicHourClient(token=MAGIC_HOUR_API_KEY)
-            # 1) Generate TTS audio (with style/pauses/rate/pitch)
-            tts_path = UPLOAD_DIR / f"avatar_tts_{uuid.uuid4().hex}.mp3"
-            await generate_tts_audio(req.script.strip(), req.voice_id or "hi-IN-SwaraNeural", tts_path, min_duration=2.5, voice_style=req.voice_style, voice_rate=req.voice_rate, voice_pitch=req.voice_pitch)
-            if not tts_path.exists() or tts_path.stat().st_size < 500:
-                raise Exception("TTS synthesis failed")
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 30}})
-
-            # 2) Probe TTS duration, pad if needed (MH requires >= 2.5s)
-            dur_r = subprocess.run(["/usr/bin/ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(tts_path)], capture_output=True, timeout=15)
-            audio_dur = float((dur_r.stdout.decode() or "3.0").strip() or "3.0")
-            if audio_dur < 2.5:
-                padded = UPLOAD_DIR / f"avatar_tts_pad_{uuid.uuid4().hex}.mp3"
-                subprocess.run(["/usr/bin/ffmpeg", "-y", "-i", str(tts_path), "-af", "apad=pad_dur=2.5", "-t", "3.0", str(padded)], capture_output=True, timeout=20)
-                if padded.exists(): tts_path = padded; audio_dur = 3.0
-
-            # 3) Create still video from the image (duration matches audio+1)
-            still_v = UPLOAD_DIR / f"avatar_still_{uuid.uuid4().hex}.mp4"
-            r1 = subprocess.run(["/usr/bin/ffmpeg", "-y", "-loop", "1", "-i", str(img_abs), "-c:v", "libx264", "-t", str(audio_dur + 1), "-pix_fmt", "yuv420p", "-r", "25", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", str(still_v)], capture_output=True, timeout=60)
-            if r1.returncode != 0 or not still_v.exists():
-                raise Exception(f"Still video creation failed: {r1.stderr[-200:].decode('utf-8', errors='ignore')}")
-
-            # 4) Upload to MH + lip-sync
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 45}})
-            mh_video = upload_to_magic_hour(mh, str(still_v), "video")
-            mh_audio = upload_to_magic_hour(mh, str(tts_path), "audio")
-            ls = await mh_create_lipsync_with_retry(mh, f"TalkingAvatar_{p.id[:8]}", {"video_source": "file", "video_file_path": mh_video, "audio_file_path": mh_audio}, 0.0, audio_dur)
-            ls_url = await mh_poll_video(mh, ls.id, max_wait=600, on_progress=lambda pr: db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 45 + int(pr/100 * 40)}}))
-            if not ls_url:
-                raise Exception("Lip-sync timed out")
-
-            # 5) Download MH lip-sync result
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 88}})
-            ls_local = UPLOAD_DIR / f"avatar_ls_{uuid.uuid4().hex}.mp4"
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), follow_redirects=True) as c:
-                resp = await c.get(ls_url)
-                with open(ls_local, "wb") as f: f.write(resp.content)
-
-            # 6) Optionally apply motion (zoompan) on top of the talking video
-            final = ls_local
-            if req.motion and req.motion != "none":
-                motioned = apply_motion_to_video_clip(ls_local, req.motion)
-                if motioned and motioned.exists():
-                    final = motioned
-
-            # 7) Apply resolution downscale (reusing existing helper)
-            result_url = f"/api/serve-file/{final.name}"
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"status": "completed", "progress": 100, "result_url": result_url, "completed_at": datetime.now(timezone.utc)}})
-            # Async resolution downscale (don't block)
-            try:
-                asyncio.create_task(apply_resolution_to_project(p.id, req.resolution or "720p", "video"))
-            except Exception: pass
-
-            # Cleanup intermediate files
-            for f_tmp in [tts_path, still_v]:
-                try:
-                    if f_tmp.exists() and f_tmp != final: f_tmp.unlink()
-                except Exception: pass
-        except Exception as e:
-            logger.error(f"TalkingAvatar failed: {e}")
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"status": "failed", "error": str(e)[:300]}})
-
-    background_tasks.add_task(_bg)
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks)
-    return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 # Preset idea → AI image generation prompt mappings
 IDEA_PROMPTS = {
     # Body/Outfit ideas
@@ -3463,6 +3364,9 @@ app.include_router(_uploads_router)
 # Phase-B refactor (Session 23): extracted media endpoints (audio/video utilities)
 from routes.media import router as _media_router
 app.include_router(_media_router)
+
+from routes.talking import router as _talking_router
+app.include_router(_talking_router)
 # Sprint 6 — Content Intelligence: templates router (Batch 2 refactor seed)
 from routes.templates import router as _templates_router
 app.include_router(_templates_router)

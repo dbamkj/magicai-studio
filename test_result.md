@@ -831,6 +831,107 @@ session_22_phaseb_uploads_refactor:
 
           Test artefact: /app/backend_test_phaseb.py (re-runnable).
 
+session_24_phaseb_talking_refactor:
+  - task: "Phase-B routes/talking.py extraction regression (Session 24)"
+    implemented: true
+    working: true
+    file: "backend/routes/talking.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 24 — Phase-B talking.py extraction regression PASS 14/14.
+          POST /api/create-talking-avatar successfully extracted from server.py
+          to routes/talking.py with lazy-import pattern. No duplicate route
+          registrations, no circular import errors, all auth + validation
+          surfaces intact, regression sweep clean.
+
+          A) /api/create-talking-avatar surface (4/4):
+            1a. NO Authorization header + REAL image_path + valid script
+                → 401 {"detail":"Authentication required"} ✓
+                (Note: when image_path is bogus the handler returns 400
+                "Image not found" BEFORE the auth check fires — this is by
+                design since validate-then-auth is the order in talking.py
+                lines 66-72. The review's "or whatever preflight_and_reserve
+                returns" wording covers both cases. Tested with a real
+                pre-existing image to verify auth gating works.)
+            1b. Valid auth + non-existent image_path
+                ('/app/backend/uploads/nonexistent_xyz_123.png')
+                → 400 {"detail":"Image not found: /app/backend/uploads/nonexistent_xyz_123.png"} ✓
+            1c. Valid auth + valid image_path (uploaded via /api/upload-image)
+                + empty script ('   ')
+                → 400 {"detail":"Script is required"} ✓
+            1d. Valid auth + valid image_path + valid script ('Hello, this is
+                a quick test.') + voice_id='hi-IN-SwaraNeural'
+                → 200 {project_id:'df6a5d11-...', status:'processing',
+                        credits_charged:200} ✓
+                Synchronous response shape verified. Background task NOT
+                awaited per review instruction.
+
+          B) Regression sweep (6/6):
+            - GET /api/mode → 200 ✓
+            - GET /api/marketplace/templates?limit=3 → 200 ✓
+            - GET /api/avatar/styles → 200 ✓
+            - POST /api/upload-image (multipart PNG) → 200 with file_path ✓
+            - GET /api/auth/me with auth → 200 with {user, env, is_beta, is_dev} ✓
+            - GET /api/projects with auth → 200 ✓
+
+          C) Duplicate registration check (CRITICAL — 2/2):
+            - GET http://localhost:8001/openapi.json → 200, scanned 124 paths.
+            - '/api/create-talking-avatar' present EXACTLY once with method
+              'post' (methods=['post']). No duplicate path entries. The
+              lazy-import pattern + router.include_router() in server.py
+              works without any double-registration. ✓
+            - No other path keys contain the substring 'create-talking-avatar'
+              (no trailing-slash variant, no duplicate from server.py). ✓
+
+          D) Backend startup log: NO duplicate-route warnings, NO 'already
+            exists' errors, NO circular import stacktraces during reload
+            after routes/talking.py was added. Clean reload at 15:02:20.
+
+          Test artefact: /app/backend_test_session24.py (re-runnable).
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Session 24 — Phase-B routes/talking.py extraction regression COMPLETE.
+      ALL 14/14 tests PASS. The extracted POST /api/create-talking-avatar
+      endpoint works identically to the pre-refactor version. No regressions
+      detected.
+
+      ✅ Auth + validation surface (4/4):
+         - 1a: No-auth + real image + script → 401 'Authentication required'
+         - 1b: Auth + bogus path → 400 'Image not found: ...'
+         - 1c: Auth + valid image + empty script → 400 'Script is required'
+         - 1d: Auth + valid image + script → 200 {project_id, status:'processing',
+                                                  credits_charged:200}
+         (Did NOT wait for MH lipsync background task to finish per review.)
+
+      ✅ Regression sweep (6/6):
+         GET /api/mode, /api/marketplace/templates, /api/avatar/styles,
+         POST /api/upload-image, GET /api/auth/me, GET /api/projects — all 200.
+
+      ✅ Duplicate-route check (2/2):
+         /api/create-talking-avatar appears EXACTLY ONCE in openapi.json
+         with method 'post'. Lazy-import + router.include_router pattern
+         working correctly, no duplicate registration.
+
+      Note on validation order: the handler runs image-existence + script
+      checks BEFORE preflight_and_reserve (talking.py:66-72), so a
+      no-auth request with a bogus image_path returns 400 (Image not
+      found) rather than 401. With a REAL image_path, no-auth correctly
+      returns 401. This is by design and matches the review's "or
+      whatever preflight_and_reserve returns for guests" wording.
+
+      Test artefact: /app/backend_test_session24.py.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
+
+
 
 
 frontend_session_32_mobile_retest:
@@ -7902,4 +8003,58 @@ frontend:
 
           User-verification pending. No backend changes; backend already
           has 401 on the relevant POSTs which is the safety net.
+
+
+backend:
+  - task: "Phase-B refactor — extract /create-talking-avatar to routes/talking.py"
+    implemented: true
+    working: "NA"
+    file: "backend/routes/talking.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — Continued Phase-B refactor of server.py (3589 → 3493
+          LOC, –96 lines).
+
+          Created /app/backend/routes/talking.py:
+            • POST /api/create-talking-avatar — image + script → MH lip-sync
+              + optional ffmpeg motion. Identical behavior to the previous
+              inline implementation.
+            • Uses lazy imports inside the handler to access server.py
+              helpers (MagicHourClient, MAGIC_HOUR_API_KEY, UPLOAD_DIR,
+              _resolve_upload_path, _link_as_version, generate_tts_audio,
+              upload_to_magic_hour, mh_create_lipsync_with_retry,
+              mh_poll_video, apply_motion_to_video_clip,
+              apply_resolution_to_project) — avoids circular imports
+              while preserving all business logic.
+            • CreateTalkingAvatarRequest already lived in core/models.py;
+              imported from there.
+            • Direct imports from core: preflight_and_reserve, settle_credits
+              (core.billing), db (core.db), VideoProject, model class
+              (core.models).
+
+          Removed inline class + endpoint from server.py (lines 2501-2603).
+          Registered new router right after media.py registration:
+            from routes.talking import router as _talking_router
+            app.include_router(_talking_router)
+
+          Smoke test passed:
+            curl -X POST /api/create-talking-avatar with bogus image path
+            → HTTP 400 "Image not found" (handler reached, validation
+            works, no 404 / 500).
+
+          Verify:
+            (1) POST /api/create-talking-avatar with auth + bogus image →
+                400 "Image not found".
+            (2) POST /api/create-talking-avatar without auth → 401.
+            (3) POST /api/create-talking-avatar with empty script → 400
+                "Script is required".
+            (4) Existing endpoints (uploads, media, marketplace, etc.) all
+                still respond — confirm no regressions from the lazy
+                import pattern.
+
 
