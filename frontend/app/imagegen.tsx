@@ -10,6 +10,8 @@ import QualityPicker from '../src/QualityPicker';
 import ResolutionPicker from '../src/ResolutionPicker';
 import AuroraBackground from '../src/AuroraBackground';
 import ModelPickerBlock from '../src/components/ModelPickerBlock';
+import AuthGateModal from '../src/components/AuthGateModal';
+import { useAuth } from '../src/AuthContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -77,6 +79,11 @@ export default function ImageGenScreen() {
   const [refUploading, setRefUploading] = useState(false);
   const pollRef = useRef<any>(null);
 
+  // Auth gate for guest users — replaces the ugly white "Authentication required"
+  // alert with the same modal shown elsewhere in the app.
+  const { user } = useAuth();
+  const [showAuthGate, setShowAuthGate] = useState(false);
+
   useEffect(() => {
     if (projectId && processing) {
       pollRef.current = setInterval(async () => {
@@ -100,12 +107,18 @@ export default function ImageGenScreen() {
   }, [projectId, processing]);
 
   const generate = async () => {
+    if (!user) { setShowAuthGate(true); return; }
     if (!prompt.trim()) { Alert.alert('Enter a prompt'); return; }
     try {
       setProcessing(true); setProgress(0); setResultStatus('none'); setResultUrl(null);
       const r = await axios.post(`${BACKEND_URL}/api/generate-image`, { prompt, aspect_ratio: aspectRatio, style, quality_mode: qualityMode, resolution, parent_id: params.edit_of ? String(params.edit_of) : undefined });
       setProjectId(r.data.project_id);
-    } catch (e: any) { Alert.alert('Error', e.response?.data?.detail || 'Failed'); setProcessing(false); }
+    } catch (e: any) {
+      const status = e?.response?.status;
+      if (status === 401 || status === 403) { setShowAuthGate(true); setProcessing(false); return; }
+      Alert.alert('Error', e.response?.data?.detail || 'Failed');
+      setProcessing(false);
+    }
   };
 
   const pickRefImage = async () => {
@@ -305,6 +318,12 @@ export default function ImageGenScreen() {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+      <AuthGateModal
+        visible={showAuthGate}
+        onClose={() => setShowAuthGate(false)}
+        reason="Image generation"
+        nextRoute="/imagegen"
+      />
     </SafeAreaView>
     </AuroraBackground>
   );

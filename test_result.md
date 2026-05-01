@@ -7446,3 +7446,84 @@ agent_communication:
           "Krishna bhajan devotional reel" prompt.
 
 
+#====================================================================================================
+# Session 21 — 4 user-reported bugs + Continue as Guest CTA
+#====================================================================================================
+
+frontend:
+  - task: "AI Prompts — keyboard overlap on Android (input hidden)"
+    implemented: true
+    working: true
+    file: "frontend/app/ai-prompts.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          User reported the chat composer was hidden behind the soft keyboard
+          on Android. Switched KeyboardAvoidingView behavior from `undefined`
+          to `'height'` on Android (keep `'padding'` on iOS) and added a
+          24px keyboardVerticalOffset on Android so the entire composer +
+          style chips lift above the keyboard. Verified TextInput now
+          remains visible and focusable when keyboard opens.
+
+  - task: "ImageGen — generic 'Authentication required' alert → AuthGateModal"
+    implemented: true
+    working: true
+    file: "frontend/app/imagegen.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          User screenshot showed a plain white 'Error: Authentication required'
+          system Alert when guest taps Generate Image. Replaced with the same
+          AuthGateModal used elsewhere (Login / New here? / Maybe later
+          buttons + branded sparkle icon). Logic: gate on !user OR
+          401/403 response from /api/generate-image. Modal is wired with
+          reason='Image generation' + nextRoute='/imagegen'. Maybe later
+          dismisses cleanly thanks to onClose default no-op (Session 19B fix).
+
+  - task: "VideoGen — AuthGateModal Login/Maybe-later buttons not working"
+    implemented: true
+    working: true
+    file: "frontend/app/videogen.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          User reported login/cancel buttons did nothing when guest opened
+          /videogen. Root cause: videogen was passing onCancel + onSignIn
+          props to AuthGateModal which doesn't accept those. The component
+          only knows onClose + nextRoute (and routes Login → /login itself).
+          Fixed by wiring onClose={() => { setAuthGateOpen(false); router.back(); }}
+          and nextRoute='/videogen'. Now Login/Create/Maybe later all work.
+
+  - task: "Login — 'Continue as guest' CTA"
+    implemented: true
+    working: true
+    file: "frontend/app/login.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          New CTA below 'Continue with Google' on the landing card. Uses
+          glassmorphism style (semi-transparent white + thin border) so it
+          reads as a tertiary action vs the gradient Get Started. On tap it
+          sets ONBOARD_KEY='1' in AsyncStorage so RouteGuard doesn't loop
+          back to onboarding, then router.replace('/'). Subtitle reads
+          'Browse the home screen — sign up to create magic ✨' to set the
+          right expectation. Verified: button shows on /login landing,
+          guest reaches home, AuthGateModal still gates create flows.
+
+

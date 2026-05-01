@@ -290,6 +290,28 @@ export default function LandingScreen() {
                         </View>
                         <Text style={s.googleText}>Continue with Google</Text>
                       </TouchableOpacity>
+
+                      {/* Continue as Guest — browse home without account.
+                          Login is still required for create / generate features. */}
+                      <TouchableOpacity
+                        onPress={async () => {
+                          // mark onboarding done so RouteGuard doesn't loop
+                          try {
+                            const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+                            await AsyncStorage.setItem('magicai.onboarded', '1');
+                          } catch {}
+                          router.replace('/' as any);
+                        }}
+                        style={s.guestBtn}
+                        activeOpacity={0.7}
+                        testID="continue-as-guest-button"
+                      >
+                        <Ionicons name="person-outline" size={14} color="#94A3B8" />
+                        <Text style={s.guestBtnText}>Continue as guest</Text>
+                      </TouchableOpacity>
+                      <Text style={s.guestSubtext}>
+                        Browse the home screen — sign up to create magic ✨
+                      </Text>
                     </>
                   ) : (
                     <>
@@ -510,6 +532,15 @@ const s = StyleSheet.create({
   googleBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 13, borderRadius: 14, backgroundColor: '#fff' },
   googleIconBox: { width: 22, height: 22, borderRadius: 4, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
   googleText: { color: '#0A0118', fontSize: 14, fontWeight: '700' },
+  guestBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: 11, marginTop: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',
+  },
+  guestBtnText: { color: '#CBD5E1', fontSize: 13, fontWeight: '700' },
+  guestSubtext: { color: '#64748B', fontSize: 11, fontWeight: '500', textAlign: 'center', marginTop: 6, letterSpacing: 0.2 },
 
   /* Inputs */
   inputWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)', marginBottom: 10 },

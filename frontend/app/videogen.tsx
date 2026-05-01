@@ -739,8 +739,8 @@ export default function VideoGenScreen() {
     <AuthGateModal
       visible={authGateOpen}
       reason="AI Video Generation"
-      onCancel={() => { setAuthGateOpen(false); router.back(); }}
-      onSignIn={() => { setAuthGateOpen(false); router.replace('/login' as any); }}
+      onClose={() => { setAuthGateOpen(false); router.back(); }}
+      nextRoute="/videogen"
     />
     </AuroraBackground>
   );
