@@ -290,9 +290,12 @@ export default function ImageGenScreen() {
             <ModelPickerBlock kind="image" />
           </View>
 
-          {/* Resolution */}
+          {/* Output Quality (resolution + tier gate) */}
           <View style={s.section}>
-            <Text style={s.sTitle}>Resolution</Text>
+            <Text style={s.sTitle}>4. Output Quality</Text>
+            <Text style={{ color: '#94A3B8', fontSize: 11, marginBottom: 10, marginTop: -4 }}>
+              Final image size you'll download. Higher = sharper, more credits.
+            </Text>
             <ResolutionPicker selected={resolution} onSelect={(r) => setResolution(r as any)} />
           </View>
 

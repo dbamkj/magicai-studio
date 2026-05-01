@@ -264,7 +264,7 @@ export default function ImageModelPicker({
 
       {!!onResolutionChange && (
         <View style={s.cascadeRow}>
-          <Text style={s.cascadeLabel}>Resolution</Text>
+          <Text style={s.cascadeLabel}>Model Detail</Text>
           <View style={s.segRow}>
             {current.resolutions.map((r) => (
               <TouchableOpacity

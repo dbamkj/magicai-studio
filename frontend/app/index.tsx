@@ -39,8 +39,8 @@ const HOME_HERO_SLIDES = [
     titleAccent: 'Animated',
     subtitle: 'Cartoonize portraits in 12+ Pixar / Anime styles',
     cta: 'Make Avatar',
-    image: 'https://images.unsplash.com/photo-1588914381133-171ab6b87d98?crop=entropy&cs=srgb&fm=jpg&w=600&h=600&fit=crop&q=85',
-    fallbackImage: 'https://images.pexels.com/photos/18138118/pexels-photo-18138118.jpeg?auto=compress&cs=tinysrgb&w=600&h=600&dpr=2',
+    image: 'https://images.unsplash.com/photo-1716504628105-bd76d91e85f2?w=600&h=600&fit=crop&q=85',
+    fallbackImage: 'https://images.unsplash.com/photo-1622258567999-24d00a930ee8?w=600&h=600&fit=crop&q=85',
     route: '/cartoon-avatar',
     gradient: ['#7B5CFF', '#FF4D8D'] as const,
   },
@@ -1642,10 +1642,10 @@ const s = StyleSheet.create({
   },
   previewCtaTxt: { color: '#0B1120', fontSize: 15, fontWeight: '900', letterSpacing: 0.4 },
 
-  /* Quick Access */
-  qaGrid: { flexDirection: 'row', gap: 10 },
+  /* Quick Access — 2×2 grid on mobile so titles/subtitles fit */
+  qaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   qaTile: {
-    flex: 1, height: 132, borderRadius: 18, overflow: 'hidden',
+    width: '48%', height: 132, borderRadius: 18, overflow: 'hidden',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)',
     backgroundColor: '#1E1B4B',
     padding: 12,
@@ -1665,8 +1665,8 @@ const s = StyleSheet.create({
   qaTileBody: {
     paddingTop: 4,
   },
-  qaTileTitle: { color: '#fff', fontSize: 13, fontWeight: '900', letterSpacing: 0.2 },
-  qaTileSub: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '700', flex: 1, marginRight: 4 },
+  qaTileTitle: { color: '#fff', fontSize: 14, fontWeight: '900', letterSpacing: 0.2 },
+  qaTileSub: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700', flex: 1, marginRight: 4 },
 
   /* Trending */
   trendCard: {

@@ -27,7 +27,8 @@ import { useRouter } from 'expo-router';
 
 type Props = {
   visible: boolean;
-  onClose: () => void;
+  /** Optional close handler — falls back to a no-op so callers that forget it never crash. */
+  onClose?: () => void;
   /** Short human label — shown in the subtitle, e.g. "Use this template" */
   reason?: string;
   /** Where to send the user after a successful login */
@@ -36,13 +37,14 @@ type Props = {
 
 export default function AuthGateModal({ visible, onClose, reason, nextRoute }: Props) {
   const router = useRouter();
+  const close = onClose || (() => {});
 
   return (
     <Modal
       visible={visible}
       animationType="fade"
       transparent
-      onRequestClose={onClose}
+      onRequestClose={close}
     >
       <View style={s.overlay}>
         <View style={s.card}>
@@ -59,7 +61,7 @@ export default function AuthGateModal({ visible, onClose, reason, nextRoute }: P
             style={s.primary}
             activeOpacity={0.88}
             onPress={() => {
-              onClose();
+              close();
               router.push({
                 pathname: '/login',
                 params: { mode: 'login', next: nextRoute || '' },
@@ -73,7 +75,7 @@ export default function AuthGateModal({ visible, onClose, reason, nextRoute }: P
             style={s.secondary}
             activeOpacity={0.85}
             onPress={() => {
-              onClose();
+              close();
               router.push({
                 pathname: '/login',
                 params: { mode: 'register', next: nextRoute || '' },
@@ -82,7 +84,7 @@ export default function AuthGateModal({ visible, onClose, reason, nextRoute }: P
           >
             <Text style={s.secondaryText}>New here? Create an account</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.close} onPress={onClose} activeOpacity={0.7}>
+          <TouchableOpacity style={s.close} onPress={close} activeOpacity={0.7}>
             <Text style={s.closeText}>Maybe later</Text>
           </TouchableOpacity>
         </View>

@@ -591,9 +591,9 @@ export default function AIPromptsScreen() {
       <Stack.Screen options={{ headerShown: false }} />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={s.flex1}
-        keyboardVerticalOffset={Platform.select({ ios: 0, android: 0 }) as number}
+        keyboardVerticalOffset={0}
       >
         {/* Header */}
         <View style={s.header}>
@@ -621,17 +621,19 @@ export default function AIPromptsScreen() {
         </View>
 
         {/* Message list */}
-        <FlatList
-          ref={listRef}
-          data={messages}
-          keyExtractor={(m) => m.id}
-          renderItem={renderItem}
-          contentContainerStyle={s.listContent}
-          style={s.flex1}
-          showsVerticalScrollIndicator={false}
-          onContentSizeChange={scrollToEnd}
-          extraData={playingPromptId}
-        />
+        <View style={s.flex1}>
+          <FlatList
+            ref={listRef}
+            data={messages}
+            keyExtractor={(m) => m.id}
+            renderItem={renderItem}
+            contentContainerStyle={s.listContent}
+            style={s.flex1}
+            showsVerticalScrollIndicator={false}
+            onContentSizeChange={scrollToEnd}
+            extraData={playingPromptId}
+          />
+        </View>
 
         {/* Bottom composer */}
         <View style={s.composerWrap}>
