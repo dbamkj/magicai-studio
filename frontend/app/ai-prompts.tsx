@@ -23,7 +23,7 @@ import {
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable,
   FlatList, ScrollView, Image, Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
@@ -222,6 +222,7 @@ function encodeBase64(input: string): string {
 // ─── Screen ────────────────────────────────────────────────────────────────
 
 export default function AIPromptsScreen() {
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<ChatMsg[]>([
     {
       id: 'welcome',
@@ -673,9 +674,9 @@ export default function AIPromptsScreen() {
 
       <SafeAreaView style={s.flex1} edges={['top', 'left', 'right']}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={s.flex1}
-          keyboardVerticalOffset={0}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : -insets.bottom}
         >
         {/* Header */}
         <View style={s.header}>
@@ -1505,7 +1506,7 @@ const s = StyleSheet.create({
   composerWrap: {
     paddingHorizontal: theme.space.md,
     paddingTop: theme.space.sm,
-    paddingBottom: Platform.select({ ios: theme.space.lg, android: theme.space.md, default: theme.space.md }) as number,
+    paddingBottom: Platform.select({ ios: theme.space.lg, android: 28, default: theme.space.md }) as number,
     backgroundColor: 'rgba(15,12,41,0.85)',
     borderTopWidth: 1, borderTopColor: theme.glass.border,
   },

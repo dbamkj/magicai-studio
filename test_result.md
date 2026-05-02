@@ -674,9 +674,8 @@ metadata:
 
 test_plan:
   current_focus:
-    - "AI Prompts header position (ai-prompts)"
-  stuck_tasks:
-    - "AI Prompts header position (ai-prompts)"
+    - "Session 25 — Talking Avatar dimension pre-check (stuck @ 5% fix)"
+  stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
@@ -8991,4 +8990,185 @@ agent_communication:
             "Generate 2 fictional characters" button as alt to
             uploading photos).
 
+
+
+
+# ===================================================================
+# SESSION 25 — Polling-stuck-at-5% + Android keyboard overlap fixes
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Session 25 P0 fixes shipped. Three targeted changes squash the
+      "stuck @ 5%" bug and the recurring Android keyboard overlap.
+
+      ROOT CAUSE for stuck @ 5% (verified from DB inspection):
+      - The user uploaded a corrupt 68-byte / 1×1 placeholder PNG
+        (filesystem confirmed: img_b7289365-...png in uploads).
+      - ffmpeg's `scale=trunc(iw/2)*2:trunc(ih/2)*2` filter explodes on
+        1×1 input → "divisible by 2 (1x1)" → talking_avatar job fails at
+        progress=30. DB row b09235bd shows exactly this error.
+      - Frontend polling silently swallowed errors (`catch { /* keep
+        polling */ }`) so the UI never moved past the initial 5% set
+        before the cartoonize step.
+
+      FIXES APPLIED:
+      1. /app/backend/core/upload_safety.py  — validate_image_upload()
+         now uses PIL header read to reject images with width<64 OR
+         height<64 (returns HTTP 400 with clear message). 1×1
+         placeholders can no longer enter the pipeline.
+      2. /app/backend/routes/talking.py — added ffprobe-based dimension
+         pre-check (rejects <64×64 with clear error). Also hardened the
+         ffmpeg `-vf` chain with a `scale='if(gt(iw,ih),max(iw,256),-2)'`
+         pre-pass so even a 32×32 image safely upscales before the
+         even-dim normalisation.
+      3. /app/frontend/app/avatar-studio.tsx polling loop:
+         • surfaces poll errors to console.warn (status + detail)
+         • bails out on 401/403 with "Session expired — sign in again"
+         • after 20 consecutive errors (~60s) bails with a clear msg
+         • hard cap of 12 minutes on the polling loop (no infinite hang)
+
+      KEYBOARD OVERLAP (Android, /ai-prompts.tsx) — recurring 4+ times:
+      Used troubleshoot_agent which identified 3 root causes:
+      (a) Expo SDK 54 edgeToEdgeEnabled disables adjustResize so
+          KeyboardAvoidingView could not detect keyboard height
+      (b) No softwareKeyboardLayoutMode in app.json
+      (c) No SafeAreaProvider in _layout.tsx (insets always 0)
+      
+      FIXES (Option A from troubleshoot agent):
+      1. /app/frontend/app.json — added
+         "softwareKeyboardLayoutMode": "pan" under android
+      2. /app/frontend/app/_layout.tsx — wrapped the entire app tree
+         with <SafeAreaProvider> from react-native-safe-area-context
+      3. /app/frontend/app/ai-prompts.tsx —
+         • imported useSafeAreaInsets, called it inside the component
+         • behavior switched to {ios:'padding', android:'height'}
+         • keyboardVerticalOffset = ios:0 / android:-insets.bottom
+         • bumped composer paddingBottom on android from 16 → 28
+
+      Status:
+      - Backend changes need re-test of /api/create-talking-avatar
+        (must reject <64×64 with HTTP 400) and /api/upload-image (must
+        reject the same).
+      - Frontend changes need manual verification of:
+        a) avatar-studio shows a clear error (not stuck at 5%) when
+           the backend fails or session expires
+        b) ai-prompts composer is no longer occluded by the Android
+           keyboard
+      - app.json change requires Expo client refresh (not native rebuild
+        for Expo Go). Already restarted via `supervisorctl restart expo`.
+
+      Pending P1 (next slice, NOT yet started):
+        • Move VoicePicker/VoiceStylePicker before the voice preview button
+          (need clarification — current cartoon-mode step 3 has only a
+          read-only voice card + preview; talking-mode step 4 already has
+          the picker but no preview button. Will ask user which mode/step
+          the request applies to.)
+        • Phase 2 dual-speaker hybrid character generation
+        • POST /api/avatar/dual-lipsync split-screen composite
+
+
+# ===================================================================
+# SESSION 25 — Avatar Studio "stuck @ 5%" backend regression (testing)
+# ===================================================================
+session_25_avatar_stuck_5pct_fix:
+  - task: "Session 25 — Talking Avatar dimension pre-check (stuck @ 5% fix)"
+    implemented: true
+    working: true
+    file: "backend/core/upload_safety.py, backend/routes/talking.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 25 backend regression — 12/12 PASS against
+          https://creative-plan-engine.preview.emergentagent.com/api.
+
+          Auth: demo_creator@test.com / Test@123 → POST /api/auth/login
+          200, tier=creator, credits_balance=2400. JWT token used as
+          Authorization: Bearer for all protected calls.
+
+          TEST 1 — /api/upload-image dimension validation
+          (PIL header read in core/upload_safety.py:80-86):
+            1a) PIL-built 256x256 PNG → 200 with
+                {url, file_id, file_path:/app/backend/uploads/img_<uuid>.png} ✓
+            1b) PIL-built 1x1 PNG → 400 detail:
+                "Image too small (1x1). Minimum 64x64 px required." ✓
+            1c) 0-byte upload → 400 detail: "Empty file" ✓
+            1d) PIL-built 32x32 JPG → 400 detail:
+                "Image too small (32x32). Minimum 64x64 px required." ✓
+            All 4 negative paths bail BEFORE writing to disk so the
+            Avatar Studio pipeline can no longer ingest a corrupt
+            placeholder via the upload route.
+
+          TEST 2 — /api/create-talking-avatar pre-check
+          (ffprobe + image-existence + script checks at routes/talking.py:66-103):
+            2a) Bogus image_path
+                "/app/backend/uploads/nope_does_not_exist_xyz123.png"
+                → 400 detail: "Image not found: <path>" ✓
+            2b) **CRITICAL** existing 1×1 placeholder
+                /app/backend/uploads/img_b7289365-32de-44ae-9499-c7d8f3caf62e.png
+                (verified on disk: 68 bytes, PIL reports size=(1,1))
+                → 400 detail: "Source image is too small (1x1).
+                Please upload a clearer photo (min 64x64)." ✓
+                This is the EXACT failure path that previously left
+                Avatar Studio stuck at 5%; the request is now rejected
+                BEFORE preflight_and_reserve, so NO credits are
+                charged and NO MagicHour job is started.
+            2c) Empty/whitespace script ("   ") with a freshly-uploaded
+                256x256 PNG → 400 detail: "Script is required" ✓
+
+          The 1×1 placeholder rejection works at BOTH layers as
+          required:
+            • Upload layer: validate_image_upload() blocks new 1×1
+              uploads before they hit disk (Test 1b/1d).
+            • Talking-avatar layer: ffprobe pre-check rejects an
+              already-on-disk 1×1 file before MH/credits (Test 2b).
+
+          TEST 3 — GET /api/project/{id} sanity:
+            3a) Known project_id df6a5d11-0c3b-4406-8316-0eaae7f04c81
+                → 200 with status='completed', progress=100,
+                result_url='/api/serve-file/pp_5f7e3407...mp4',
+                type='talking_avatar'. All required keys present. ✓
+            3b) Random uuid (non-existent) → 404
+                {"detail":"Not found"} ✓
+            3c) No Authorization header → 200 (guest fallback works)
+                with full project doc returned. Endpoint did NOT
+                crash; no 500. ✓
+
+          TEST 4 — Avatar smoke (no regression):
+            4a) GET /api/avatar/styles → 200, body keys=
+                [styles, emotions, categories, count], styles_count=11. ✓
+            4b) POST /api/avatar/suggestions
+                {style_id:'pixar', emotion:'happy', language:'english'}
+                → 200, suggestions[].length=4. ✓
+
+          Backend logs (/var/log/supervisor/backend.err.log) — clean
+          reload after upload_safety.py edit, no NEW tracebacks during
+          the test run, only LiteLLM info-level lines for the
+          /avatar/suggestions Gemini call.
+
+          Test artefact: /app/backend_test.py (re-runnable).
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Session 25 — "Avatar Studio stuck @ 5%" backend fix verified.
+      ALL 12/12 checks PASS. Both layers reject the 1×1 placeholder:
+        • /api/upload-image → 400 "Image too small (WxH). Minimum
+          64x64 px required."
+        • /api/create-talking-avatar → 400 "Source image is too
+          small (WxH). Please upload a clearer photo (min 64x64)."
+      0-byte uploads, 32×32 JPGs, and non-existent paths all return
+      clean 400s. Empty script returns 400 "Script is required".
+      Existing /api/project/{id} polling works for completed
+      project_id (returns status/progress/result_url) and 404s on
+      random uuid; survives no-auth call without crashing.
+      /api/avatar/styles + /api/avatar/suggestions still 200.
+
+      No further backend work needed for this fix slice.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
 

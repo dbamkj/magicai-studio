@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { View, StyleSheet, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../src/AuthContext';
 import { ThemeProvider } from '../src/ThemeContext';
 import BetaChrome from '../src/BetaChrome';
@@ -68,19 +69,21 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <RouteGuard>
-          <BetaChrome>
-            <Stack screenOptions={{ headerShown: false, animation: 'fade' }} />
-          </BetaChrome>
-        </RouteGuard>
-        {!splashDone && soundsEnabled !== null && (
-          <View style={StyleSheet.absoluteFill}>
-            <AnimatedSplash onDone={() => setSplashDone(true)} playChime={!!soundsEnabled} />
-          </View>
-        )}
-      </AuthProvider>
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <RouteGuard>
+            <BetaChrome>
+              <Stack screenOptions={{ headerShown: false, animation: 'fade' }} />
+            </BetaChrome>
+          </RouteGuard>
+          {!splashDone && soundsEnabled !== null && (
+            <View style={StyleSheet.absoluteFill}>
+              <AnimatedSplash onDone={() => setSplashDone(true)} playChime={!!soundsEnabled} />
+            </View>
+          )}
+        </AuthProvider>
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }
