@@ -72,16 +72,16 @@ const QUICK_ACCESS = [
   {
     id: 'avatar',
     title: 'Avatar Studio',
-    subtitle: 'Cartoon & Realistic',
+    subtitle: 'Cartoon & Talking',
     icon: 'happy' as const,
     gradient: ['#EC4899', '#7C3AED'] as const,        // pink → violet
     glowColor: '#EC4899',
-    route: '/cartoon-avatar',
+    route: '/avatar-studio',
     public: false,
   },
   {
     id: 'ai-prompts',
-    title: 'AI Prompts',
+    title: 'MagiCAi GPT Studio',
     subtitle: 'Let AI write your idea',
     icon: 'color-wand' as const,
     gradient: ['#7B5CFF', '#00C2FF'] as const,        // violet → cyan
@@ -194,9 +194,8 @@ function QuickActionSheet({
   visible, onClose, onPick,
 }: { visible: boolean; onClose: () => void; onPick: (route: string) => void }) {
   const actions = [
-    { key: 'reel',   icon: 'film',     label: 'Reel',          sub: 'Text → AI Video',          color: '#FF4D8D', route: '/create-wizard?mode=video' },
-    { key: 'studio', icon: 'sparkles', label: 'Avatar Studio', sub: 'AI talking avatar in 6 steps', color: '#A855F7', route: '/avatar-studio' },
-    { key: 'avatar', icon: 'happy',    label: 'Avatar',        sub: 'Cartoonize a portrait',    color: '#7B5CFF', route: '/cartoon-avatar' },
+    { key: 'reel',   icon: 'film',     label: 'Reel Studio',   sub: 'Text → AI Video',          color: '#FF4D8D', route: '/create-wizard?mode=video' },
+    { key: 'studio', icon: 'sparkles', label: 'Avatar Studio', sub: 'Cartoon + Talking avatars', color: '#A855F7', route: '/avatar-studio' },
     { key: 'voice',  icon: 'mic',      label: 'Voice',         sub: 'Lip sync · Re-dub · TTS',  color: '#FF9A3C', route: '/lipsync' },
   ];
   return (
@@ -1063,7 +1062,7 @@ export default function Index() {
           {/* ===== DISCOVER MAGIC AI (onboarding-style auto carousel) ===== */}
           <OnboardingCarousel onPick={(route) => onPick(route, false)} />
 
-          {/* ===== FEATURED TOOL: Creator Wizard ===== */}
+          {/* ===== FEATURED TOOL: Reel Studio ===== */}
           <View style={{ paddingHorizontal: 16, marginBottom: 14 }}>
             <TouchableOpacity
               activeOpacity={0.88}
@@ -1078,7 +1077,7 @@ export default function Index() {
               <View style={{ flex: 1 }}>
                 <Text style={s.featuredEyebrow}>Featured Tool</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                  <Text style={s.featuredTitle}>Creator Wizard</Text>
+                  <Text style={s.featuredTitle}>Reel Studio</Text>
                   <View style={s.newBadge}><Text style={s.newBadgeTxt}>NEW</Text></View>
                 </View>
                 <Text style={s.featuredSub}>Idea → 3 AI scripts → one-tap reel</Text>

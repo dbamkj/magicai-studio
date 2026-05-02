@@ -687,7 +687,7 @@ export default function AIPromptsScreen() {
             <Ionicons name="chevron-back" size={22} color="#fff" />
           </TouchableOpacity>
           <View style={s.headerMiddle}>
-            <Text style={s.eyebrow}>AI PROMPT WIZARD · CHAT</Text>
+            <Text style={s.eyebrow}>MAGICAI GPT STUDIO · CHAT</Text>
             <Text style={s.title}>What do you want to create?</Text>
           </View>
           <TouchableOpacity

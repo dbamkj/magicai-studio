@@ -8565,3 +8565,69 @@ agent_communication:
       a real bug — confirms cache is working as designed.
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
+  - task: "Avatar Studio mode toggle (Cartoon vs Talking) + global renames"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx, frontend/app/index.tsx, frontend/app/explore-tools.tsx, frontend/app/create-wizard.tsx, frontend/app/ai-prompts.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — Iterative polish per user feedback.
+
+          1) /app/frontend/app/avatar-studio.tsx — Added top mode toggle:
+             • "Cartoon Avatar" (default) → existing 5-step wizard, NOW
+               with a real cartoonize pre-step before create-talking-avatar.
+               Flow: upload photo → POST /api/avatar/cartoonize (style +
+               emotion='happy') → poll /api/avatar/jobs/{id} up to 90s →
+               take the cartoon result URL → pass as image_path to POST
+               /api/create-talking-avatar with personality-mapped voice.
+             • "Talking Avatar" → compact single-screen form (upload +
+               script textarea + voice-vibe chips + generate) that calls
+               /api/create-talking-avatar DIRECTLY, no cartoonize. This
+               matches the behavior of the legacy /avatar screen but
+               inside the unified studio UI.
+             • New helper fileToBase64() reads the picker's URI as base64
+               for the cartoonize endpoint (uses expo-file-system on
+               native, FileReader on web).
+             • Bottom nav bar now hides in Talking mode (it has its own
+               CTA) and for Cartoon step 4 (upload step has its own CTA).
+             • Added manualScript state so Talking mode can type free
+               script; Cartoon mode still uses AI-generated dialogues.
+
+          2) /app/frontend/app/index.tsx — Home renames + tile fix:
+             • Fixed "Avatar Studio" tile that was routing to
+               /cartoon-avatar → now routes to /avatar-studio (user
+               reported this bug).
+             • Renamed "AI Prompts" → "MagiCAi GPT Studio".
+             • Renamed featured "Creator Wizard" card → "Reel Studio".
+             • FAB QuickActionSheet: removed the standalone "Avatar"
+               (cartoonize) tile; "Avatar Studio" now covers both modes.
+             • FAB "Reel" label → "Reel Studio".
+
+          3) /app/frontend/app/explore-tools.tsx — Removed the two legacy
+             tool tiles ("Talking Avatar" → /avatar) and ("Cartoon Avatar"
+             → /cartoon-avatar). The single "AI Avatar Studio" entry with
+             "Cartoon + Talking in one place" desc is now the unified
+             entry; legacy screens stay alive at their routes for deep
+             links from /projects, but no longer listed in the UI.
+
+          4) /app/frontend/app/create-wizard.tsx — GlassHeader
+             title="Creator Wizard" → "Reel Studio".
+
+          5) /app/frontend/app/ai-prompts.tsx — Eyebrow text
+             "AI PROMPT WIZARD · CHAT" → "MAGICAI GPT STUDIO · CHAT".
+
+          Validation:
+          • Metro bundle rebuilt cleanly (9.75MB, HTTP 200) — grep
+            confirms the new source strings are baked in:
+              AvatarStudioScreen (5×)
+              mode === 'cartoon', mode === 'talking' (multiple)
+              MagiCAi GPT Studio, Reel Studio (multiple)
+          • No backend changes — all routes + API contracts unchanged.
+
+

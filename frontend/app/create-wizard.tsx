@@ -495,7 +495,7 @@ export default function CreateWizard() {
   const Header = (
     <GlassHeader
       icon="sparkles"
-      title="Creator Wizard"
+      title="Reel Studio"
       subtitle="Free · Instant Reel"
       onBack={() => {
         if (step === 'idea') router.back();
