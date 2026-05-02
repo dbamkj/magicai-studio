@@ -8804,3 +8804,80 @@ agent_communication:
             source='llm' (real call); the new parser fix works.
 
 
+
+  - task: "Avatar Studio — round 4 polish (dynamic quick-starts, variant timeout+retry, deferred A/B voices)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx, backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — Round 4 polish per cart3.jpeg.
+
+          ROOT CAUSE of cart3.jpeg variant failures: backend logs confirm
+          all 5 cartoonize jobs actually completed successfully — the
+          failure was in the frontend poll loop which gave up at 90s.
+          Gemini Nano Banana queues the 5 parallel calls and finishes
+          the last one ~90-100s in, right at our timeout boundary.
+
+          [#3 fixes] Extended the poll window from 90s → 180s AND added
+          per-card retry: clicking a "Retry" card now fires a new single
+          cartoonize call for just that emotion slot (doesn't reset the
+          others). Loading spinner inline while retrying.
+
+          [#1 dynamic quick-starts] New backend endpoint
+          POST /api/avatar/suggestions (GPT-4o-mini, 30-min LRU)
+          takes { style_id, emotion, language } → returns 4 idea
+          starter prompts tuned to that exact (style, emotion, language)
+          combo. Smoke-tested: mythological + devotional + hindi →
+          "भगवान के प्रति मेरी निष्ठा व्यक्त करें" etc. Frontend
+          now fetches this on change of style/emotion/language (debounced
+          450ms) and uses it for Step 1's "Quick starts" chips instead
+          of the old static per-category list. Falls back to the static
+          list if the API is unreachable.
+
+          [#2 A/B VOICES — DEFERRED, NEEDS CONSULTATION]
+          The 4-5 line two-person dialogues we now produce are meant
+          for a SINGLE avatar face. Adding per-speaker voice picking
+          requires:
+            (a) Split the script by A:/B: lines server-side.
+            (b) Generate TTS audio separately per speaker.
+            (c) Concatenate with the existing [pause:X.X] markers.
+            (d) Pass the combined audio to MH lip-sync — BUT MH only
+                lipsyncs ONE face. So either:
+                  • Accept that ONE cartoon face speaks both A's and B's
+                    lines in different voices (works but is visually
+                    odd), OR
+                  • Add a two-head composition (split-screen A on left,
+                    B on right, swap which face lipsyncs on each line).
+          This is a Phase-B feature needing a UX decision, a new
+          backend endpoint (e.g. /api/avatar/dual-voice-lipsync), and
+          a notable UI addition. Proposed plan noted in the next user
+          message — awaiting user choice.
+
+          [#2b AUTO-GENERATE CARTOON CHARACTERS]
+          The "5 variants" currently cartoonizes the USER's photo 5
+          ways. The user's full vision: AUTO-generate 5 fictional
+          characters matching the speakers' inferred gender/role, OR
+          let the user upload. Also deferred to Phase B — requires:
+            • New endpoint /api/avatar/generate-character that accepts
+              gender + avatar style + description and produces a
+              fictional portrait via Gemini Nano Banana.
+            • Gender-inference prompt on the dialogues (or explicit
+              user picker for A/B gender).
+            • UI redesign on Step 4 to show "Generated" vs "Your photo"
+              as a sub-toggle.
+
+          Validation:
+          • POST /api/avatar/suggestions → 200 with 4 LLM-sourced
+            language-appropriate chips. Caches correctly.
+          • Bundle rebuilt (HTTP 200). Grep confirms
+            'retryVariant', 'setSuggestions', '/suggestions' baked in.
+          • No backend regressions — suggestions is a pure new endpoint;
+            dialogues/cartoonize/create-talking-avatar untouched.
+
+

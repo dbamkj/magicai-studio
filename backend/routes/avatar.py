@@ -513,6 +513,125 @@ def _dialogue_fallback(style_id: str, idea: str, count: int, language: str, emot
     return {"dialogues": items[:count]}
 
 
+# =====================================================================
+#  AI AVATAR STUDIO — POST /api/avatar/suggestions
+# =====================================================================
+# Dynamic "quick start" idea chips for Step 2 of the wizard. Each tuple of
+# (style, emotion, language) gets 4 creator-grade one-phrase prompts that
+# the user can tap to fill the idea textarea. GPT-4o-mini, 30-min LRU.
+
+
+class AvatarSuggestionsRequest(BaseModel):
+    style_id: str
+    emotion: Optional[str] = "happy"
+    language: Optional[str] = "english"
+
+
+SUGGESTIONS_SYSTEM_PROMPT = """You are MagiCAi Studio's idea-starter generator.
+Given an avatar's style + emotion cue + output language, produce exactly
+4 short CREATIVE IDEA PROMPTS a user could tap to fill a "what should your
+avatar say" textarea. Rules:
+ • Each idea is 3-7 words.
+ • First-person framing from the USER's point of view ("Greet my viewers
+   on Diwali", "Tell a funny Monday story") — NOT scene descriptions.
+ • Must match the avatar's cultural/personality vibe (e.g. an Indian
+   spiritual avatar → devotional themes; an influencer → growth/hacks).
+ • Emotion cue should subtly colour every idea.
+ • Avoid hashtags, emojis, quotation marks, copyrighted references.
+ • Each idea unique — different angles (festival / funny / educational /
+   personal).
+
+Language rule:
+ • english → write in English.
+ • hindi   → write in Devanagari.
+ • hinglish→ write Hindi in Roman, mixed with English.
+
+Output STRICT JSON only:
+{ "suggestions": ["...", "...", "...", "..."] }"""
+
+
+def _suggestions_fallback(style_id: str, emotion: str, language: str) -> list[str]:
+    style = STYLES.get(style_id, {})
+    label = style.get("label", "Avatar")
+    if (language or "").lower() == "hindi":
+        return [
+            f"{label} पर दीवाली शुभकामना",
+            f"एक दिल छूने वाली बात",
+            f"सुबह का प्रेरणादायक विचार",
+            f"मज़ेदार रोज़ाना पल",
+        ]
+    return [
+        f"Greet my viewers on Diwali",
+        f"Share a heartfelt moment today",
+        f"A motivational morning thought",
+        f"My funniest everyday story",
+    ]
+
+
+@router.post("/suggestions")
+async def post_avatar_suggestions(req: AvatarSuggestionsRequest):
+    """Dynamic 4-idea starter chips based on (style, emotion, language)."""
+    if req.style_id not in STYLES:
+        raise HTTPException(status_code=400, detail=f"Unknown style. Use: {', '.join(STYLES.keys())}")
+    style = STYLES[req.style_id]
+    persona = STYLE_PERSONALITY.get(req.style_id, DEFAULT_PERSONALITY)
+    lang = (req.language or "english").strip().lower()
+    emotion = (req.emotion or "happy").strip().lower()
+
+    cache_key = _hashlib_av.sha256(f"sug|{req.style_id}|{emotion}|{lang}".encode()).hexdigest()[:20]
+    hit = _dialogue_cache.get(cache_key)
+    if hit:
+        return {**hit, "cached": True, "source": "cache"}
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        out = {"suggestions": _suggestions_fallback(req.style_id, emotion, lang), "style_id": req.style_id, "emotion": emotion, "language": lang}
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False, "source": "fallback"}
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"sug_{cache_key}",
+            system_message=SUGGESTIONS_SYSTEM_PROMPT,
+        ).with_model("openai", "gpt-4o-mini")
+        user_text = (
+            f"Avatar: {style['label']} — {style.get('tagline', '')}\n"
+            f"Personality: {persona.get('tone')}, mood: {persona.get('mood')}\n"
+            f"Emotion cue: {emotion}\n"
+            f"Language: {lang}\n"
+            f"Return JSON now."
+        )
+        resp = await chat.send_message(UserMessage(text=user_text))
+        text = (resp or "").strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1]
+            if text.startswith("json"):
+                text = text[4:].lstrip()
+            text = text.strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        data = _json_av.loads(text[start:end + 1] if start >= 0 and end > start else text)
+        sug = data.get("suggestions") or []
+        if not isinstance(sug, list) or not sug:
+            raise ValueError("empty suggestions[]")
+        sug = [str(x).strip().strip('"').strip("'") for x in sug][:4]
+        while len(sug) < 4:
+            sug.extend(_suggestions_fallback(req.style_id, emotion, lang))
+        sug = sug[:4]
+        out = {"suggestions": sug, "style_id": req.style_id, "emotion": emotion, "language": lang}
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False, "source": "llm"}
+    except Exception as e:
+        log.exception("avatar/suggestions: LLM error — %s", e)
+        out = {"suggestions": _suggestions_fallback(req.style_id, emotion, lang), "style_id": req.style_id, "emotion": emotion, "language": lang}
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False, "source": "fallback"}
+
+
+
+
 @router.post("/dialogues")
 async def post_avatar_dialogues(req: AvatarDialoguesRequest):
     """Generate 3 avatar-appropriate one-liners based on picked style + idea."""

@@ -160,6 +160,10 @@ export default function AvatarStudioScreen() {
   const [loadingDialogues, setLoadingDialogues] = useState(false);
   const [dialogueErr, setDialogueErr] = useState<string | null>(null);
 
+  // ── Dynamic idea suggestions — fetched when style/emotion/language changes.
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
   // ── step 4: voice + preview audio ──
   const [audioBusy, setAudioBusy] = useState(false);
   const audioRef = useRef<Audio.Sound | null>(null);
@@ -213,6 +217,31 @@ export default function AvatarStudioScreen() {
       })();
     };
   }, []);
+
+  // ────────────────────────── Dynamic idea suggestions (Issue #1) ──────────────────────────
+  // Refetches whenever the user changes avatar style, emotion or language.
+  // Debounced so rapid chip toggling doesn't spam the LLM.
+  useEffect(() => {
+    if (!styleId) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoadingSuggestions(true);
+      try {
+        const r = await axios.post(`${API}/avatar/suggestions`, {
+          style_id: styleId,
+          emotion,
+          language,
+        }, { timeout: 20000 });
+        if (!cancelled) setSuggestions(r.data?.suggestions || []);
+      } catch {
+        // Fallback to static per-category if backend unreachable.
+        if (!cancelled) setSuggestions(IDEA_SUGGESTIONS[categoryId] || []);
+      } finally {
+        if (!cancelled) setLoadingSuggestions(false);
+      }
+    }, 450);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [styleId, emotion, language, categoryId]);
 
   // ────────────────────────── Fetch dialogues ──────────────────────────
   const fetchDialogues = useCallback(async () => {
@@ -342,11 +371,12 @@ export default function AvatarStudioScreen() {
       });
       setVariants([...withJobIds]);
 
-      // Poll all variants in parallel up to 90s.
+      // Poll all variants in parallel up to 180s (Gemini Nano Banana
+      // jobs can queue on rate-limits; last job often finishes ~100s in).
       const t0 = Date.now();
       const pending = new Set(withJobIds.filter(v => v.jobId && v.status === 'pending').map(v => v.id));
 
-      while (pending.size > 0 && Date.now() - t0 < 90_000) {
+      while (pending.size > 0 && Date.now() - t0 < 180_000) {
         await new Promise(r => setTimeout(r, 2500));
         // Snapshot current state into a local var so we can update in batch.
         await Promise.allSettled(Array.from(pending).map(async (vid) => {
@@ -385,6 +415,60 @@ export default function AvatarStudioScreen() {
       setVariantsBusy(false);
     }
   }, [imageUri, activeStyle, user]);
+
+  // Retry a single failed variant — fires one cartoonize call and polls
+  // just that job without touching the other 4 cards. Issue #3 follow-up.
+  const retryVariant = useCallback(async (id: string) => {
+    if (!activeStyle || !imageUri) return;
+    const vIdx = variants.findIndex(x => x.id === id);
+    if (vIdx < 0) return;
+    const v = variants[vIdx];
+    // Flip to pending in UI.
+    const next = [...variants];
+    next[vIdx] = { ...v, status: 'pending', error: undefined, imageUrl: undefined, localPath: undefined, jobId: undefined };
+    setVariants(next);
+    try {
+      const b64 = await fileToBase64(imageUri);
+      const cr = await axios.post(`${API}/avatar/cartoonize`, {
+        image_b64: b64,
+        style: activeStyle.id,
+        emotion: v.emotion,
+      }, { timeout: 30000 });
+      const jobId = cr.data?.job_id;
+      if (!jobId) throw new Error('no job_id');
+      next[vIdx] = { ...next[vIdx], jobId };
+      setVariants([...next]);
+      // Poll this single job for up to 180s.
+      const t0 = Date.now();
+      while (Date.now() - t0 < 180_000) {
+        await new Promise(r => setTimeout(r, 2500));
+        try {
+          const jr = await axios.get(`${API}/avatar/jobs/${jobId}`, { timeout: 10000 });
+          const st = jr.data?.status;
+          if (st === 'completed' && jr.data?.image_url) {
+            const m = (jr.data.image_url as string).match(/\/serve-file\/([^/?#]+)/);
+            next[vIdx] = {
+              ...next[vIdx], status: 'completed',
+              imageUrl: jr.data.image_url,
+              localPath: m ? `/api/uploads/${m[1]}` : undefined,
+            };
+            setVariants([...next]);
+            return;
+          }
+          if (st === 'failed') {
+            next[vIdx] = { ...next[vIdx], status: 'failed', error: jr.data?.error || 'Render failed' };
+            setVariants([...next]);
+            return;
+          }
+        } catch {}
+      }
+      next[vIdx] = { ...next[vIdx], status: 'failed', error: 'Timed out' };
+      setVariants([...next]);
+    } catch (e: any) {
+      next[vIdx] = { ...next[vIdx], status: 'failed', error: e?.message || 'Retry failed' };
+      setVariants([...next]);
+    }
+  }, [variants, activeStyle, imageUri]);
 
   // ────────────────────────── Generate video ──────────────────────────
   // Cartoon mode → cartoonize(photo) → create-talking-avatar(cartoon, voice)
@@ -713,9 +797,9 @@ export default function AvatarStudioScreen() {
                   style={s.textarea}
                 />
 
-                <FieldLabel>Quick starts</FieldLabel>
+                <FieldLabel>Quick starts {loadingSuggestions && '· refreshing…'}</FieldLabel>
                 <View style={[s.catRow, { marginBottom: 8 }]}>
-                  {(IDEA_SUGGESTIONS[categoryId] || []).map(sug => (
+                  {(suggestions.length > 0 ? suggestions : IDEA_SUGGESTIONS[categoryId] || []).map(sug => (
                     <Chip
                       key={sug}
                       label={sug}
@@ -887,6 +971,8 @@ export default function AvatarStudioScreen() {
                                 onPress={() => {
                                   if (v.status === 'completed' && v.localPath) {
                                     setPickedVariantPath(v.localPath);
+                                  } else if (v.status === 'failed') {
+                                    retryVariant(v.id);
                                   }
                                 }}
                                 style={[s.variantCard, isPicked && s.variantCardActive]}
