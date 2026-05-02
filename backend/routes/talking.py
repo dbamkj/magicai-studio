@@ -135,7 +135,10 @@ async def create_talking_avatar(
                 raise Exception("TTS synthesis failed")
             await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 30}})
 
-            # 2) Probe TTS duration, pad if needed (MH requires >= 2.5s)
+            # 2) Probe TTS duration, pad if needed (MH requires >= 2.5s).
+            # Also pad a 0.75s silence tail so the LAST spoken line isn't
+            # clipped by MH's lipsync (Session 25 round 6 — users
+            # complained the last syllable was cut off).
             dur_r = subprocess.run(
                 [
                     "/usr/bin/ffprobe", "-v", "error",
@@ -146,18 +149,34 @@ async def create_talking_avatar(
                 capture_output=True, timeout=15,
             )
             audio_dur = float((dur_r.stdout.decode() or "3.0").strip() or "3.0")
+            # Always add a 0.75s silent tail unless TTS needed full 2.5s minimum.
+            padded = UPLOAD_DIR / f"avatar_tts_pad_{uuid.uuid4().hex}.mp3"
             if audio_dur < 2.5:
-                padded = UPLOAD_DIR / f"avatar_tts_pad_{uuid.uuid4().hex}.mp3"
+                # Short clip → pad to 3.0s minimum for MH + 0.75s tail = 3.75s cap
                 subprocess.run(
                     [
                         "/usr/bin/ffmpeg", "-y", "-i", str(tts_path),
-                        "-af", "apad=pad_dur=2.5", "-t", "3.0", str(padded),
+                        "-af", "apad=pad_dur=3.25", "-t", "3.75", str(padded),
                     ],
                     capture_output=True, timeout=20,
                 )
-                if padded.exists():
+                if padded.exists() and padded.stat().st_size > 500:
                     tts_path = padded
-                    audio_dur = 3.0
+                    audio_dur = 3.75
+            else:
+                # Long clip → just append 0.75s of silence so the last
+                # word has room to finish before MH cuts the video.
+                subprocess.run(
+                    [
+                        "/usr/bin/ffmpeg", "-y", "-i", str(tts_path),
+                        "-af", "apad=pad_dur=0.75", "-t", str(audio_dur + 0.75),
+                        str(padded),
+                    ],
+                    capture_output=True, timeout=30,
+                )
+                if padded.exists() and padded.stat().st_size > 500:
+                    tts_path = padded
+                    audio_dur = audio_dur + 0.75
 
             # 3) Create still video from the image (duration matches audio+1)
             # Scale filter: ensure min 256px on shortest side and even dims —

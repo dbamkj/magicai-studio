@@ -459,19 +459,30 @@ Output STRICT JSON (no prose, no code fences). Schema:
       "id": "d1",
       "tone": "<one short label>",
       "title": "<3-5 word vibe e.g. 'Festival Reunion'>",
-      "text": "A: *smiles warmly* Bhai, kahan gum ho gaye the?\\n[pause:1.0]\\nB: Yaar, kaam ki bheed mein khud ko bhool gaya.\\n[pause:0.8]\\nA: *hands over a sweet box* Diwali aaya, ab to mil hi lo!\\n[pause:1.0]\\nB: *eyes glisten* Yeh roshni — sirf diye ki nahi, dosti ki bhi hai."
+      "text": "A: <line in REQUESTED language> [pause:1.0] B: <line in REQUESTED language> [pause:0.8] A: <line in REQUESTED language> [pause:1.0] B: <line in REQUESTED language>"
     },
     { "id": "d2", "tone": "...", "title": "...", "text": "A: ...\\nB: ..." },
     { "id": "d3", "tone": "...", "title": "...", "text": "A: ...\\nB: ..." }
   ]
 }
 
-Language rules:
- • english  → write everything in English (incl. action cues).
- • hindi    → dialogue lines in Devanagari; action cues in English asterisks.
- • hinglish → write Hindi words in Roman letters mixed with English; action
-              cues in English asterisks.
- • The 'tone' and 'title' fields are ALWAYS in English.
+Language rules — OBEY STRICTLY. Do NOT mix scripts or default to the
+example's language:
+ • english  → write dialogue AND action cues in English. Example:
+              "A: *smiles warmly* Brother, where were you hiding all this time?"
+ • hindi    → dialogue lines MUST be in standard Hindi, written in the
+              DEVANAGARI script (हिन्दी — NOT Roman letters). Example:
+              "A: *मुस्कुराते हुए* भाई, तुम कहाँ खो गए थे इतने दिनों से?"
+              Use natural conversational Hindi vocabulary. Do NOT output
+              Hinglish (Roman-script Hindi) when 'hindi' is requested.
+              Action cues stay in *English asterisks*.
+ • hinglish → Hindi words written in ROMAN letters, freely mixed with
+              English vocabulary. Example:
+              "A: *smiles warmly* Bhai, kahan gum ho gaye the?" — this
+              is what Hinglish looks like; use it ONLY when
+              'hinglish' is requested.
+ • The 'tone' and 'title' fields are ALWAYS in English regardless of
+   dialogue language.
 
 Make the 3 scenes MEANINGFULLY different in angle (e.g. heartfelt
 reunion / playful rivalry / dramatic reveal) so the user has a real

@@ -690,35 +690,68 @@ async def generate_prompts(body: GeneratePromptsRequest, request: Request) -> Ge
 async def preview_audio(body: PreviewAudioRequest):
     """Generate a tiny TTS clip of a hook line for the Preview button.
 
-    Caches the rendered mp3 by sha256(text+voice) so repeated previews are free.
-    Returns audio/mpeg (or audio/wav as fallback) inline.
+    Routes to edge-tts for Edge voice IDs (real Madhur/Swara/Guy/Aria/etc.)
+    and falls back to Sarvam for Sarvam speaker names or generic descriptors.
+    Session 25 round 6 — previously forced Sarvam for everything which
+    collapsed all English voices onto the same Indian-English speaker and
+    made voice switching feel broken.
     """
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
-    # Session 25 round 4 — combine voice_id + voice_type + voice_style so
-    # the heuristic picks the correct Sarvam speaker. Previously only
-    # voice_type was read which meant every preview collapsed onto Vidya
-    # (the default female fallback) regardless of what the user picked.
     voice_descriptor = " ".join(filter(None, [
         body.voice_id or "",
         body.voice_type or "",
         body.voice_style or "",
     ])).strip() or "warm_storyteller_female"
+    # Explicit voice id (preferred) — falls back to descriptor for legacy callers.
+    primary_voice = (body.voice_id or body.voice_type or "").strip() or voice_descriptor
     language = (body.language or "english").strip().lower()
-    # Sarvam supports multi-language → respect user's language choice
-    # instead of forcing hi-IN every time (was a bug).
-    target_lang = "en-IN" if language == "english" else "hi-IN"
-    speaker, _ = _voice_to_sarvam(voice_descriptor)
-    cache_id = hashlib.sha256(f"{text}|{speaker}|{target_lang}|{voice_descriptor}".encode()).hexdigest()[:32]
+
+    # Cache key includes the ACTUAL voice id so switching produces new audio.
+    cache_id = hashlib.sha256(f"{text}|{primary_voice}|{language}|{voice_descriptor}".encode()).hexdigest()[:32]
     out_path = PREVIEW_AUDIO_DIR / f"{cache_id}.mp3"
-    if not out_path.exists() or out_path.stat().st_size < 200:
-        # Memcache shortcut
+
+    if not (out_path.exists() and out_path.stat().st_size >= 200):
         cached = _audio_cache.get(cache_id)
         if cached and isinstance(cached, (bytes, bytearray)):
             out_path.write_bytes(cached)
         else:
-            audio = await _sarvam_tts(text, speaker, target_lang)
+            # Route: anything that looks like an Edge voice id (contains "Neural"
+            # or a "pfx:xx-XX-...Neural" pseudo-id or our baby/old variants) goes
+            # through edge-tts so the actual voice is heard. Everything else
+            # (bare Sarvam speaker, generic descriptor) uses Sarvam.
+            looks_edge = (
+                "Neural" in primary_voice or
+                ":" in primary_voice or
+                primary_voice.lower().startswith(("en-", "hi-", "mr-", "ta-", "te-"))
+            )
+            audio: bytes | None = None
+            if looks_edge:
+                try:
+                    # Lazy import to avoid circular dep
+                    import importlib as _il
+                    _srv = _il.import_module("server")
+                    gta = getattr(_srv, "generate_tts_audio")
+                    tmp = PREVIEW_AUDIO_DIR / f"_tmp_{cache_id}.mp3"
+                    # IMPORTANT — server.generate_tts_audio treats the
+                    # third arg as a Path (it calls `.exists()`), so we
+                    # MUST NOT pass `str(tmp)` here. Previous round's
+                    # bug was exactly that, falling through to Sarvam.
+                    await gta(text, primary_voice, tmp, min_duration=1.0, voice_style=body.voice_style or None)
+                    if tmp.exists() and tmp.stat().st_size > 200:
+                        audio = tmp.read_bytes()
+                        try:
+                            tmp.unlink()
+                        except Exception:
+                            pass
+                except Exception as _edge_err:
+                    logger.warning("preview-audio: edge-tts failed — falling back to Sarvam: %s", _edge_err)
+            if audio is None:
+                # Sarvam fallback
+                speaker, _ = _voice_to_sarvam(voice_descriptor)
+                target_lang = "en-IN" if language == "english" else "hi-IN"
+                audio = await _sarvam_tts(text, speaker, target_lang)
             if not audio:
                 raise HTTPException(status_code=503, detail={
                     "code": "tts_unavailable",

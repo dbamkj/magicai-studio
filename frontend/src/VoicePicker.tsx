@@ -13,10 +13,26 @@ interface VoicePickerProps {
   categories?: Voice['category'][];
   // inline (scroll chips under categories) | compact (flat single row)
   mode?: 'inline' | 'compact';
+  // Session 25 round 6 — restrict voice categories by dialogue language
+  // so Hindi/Hinglish dialogues can't be previewed with an English voice
+  // and vice-versa (was causing confusion in avatar-studio).
+  // 'indian'  → hindi_* + sarvam_* + baby_* (all Indian voices)
+  // 'english' → english_* + baby_*
+  // 'all'     → no restriction (legacy default)
+  languageFilter?: 'indian' | 'english' | 'all';
 }
 
-export default function VoicePicker({ selectedId, onSelect, categories, mode = 'inline' }: VoicePickerProps) {
-  const cats = (categories && categories.length > 0) ? categories : VOICE_CATEGORIES.map(c => c.id);
+const INDIAN_CATS: Voice['category'][] = ['hindi_female', 'hindi_male', 'baby_boy', 'baby_girl', 'sarvam_female', 'sarvam_male'];
+const ENGLISH_CATS: Voice['category'][] = ['english_female', 'english_male', 'baby_boy', 'baby_girl'];
+
+export default function VoicePicker({ selectedId, onSelect, categories, mode = 'inline', languageFilter = 'all' }: VoicePickerProps) {
+  // Resolve effective allowlist: languageFilter intersects with explicit
+  // `categories` prop (if any). Explicit categories win when both set.
+  const baseCats = (categories && categories.length > 0) ? categories : VOICE_CATEGORIES.map(c => c.id);
+  const langAllow: Voice['category'][] = languageFilter === 'indian' ? INDIAN_CATS
+    : languageFilter === 'english' ? ENGLISH_CATS
+    : baseCats;
+  const cats = baseCats.filter(c => langAllow.includes(c));
   const [provider, setProvider] = useState<'edge-tts' | 'sarvam'>('edge-tts');
   const [activeCat, setActiveCat] = useState<Voice['category']>(cats[0]);
   const [playingId, setPlayingId] = useState<string | null>(null);

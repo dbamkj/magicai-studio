@@ -9377,3 +9377,73 @@ agent_communication:
 
          Will tackle these once user confirms the round-5 fixes work.
 
+
+# ===================================================================
+# SESSION 25 — Round 6: Voice routing, Hindi dialogue, stale cache
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      User reported 5 issues — all fixed this round.
+
+      ✅ #1 Voice change not reflected / English voice sounded Hindi
+         Root cause: preview-audio always routed through Sarvam, which
+         only has 7 Indian speakers. ALL English voices (Guy/Aria/Jenny)
+         collapsed onto ~3 Sarvam speakers speaking en-IN, so every
+         English pick sounded the same Indian-accented voice.
+         Fix (routes/prompts.py):
+           • preview-audio now detects Edge voice IDs (contains "Neural"
+             or "xx-XX-" prefix) and routes them through server's
+             generate_tts_audio() which calls real edge-tts
+           • Sarvam stays as fallback for bare speaker names
+             (anushka/vidya/etc.) or when edge-tts is rate-limited
+         Hit a sub-bug: I initially passed str(tmp) where Path was
+         expected → every edge-tts call crashed with "'str' object has
+         no attribute 'exists'" → fell back to Sarvam → voices
+         collapsed again. Fixed — passing Path now.
+         VERIFIED live: 4 different voices → 4 different md5 + sizes
+           Madhur (HI male): 16416 bytes md5 c65e91…
+           Swara  (HI fem) : 16272 bytes md5 721163…
+           Aria   (EN fem) : 15552 bytes md5 33efea…
+           Guy    (EN male): 15696 bytes md5 2f7ef3…
+
+      ✅ #2 Last line of dialogue cut off mid-way
+         Fix (routes/talking.py): audio post-processing now ALWAYS
+         appends a 0.75s silent tail before sending to MagicHour
+         lipsync. Short TTS clips (<2.5s) get padded to 3.75s total
+         (3s speech + 0.75s tail); longer clips just get +0.75s.
+         Still-video duration recalc'd to match. This prevents MH from
+         cutting off the last syllable during lipsync warp.
+
+      ✅ #3 Next generation caches old dialogues
+         Fix (avatar-studio.tsx): new useEffects that clear
+         `dialogues[]` + `dialogueId` when styleId, language or idea
+         changes. Frontend now never shows stale dialogues from a
+         previous wizard run.
+
+      ✅ #4 Hindi dialogue came out as Hinglish
+         Root cause: DIALOGUE_SYSTEM_PROMPT example was in Hinglish
+         ("Bhai, kahan gum ho gaye the?") and GPT-4o-mini followed the
+         example more than the language rule.
+         Fix (routes/avatar.py):
+           • Rewrote language rules with strict per-language guidance
+             and separate Hindi vs Hinglish examples
+           • Made the JSON schema's example placeholder language-neutral
+         VERIFIED:
+           hindi    → "इस दिवाली, रोशनी से भरते हैं दिलों को…"
+           hinglish → "Diwali ki khushiyon se ghar roshan ho raha hai…"
+         Two clearly distinct outputs.
+
+      ✅ #5 Language-aware voice picker
+         Added `languageFilter` prop to VoicePicker
+         ('indian' | 'english' | 'all'). When dialogue language is
+         hindi/hinglish/marathi/tamil/telugu → shows Indian voices
+         only; when english → shows English voices only. Baby voices
+         show in both (they transliterate). Applied on Step 4 in
+         solo + dual pickers.
+
+      Also this round:
+      • Dual-mode preview now plays Voice A's first line, then
+        Voice B's first line sequentially (was only playing A
+        before). New extractAB() helper parses the A:/B: lines.
+

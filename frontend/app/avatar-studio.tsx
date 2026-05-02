@@ -241,10 +241,20 @@ export default function AvatarStudioScreen() {
 
   // Reset cartoon voice override whenever the user picks a different style —
   // a voice tuned for "Krishna" shouldn't carry over to "Comedian", etc.
+  // Also clear stale dialogues so the user never sees a previous style's
+  // dialogues "cached" on a fresh wizard run (Session 25 round 6 feedback).
   useEffect(() => {
     setCartoonVoiceId(null);
     setCartoonVoiceStyle(undefined);
+    setDialogues([]);
+    setDialogueId(null);
   }, [styleId]);
+
+  // Same stale-dialogues guard for language + idea changes.
+  useEffect(() => {
+    setDialogues([]);
+    setDialogueId(null);
+  }, [language, idea]);
 
   // ────────────────────────── Dynamic idea suggestions (Issue #1) ──────────────────────────
   // Refetches whenever the user changes avatar style, emotion or language.
@@ -314,50 +324,61 @@ export default function AvatarStudioScreen() {
     if (!pickedDialogue || !activeStyle) return;
     try {
       setAudioBusy(true);
-      // stop existing
       if (audioRef.current) {
         try { await audioRef.current.unloadAsync(); } catch {}
         audioRef.current = null;
       }
-      // The dialogue is a 4–5 line two-person scene with [pause] markers
-      // and *actions* — strip them so the TTS speaks only natural words,
-      // and trim to ~180 chars (server caps at 200). Just grab speaker A's
-      // first line for a quick preview.
-      const cleaned = stripDialogueCues(pickedDialogue.text);
-      const previewText = cleaned.slice(0, 180);
-      // Session 25 round 4 — preview must reflect the picked voice.
-      // Solo  → cartoon override (or style default)
-      // Dual  → Voice A (Person A), since the preview snippet is line A.
-      const voiceForPreview = dualMode
-        ? voiceAId
-        : (cartoonVoiceId || activeStyle.personality.voice_id);
-      const voiceStyleForPreview = dualMode
-        ? activeStyle.personality.voice_style
-        : (cartoonVoiceStyle || activeStyle.personality.voice_style);
-      const r = await axios.post(
-        `${API}/generate-prompts/preview-audio`,
-        {
-          text: previewText,
-          voice_id: voiceForPreview,
-          voice_type: voiceForPreview,
-          voice_style: voiceStyleForPreview,
-          language,
-          max_seconds: 3.5,
-        },
-        { responseType: 'arraybuffer', timeout: 30000 },
-      );
-      const b64 = arrayBufferToBase64(r.data);
-      const uri = `data:audio/mpeg;base64,${b64}`;
-      const sound = new Audio.Sound();
-      await sound.loadAsync({ uri });
-      audioRef.current = sound;
-      await sound.playAsync();
+      // Helper — runs preview-audio for a single line and plays it.
+      const speakLine = async (lineText: string, voiceId: string, voiceStyle?: string) => {
+        const previewText = lineText.slice(0, 180);
+        const r = await axios.post(
+          `${API}/generate-prompts/preview-audio`,
+          {
+            text: previewText,
+            voice_id: voiceId,
+            voice_type: voiceId,
+            voice_style: voiceStyle,
+            language,
+            max_seconds: 3.5,
+          },
+          { responseType: 'arraybuffer', timeout: 30000 },
+        );
+        const b64 = arrayBufferToBase64(r.data);
+        const uri = `data:audio/mpeg;base64,${b64}`;
+        const sound = new Audio.Sound();
+        await sound.loadAsync({ uri });
+        audioRef.current = sound;
+        await sound.playAsync();
+        // Wait for playback to finish before moving on (dual-mode chains A→B).
+        await new Promise<void>((resolve) => {
+          const sub = sound.setOnPlaybackStatusUpdate((status: any) => {
+            if (status?.didJustFinish) resolve();
+          });
+          // Hard safety cap in case status never fires
+          setTimeout(() => { try { sub && (sub as any)?.remove?.(); } catch {} resolve(); }, 12000);
+        });
+        try { await sound.unloadAsync(); } catch {}
+      };
+
+      if (dualMode) {
+        // Play Person A's first line with voiceA, then Person B's first
+        // line with voiceB, so the user actually hears the voice contrast.
+        const { aLine, bLine } = extractAB(pickedDialogue.text);
+        if (aLine) await speakLine(aLine, voiceAId, activeStyle.personality.voice_style);
+        if (bLine) await speakLine(bLine, voiceBId, activeStyle.personality.voice_style);
+      } else {
+        // Solo — first non-empty line after stripping cues.
+        const cleaned = stripDialogueCues(pickedDialogue.text);
+        const firstLine = cleaned.split(/[.!?।]/)[0].trim() || cleaned.slice(0, 180);
+        const voice = cartoonVoiceId || activeStyle.personality.voice_id;
+        await speakLine(firstLine, voice, cartoonVoiceStyle || activeStyle.personality.voice_style);
+      }
     } catch (e: any) {
       Alert.alert('Voice preview unavailable', 'You can still generate the video in the next step.');
     } finally {
       setAudioBusy(false);
     }
-  }, [pickedDialogue, activeStyle, language, cartoonVoiceId, cartoonVoiceStyle, dualMode, voiceAId]);
+  }, [pickedDialogue, activeStyle, language, cartoonVoiceId, cartoonVoiceStyle, dualMode, voiceAId, voiceBId]);
 
   // ────────────────────────── Pick + upload image ──────────────────────────
   const pickAndUploadImage = useCallback(async () => {
@@ -1110,14 +1131,17 @@ export default function AvatarStudioScreen() {
                     <VoicePicker
                       selectedId={cartoonVoiceId || activeStyle.personality.voice_id}
                       onSelect={(id) => setCartoonVoiceId(id)}
+                      languageFilter={language === 'english' ? 'english' : 'indian'}
                     />
                   </>
                 ) : (
                   <>
                     <FieldLabel style={{ marginTop: 16 }}>Voice A (Person A)</FieldLabel>
-                    <VoicePicker selectedId={voiceAId} onSelect={setVoiceAId} />
+                    <VoicePicker selectedId={voiceAId} onSelect={setVoiceAId}
+                      languageFilter={language === 'english' ? 'english' : 'indian'} />
                     <FieldLabel style={{ marginTop: 14 }}>Voice B (Person B)</FieldLabel>
-                    <VoicePicker selectedId={voiceBId} onSelect={setVoiceBId} />
+                    <VoicePicker selectedId={voiceBId} onSelect={setVoiceBId}
+                      languageFilter={language === 'english' ? 'english' : 'indian'} />
                   </>
                 )}
 
@@ -1638,6 +1662,29 @@ const STEP_TITLES = [
   'Upload + generate',
   'Done',
 ];
+
+/** Extract the first Person A line and first Person B line from a
+ *  dialogue script. Used by dual-mode preview to play each voice. */
+function extractAB(text: string): { aLine: string; bLine: string } {
+  if (!text) return { aLine: '', bLine: '' };
+  const clean = (t: string) => t
+    .replace(/\[pause:[0-9.]+\]/gi, '')
+    .replace(/\*[^*\n]+\*/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const lines = text.split(/\n|(?=\s[AB]:)/).map(l => l.trim()).filter(Boolean);
+  let aLine = '', bLine = '';
+  for (const l of lines) {
+    const m = l.match(/^\s*([AB])\s*:\s*(.+)$/i);
+    if (!m) continue;
+    const speaker = m[1].toUpperCase();
+    const content = clean(m[2]);
+    if (speaker === 'A' && !aLine) aLine = content;
+    else if (speaker === 'B' && !bLine) bLine = content;
+    if (aLine && bLine) break;
+  }
+  return { aLine, bLine };
+}
 
 /** Strip dialogue cues for TTS preview — removes A:/B: prefixes,
  *  [pause:X.X] markers, and *action* asterisks. Keeps only the spoken
