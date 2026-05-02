@@ -8881,3 +8881,114 @@ agent_communication:
             dialogues/cartoonize/create-talking-avatar untouched.
 
 
+
+  - task: "Avatar Studio — Phase 1 dual-speaker (a2+b3 scaffold)"
+    implemented: true
+    working: "NA"
+    file: "backend/routes/avatar.py, frontend/app/avatar-studio.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — Phase 1 of dual-speaker split-screen avatar.
+          User picked a2 (split-screen) + b3 (hybrid: auto-infer gender
+          with override chips). Phase 1 ships the full backend pipeline
+          + a functional frontend dual-mode UI. Phase 2 will add true
+          per-face independent lipsync (2× MH calls, Pro tier).
+
+          BACKEND — 3 new endpoints on /api/avatar:
+
+          1. POST /api/avatar/infer-genders
+             Body: { dialogue_text }
+             GPT-4o-mini reads an A:/B: two-person script and returns
+             { A, B, confidence }. Cached 30-min LRU. Fallback returns
+             'neutral' if no LLM or parse fails.
+             Smoke test: "A: Bhai, kahan the?\nB: Yaar ghar pe tha."
+             → {"A":"male","B":"male","confidence":0.9,"source":"llm"} ✓
+
+          2. POST /api/avatar/generate-character
+             Body: { style_id, gender, role (A|B), seed? }
+             Fabricates a fictional cartoon character portrait via
+             Gemini Nano Banana. Builds a style-specific prompt mixing
+             the avatar tagline + gender + role seed ("warm welcoming
+             eyes" for A, "bold confident expression" for B) so A and B
+             stay visually distinct even with same gender. Returns a
+             job_id compatible with existing GET /avatar/jobs/{id}.
+
+          3. POST /api/avatar/dual-lipsync
+             Body: { image_a_path, image_b_path, script, voice_a_id,
+                     voice_b_id, voice_a_style?, voice_b_style?,
+                     motion?, aspect_ratio?, resolution?, style_hint? }
+             Full pipeline (background task):
+               a. Parse script into (speaker, text, pre_pause) segments
+                  via regex /^([AB])[:：]\s*(.+)$/; strips *action* cues
+                  before TTS.
+               b. Generate TTS per segment with the right voice (and
+                  optional voice_style). Pre-pends [pause:X.X] as
+                  ffmpeg-generated anullsrc silence when present.
+               c. Concat all audio segments → single combined.mp3.
+                  Pads with apad if total <2.5s (MH minimum).
+               d. ffmpeg hstack: scales+crops A to 540x960 and B to
+                  540x960, side-by-side = 1080x960 split-screen PNG.
+                  Loops PNG as MP4 for (audio_dur + 1)s.
+               e. Submit (split_mp4, combined_mp3) to MH lipsync via
+                  mh_create_lipsync_with_retry + mh_poll_video (single
+                  MH call on composite — one face will lipsync, the
+                  other stays still in V1; V2 will do per-face
+                  independent lipsync).
+               f. Download result, save to /api/serve-file, update
+                  video_projects doc, fire-and-forget resolution downscale.
+             Returns { project_id, status:'processing', credits_charged }.
+             Uses lazy-imports from server.py for MH + TTS helpers
+             (same pattern as routes/talking.py).
+
+          FRONTEND — /app/frontend/app/avatar-studio.tsx:
+          • Step 4 now has a top-level Solo | Dual (A + B) sub-toggle.
+          • Dual branch state: dualMode, genderA/B, voiceAId/BId,
+            imageAUri/Path, imageBUri/Path, inferBusy.
+          • useEffect auto-calls /api/avatar/infer-genders when a
+            dialogue is picked in dual mode, and auto-maps the voice
+            IDs to gender-matched defaults.
+          • Gender chips per speaker (Male/Female/Neutral) allow
+            override; flipping a chip retunes the voice.
+          • <VoicePicker/> for Voice A and Voice B — the same rich
+            picker used on the legacy talking screen.
+          • Side-by-side upload slots (dualUpload style — dashed
+            border, 3/4 aspect). Each slot uses pickAndUploadDual().
+          • "Generate Dual Avatar Video" CTA calls POST
+            /api/avatar/dual-lipsync; progress bar labelled in 4
+            stages (Generating A+B voices / Mixing / Composing &
+            lipsyncing / Finalizing). Result rendered inline via
+            <Video>.
+          • Clear V1 disclaimer: "split-screen image + combined A/B
+            audio, single lipsync pass. True independent dual-lipsync
+            coming in Phase 2 (Pro tier)."
+
+          Verify (backend):
+          (1) POST /api/avatar/infer-genders — 200 with correct A/B
+              labels on Hinglish "Bhai/Yaar" script. Already smoke-tested.
+          (2) POST /api/avatar/generate-character — with auth, returns
+              job_id; /avatar/jobs/{id} polls through to completed.
+          (3) POST /api/avatar/dual-lipsync — with auth + two valid
+              image_paths + A:/B: script, returns project_id; poll
+              /api/project/{id} to completion; result_url serves MP4.
+          (4) All 3 endpoints appear exactly once in /openapi.json.
+
+          Verify (frontend — defer to user):
+          (5) Avatar Studio → Cartoon → Step 4 → tap "Dual (A + B)"
+              toggle → gender chips + voice pickers + two upload slots
+              render. Uploading both images + tapping Generate
+              produces a split-screen lipsync video.
+
+          Phase 2 items (next session):
+          • Parallel per-face MH lipsync + ffmpeg half-frame composite
+            so BOTH A and B animate independently.
+          • Integration of /api/avatar/generate-character in the UI
+            (currently callable via API but no UI entry — adds a
+            "Generate 2 fictional characters" button as alt to
+            uploading photos).
+
+

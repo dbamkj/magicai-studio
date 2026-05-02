@@ -31,6 +31,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Optional
 
 import httpx
@@ -821,6 +822,357 @@ async def get_job(job_id: str):
         if isinstance(v, datetime):
             job[k] = v.isoformat()
     return job
+
+
+# =====================================================================
+#  AI AVATAR STUDIO — Phase 2a/2b: Dual-speaker endpoints
+# =====================================================================
+#  (1) POST /api/avatar/infer-genders
+#        Fast GPT-4o-mini call that reads an A:/B: two-person script and
+#        returns the inferred gender per speaker (male/female/neutral).
+#  (2) POST /api/avatar/generate-character
+#        Fabricates a fictional A or B character portrait in the chosen
+#        cartoon style + gender via Gemini Nano Banana. Returns a
+#        job_id compatible with the existing /avatar/jobs/{id} poll.
+#  (3) POST /api/avatar/dual-lipsync
+#        Full split-screen dual-speaker pipeline: parse A:/B:, synth TTS
+#        per segment with voice A or voice B, concat with [pause] gaps,
+#        hstack A+B images into a split-screen PNG, MH lipsync on the
+#        combined frame. Returns project_id (compatible with /api/project/{id}).
+
+
+class InferGendersRequest(BaseModel):
+    dialogue_text: str = Field(..., min_length=4, max_length=4000)
+
+
+@router.post("/infer-genders")
+async def post_infer_genders(req: InferGendersRequest):
+    """Cheap LLM call that guesses the gender of Person A and Person B
+    from a two-person dialogue. Used by Avatar Studio dual mode (b3)."""
+    cache_key = _hashlib_av.sha256(f"gen|{req.dialogue_text.strip()[:400]}".encode()).hexdigest()[:20]
+    hit = _dialogue_cache.get(cache_key)
+    if hit:
+        return {**hit, "cached": True}
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        out = {"A": "neutral", "B": "neutral", "confidence": 0.0, "source": "fallback"}
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False}
+
+    sys = ("You analyse a two-speaker dialogue (prefixed A: and B:) and infer "
+           "each speaker's likely gender from linguistic cues (names, honorifics, "
+           "verb inflections, relationship context). Output STRICT JSON only:\n"
+           "{ \"A\": \"male|female|neutral\", \"B\": \"male|female|neutral\", \"confidence\": 0.0-1.0 }\n"
+           "Use 'neutral' if you genuinely cannot tell — don't guess.")
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(api_key=api_key, session_id=f"gen_{cache_key}", system_message=sys).with_model("openai", "gpt-4o-mini")
+        resp = await chat.send_message(UserMessage(text=req.dialogue_text[:3500]))
+        text = (resp or "").strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1]
+            if text.startswith("json"):
+                text = text[4:].lstrip()
+            text = text.strip()
+        s = text.find("{"); e = text.rfind("}")
+        data = _json_av.loads(text[s:e + 1] if s >= 0 and e > s else text)
+        out = {
+            "A": str(data.get("A", "neutral")).lower() if data.get("A") in ("male", "female", "neutral") or str(data.get("A", "")).lower() in ("male", "female", "neutral") else "neutral",
+            "B": str(data.get("B", "neutral")).lower() if data.get("B") in ("male", "female", "neutral") or str(data.get("B", "")).lower() in ("male", "female", "neutral") else "neutral",
+            "confidence": float(data.get("confidence", 0.5) or 0.5),
+            "source": "llm",
+        }
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False}
+    except Exception as e:
+        log.exception("avatar/infer-genders failed: %s", e)
+        out = {"A": "neutral", "B": "neutral", "confidence": 0.0, "source": "fallback"}
+        _dialogue_cache.set(cache_key, out)
+        return {**out, "cached": False}
+
+
+class GenerateCharacterRequest(BaseModel):
+    style_id: str
+    gender: str = Field("neutral", description="male | female | neutral")
+    role: str = Field("A", description="A | B — used as a seed modifier")
+    seed: Optional[int] = None
+
+
+@router.post("/generate-character")
+async def post_generate_character(req: GenerateCharacterRequest, background: BackgroundTasks, request: Request):
+    """Generate a fictional cartoon character portrait matching the picked
+    style + gender. Returns a job_id that polls on /avatar/jobs/{id} (same
+    shape as /avatar/cartoonize results)."""
+    if req.style_id not in STYLES:
+        raise HTTPException(status_code=400, detail=f"Unknown style. Use: {', '.join(STYLES.keys())}")
+    style = STYLES[req.style_id]
+    user = await _resolve_user(request)
+    user_tier = (user.get("subscription_tier") or "free").lower()
+    is_paid = user_tier in ("starter", "creator", "pro")
+
+    gender = (req.gender or "neutral").lower()
+    if gender not in ("male", "female", "neutral"):
+        gender = "neutral"
+    gender_txt = {
+        "male": "a male character",
+        "female": "a female character",
+        "neutral": "a character",
+    }[gender]
+
+    # Build a prompt tailored to style + gender + role — keeps A and B
+    # visually distinct even when gender is the same.
+    role_seed = "warm welcoming eyes" if req.role == "A" else "bold confident expression"
+    prompt = (
+        f"{style['tagline']} Create {gender_txt} with {role_seed}, "
+        f"friendly and expressive, front-facing portrait, upper body, clean background, "
+        f"consistent with the {style['label']} cartoon style."
+    )
+
+    job_id = f"av_{uuid.uuid4().hex[:12]}"
+    await db.avatar_jobs.insert_one({
+        "id": job_id,
+        "user_id": user.get("id"),
+        "user_tier": user_tier,
+        "style": req.style_id,
+        "emotion": "happy",
+        "status": "queued",
+        "created_at": datetime.now(timezone.utc),
+        "watermarked": not is_paid,
+        "kind": "character",  # marker for analytics
+    })
+
+    background.add_task(
+        _process_avatar_job,
+        job_id=job_id,
+        style=req.style_id,
+        emotion="happy",
+        prompt=prompt,
+        image_b64=None,
+        image_url=None,
+        watermark=not is_paid,
+    )
+    return {"job_id": job_id, "status": "queued", "style": req.style_id, "gender": gender, "role": req.role}
+
+
+class DualLipsyncRequest(BaseModel):
+    image_a_path: str = Field(..., description="Uploads path for Person A image.")
+    image_b_path: str = Field(..., description="Uploads path for Person B image.")
+    script: str = Field(..., min_length=6, description="Multi-line script with A:/B: prefixes and optional [pause:X] markers.")
+    voice_a_id: str = "en-US-JennyNeural"
+    voice_b_id: str = "en-US-GuyNeural"
+    voice_a_style: Optional[str] = None
+    voice_b_style: Optional[str] = None
+    motion: Optional[str] = "ken_burns"
+    aspect_ratio: Optional[str] = "16:9"   # hstack composites are wider
+    resolution: Optional[str] = "720p"
+    style_hint: Optional[str] = None
+
+
+@router.post("/dual-lipsync")
+async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks, request: Request):
+    """Phase 2a — split-screen two-person avatar lipsync. V1: single MH
+    lipsync pass over a hstacked image + combined audio (A/B voices
+    interleaved). V2 (next session) will do dual independent lipsync."""
+    # Lazy-import heavy helpers from server.py (same pattern as routes/talking.py)
+    from server import (
+        MAGIC_HOUR_API_KEY, MagicHourClient, UPLOAD_DIR,
+        _link_as_version, _resolve_upload_path,
+        apply_resolution_to_project, generate_tts_audio,
+        upload_to_magic_hour, mh_create_lipsync_with_retry, mh_poll_video,
+    )
+    from core.billing import preflight_and_reserve, settle_credits
+    from core.models import VideoProject
+
+    img_a = _resolve_upload_path(req.image_a_path)
+    img_b = _resolve_upload_path(req.image_b_path)
+    if not img_a.exists():
+        raise HTTPException(status_code=400, detail=f"Image A not found: {req.image_a_path}")
+    if not img_b.exists():
+        raise HTTPException(status_code=400, detail=f"Image B not found: {req.image_b_path}")
+    if not (req.script or "").strip():
+        raise HTTPException(status_code=400, detail="Script is required")
+
+    user, cost = await preflight_and_reserve(request, job_type='lipsync', feature='lip_sync_dual')
+
+    p = VideoProject(
+        name=f"DualAvatar_{datetime.now(timezone.utc).strftime('%H%M%S')}",
+        type="dual_talking_avatar",
+        user_id=user["user_id"],
+        input_payload=req.dict(),
+        endpoint="/api/avatar/dual-lipsync",
+    )
+    await db.video_projects.insert_one(p.dict())
+
+    async def _bg():
+        import subprocess
+        try:
+            await db.video_projects.update_one({"id": p.id}, {"$set": {"status": "processing", "progress": 8}})
+
+            # 1) Parse script into (speaker, text, pause_after_s) segments.
+            segments: list[tuple[str, str, float]] = []
+            pending_pause = 0.0
+            for raw in (req.script or "").splitlines():
+                line = raw.strip()
+                if not line: continue
+                m_pause = re.match(r"\[pause:([0-9.]+)\]", line, re.I)
+                if m_pause:
+                    pending_pause += float(m_pause.group(1))
+                    continue
+                m = re.match(r"^([AB])[:：]\s*(.+)$", line)
+                if not m: continue
+                speaker = m.group(1).upper()
+                text = m.group(2).strip()
+                # Strip *action* cues so TTS doesn't speak them.
+                text = re.sub(r"\*[^*\n]+\*", "", text).strip()
+                if not text: continue
+                segments.append((speaker, text, pending_pause))
+                pending_pause = 0.0
+            if not segments:
+                raise Exception("Could not parse any A:/B: lines from script")
+
+            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 18}})
+
+            # 2) Generate TTS per segment with the right voice.
+            seg_paths: list[Path] = []
+            for i, (spk, txt, pre_pause) in enumerate(segments):
+                vid    = req.voice_a_id if spk == "A" else req.voice_b_id
+                vstyle = req.voice_a_style if spk == "A" else req.voice_b_style
+                out_mp3 = UPLOAD_DIR / f"dual_{p.id[:8]}_{i}_{spk}.mp3"
+                await generate_tts_audio(txt, vid, out_mp3, min_duration=1.2, voice_style=vstyle)
+                if not out_mp3.exists() or out_mp3.stat().st_size < 300:
+                    raise Exception(f"TTS failed for segment {i} ({spk})")
+                # Pre-pend the pre-pause as silence if needed.
+                if pre_pause > 0.05:
+                    silence = UPLOAD_DIR / f"dual_{p.id[:8]}_{i}_pad.mp3"
+                    subprocess.run([
+                        "/usr/bin/ffmpeg", "-y", "-f", "lavfi", "-i",
+                        f"anullsrc=r=44100:cl=stereo", "-t", str(pre_pause),
+                        "-q:a", "9", str(silence),
+                    ], capture_output=True, timeout=20)
+                    if silence.exists(): seg_paths.append(silence)
+                seg_paths.append(out_mp3)
+
+            # 3) Concatenate all TTS segments into one combined audio file.
+            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 40}})
+            combined = UPLOAD_DIR / f"dual_{p.id[:8]}_combined.mp3"
+            list_txt = UPLOAD_DIR / f"dual_{p.id[:8]}_list.txt"
+            with open(list_txt, "w") as lf:
+                for sp in seg_paths:
+                    lf.write(f"file '{sp.resolve()}'\n")
+            subprocess.run([
+                "/usr/bin/ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(list_txt), "-c", "copy", str(combined),
+            ], capture_output=True, timeout=60)
+            if not combined.exists() or combined.stat().st_size < 500:
+                raise Exception("Audio concatenation failed")
+
+            # Probe duration (need 2.5s min for MH).
+            dur_r = subprocess.run([
+                "/usr/bin/ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(combined),
+            ], capture_output=True, timeout=15)
+            audio_dur = float((dur_r.stdout.decode() or "3.0").strip() or "3.0")
+            if audio_dur < 2.5:
+                padded = UPLOAD_DIR / f"dual_{p.id[:8]}_padded.mp3"
+                subprocess.run([
+                    "/usr/bin/ffmpeg", "-y", "-i", str(combined),
+                    "-af", "apad=pad_dur=2.5", "-t", "3.0", str(padded),
+                ], capture_output=True, timeout=20)
+                if padded.exists(): combined = padded; audio_dur = 3.0
+
+            # 4) Build the split-screen A|B PNG and loop it for duration.
+            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 55}})
+            split_img = UPLOAD_DIR / f"dual_{p.id[:8]}_split.png"
+            # Each half = 540x960 portrait → side by side = 1080x960 (16:9 range).
+            subprocess.run([
+                "/usr/bin/ffmpeg", "-y",
+                "-i", str(img_a), "-i", str(img_b),
+                "-filter_complex",
+                "[0:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960[a];"
+                "[1:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960[b];"
+                "[a][b]hstack=inputs=2",
+                "-frames:v", "1", str(split_img),
+            ], capture_output=True, timeout=40)
+            if not split_img.exists():
+                raise Exception("Split-screen image creation failed")
+
+            still_v = UPLOAD_DIR / f"dual_{p.id[:8]}_still.mp4"
+            subprocess.run([
+                "/usr/bin/ffmpeg", "-y", "-loop", "1", "-i", str(split_img),
+                "-c:v", "libx264", "-t", str(audio_dur + 1),
+                "-pix_fmt", "yuv420p", "-r", "25",
+                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                str(still_v),
+            ], capture_output=True, timeout=90)
+            if not still_v.exists():
+                raise Exception("Still video creation failed")
+
+            # 5) Submit to MH lipsync (single call on combined image + combined audio)
+            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 65}})
+            mh = MagicHourClient(token=MAGIC_HOUR_API_KEY)
+            mh_video = upload_to_magic_hour(mh, str(still_v), "video")
+            mh_audio = upload_to_magic_hour(mh, str(combined), "audio")
+            ls = await mh_create_lipsync_with_retry(
+                mh,
+                f"DualAvatar_{p.id[:8]}",
+                {"video_source": "file", "video_file_path": mh_video, "audio_file_path": mh_audio},
+                0.0, audio_dur,
+            )
+            ls_url = await mh_poll_video(
+                mh, ls.id, max_wait=600,
+                on_progress=lambda pr: db.video_projects.update_one(
+                    {"id": p.id}, {"$set": {"progress": 65 + int(pr / 100 * 30)}}
+                ),
+            )
+            if not ls_url:
+                raise Exception("Dual lipsync timed out")
+
+            # 6) Download result
+            ls_local = UPLOAD_DIR / f"dual_{p.id[:8]}_ls.mp4"
+            import httpx
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), follow_redirects=True) as c:
+                resp = await c.get(ls_url)
+                with open(ls_local, "wb") as f: f.write(resp.content)
+
+            result_url = f"/api/serve-file/{ls_local.name}"
+            await db.video_projects.update_one({"id": p.id}, {"$set": {
+                "status": "completed", "progress": 100,
+                "result_url": result_url,
+                "completed_at": datetime.now(timezone.utc),
+            }})
+
+            # Async resolution downscale (don't block)
+            try:
+                import asyncio
+                asyncio.create_task(apply_resolution_to_project(p.id, req.resolution or "720p", "video"))
+            except Exception: pass
+
+            # Best-effort cleanup of intermediate files
+            for f_tmp in seg_paths + [list_txt, split_img, still_v, combined]:
+                try:
+                    if f_tmp and Path(f_tmp).exists(): Path(f_tmp).unlink()
+                except Exception: pass
+
+        except Exception as e:
+            log.error("DualAvatar failed: %s", e)
+            await db.video_projects.update_one(
+                {"id": p.id},
+                {"$set": {"status": "failed", "error": str(e)[:300]}},
+            )
+
+    background.add_task(_bg)
+    await settle_credits(
+        user.get('id'), cost,
+        user_tier=user.get('subscription_tier'),
+        project_id=p.id, asset_kind='video',
+        background_tasks=background,
+    )
+    return {"project_id": p.id, "status": "processing", "credits_charged": cost}
+
+
+
 
 
 # =====================================================================

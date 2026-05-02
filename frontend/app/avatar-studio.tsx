@@ -182,6 +182,18 @@ export default function AvatarStudioScreen() {
   const [variants, setVariants] = useState<Variant[]>([]);
   const [variantsBusy, setVariantsBusy] = useState(false);
   const [pickedVariantPath, setPickedVariantPath] = useState<string | null>(null);
+
+  // ── Phase 2a — dual-speaker (split-screen) state ──
+  const [dualMode, setDualMode] = useState(false);
+  const [genderA, setGenderA] = useState<'male' | 'female' | 'neutral'>('neutral');
+  const [genderB, setGenderB] = useState<'male' | 'female' | 'neutral'>('neutral');
+  const [voiceAId, setVoiceAId] = useState<string>('en-US-JennyNeural');
+  const [voiceBId, setVoiceBId] = useState<string>('en-US-GuyNeural');
+  const [imageAUri, setImageAUri] = useState<string | null>(null);
+  const [imageAPath, setImageAPath] = useState<string | null>(null);
+  const [imageBUri, setImageBUri] = useState<string | null>(null);
+  const [imageBPath, setImageBPath] = useState<string | null>(null);
+  const [inferBusy, setInferBusy] = useState(false);
   const [genStage, setGenStage] = useState<string>('');
   const [genProgress, setGenProgress] = useState(0);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -469,6 +481,92 @@ export default function AvatarStudioScreen() {
       setVariants([...next]);
     }
   }, [variants, activeStyle, imageUri]);
+
+  // ── Phase 2a dual mode: uploads for A and B + gender auto-infer ──
+  const pickAndUploadDual = useCallback(async (slot: 'A' | 'B') => {
+    if (!requireLogin()) return;
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted && Platform.OS !== 'web') { Alert.alert('Permission needed'); return; }
+      const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.85 });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      if (slot === 'A') setImageAUri(asset.uri); else setImageBUri(asset.uri);
+      const up = await uploadImageFile(asset.uri);
+      const path = up?.file_path || up?.path || null;
+      if (slot === 'A') setImageAPath(path); else setImageBPath(path);
+    } catch (e: any) { Alert.alert('Upload failed', e?.message || 'Try again.'); }
+  }, [user]);
+
+  // Auto-infer A/B genders when a dialogue is picked in dual mode.
+  useEffect(() => {
+    if (!dualMode || !pickedDialogue) return;
+    let cancelled = false;
+    (async () => {
+      setInferBusy(true);
+      try {
+        const r = await axios.post(`${API}/avatar/infer-genders`, { dialogue_text: pickedDialogue.text }, { timeout: 15000 });
+        if (cancelled) return;
+        const ga = (r.data?.A || 'neutral') as 'male'|'female'|'neutral';
+        const gb = (r.data?.B || 'neutral') as 'male'|'female'|'neutral';
+        setGenderA(ga); setGenderB(gb);
+        // Auto-pick voice IDs based on inferred gender
+        if (ga === 'male')   setVoiceAId('en-US-GuyNeural');
+        if (ga === 'female') setVoiceAId('en-US-JennyNeural');
+        if (gb === 'male')   setVoiceBId('en-US-GuyNeural');
+        if (gb === 'female') setVoiceBId('en-US-JennyNeural');
+      } catch {}
+      finally { if (!cancelled) setInferBusy(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [dualMode, pickedDialogue?.id]);
+
+  // Kick off the dual-lipsync split-screen pipeline.
+  const generateDual = useCallback(async () => {
+    if (!requireLogin()) return;
+    if (!imageAPath || !imageBPath) { Alert.alert('Upload both Person A and Person B photos.'); return; }
+    if (!pickedDialogue) { Alert.alert('Pick a dialogue first'); return; }
+    setGenerating(true); setResultUrl(null); setResultError('');
+    setGenStage('Preparing split-screen pipeline…'); setGenProgress(5);
+    try {
+      const body = {
+        image_a_path: imageAPath,
+        image_b_path: imageBPath,
+        script: pickedDialogue.text,
+        voice_a_id: voiceAId,
+        voice_b_id: voiceBId,
+        motion: 'none',
+        aspect_ratio: '16:9',
+        resolution: userIsPro ? '720p' : '480p',
+        style_hint: activeStyle?.id,
+      };
+      const r = await axios.post(`${API}/avatar/dual-lipsync`, body, { timeout: 30000 });
+      const pid = r.data?.project_id;
+      if (!pid) throw new Error('No project id');
+      pollRef.current = setInterval(async () => {
+        try {
+          const j = await axios.get(`${API}/project/${pid}`, { timeout: 15000 });
+          const prog = j.data?.progress || 0; const st = j.data?.status || '';
+          setGenProgress(prog);
+          if (prog >= 90) setGenStage('Finalizing split-screen…');
+          else if (prog >= 55) setGenStage('Composing & lip-syncing…');
+          else if (prog >= 40) setGenStage('Mixing dual voices…');
+          else if (prog >= 18) setGenStage('Generating voice A + voice B…');
+          if (st === 'completed') {
+            clearInterval(pollRef.current);
+            setResultUrl(j.data.result_url ? `${BACKEND_URL}${j.data.result_url}` : null);
+            setGenerating(false);
+          } else if (st === 'failed') {
+            clearInterval(pollRef.current);
+            setResultError(j.data?.error || 'Dual render failed'); setGenerating(false);
+          }
+        } catch {}
+      }, 3000);
+    } catch (e: any) {
+      setResultError(e?.response?.data?.detail || e?.message || 'Dual generation failed');
+      setGenerating(false);
+    }
+  }, [imageAPath, imageBPath, pickedDialogue, voiceAId, voiceBId, userIsPro, activeStyle, user]);
 
   // ────────────────────────── Generate video ──────────────────────────
   // Cartoon mode → cartoonize(photo) → create-talking-avatar(cartoon, voice)
@@ -913,6 +1011,112 @@ export default function AvatarStudioScreen() {
             {/* ═════════════════ STEP 4 — Photo + Generate ═════════════════ */}
             {mode === 'cartoon' && step === 4 && (
               <>
+                {/* Dual-speaker sub-toggle (Phase 2a) */}
+                <View style={s.modeRow}>
+                  <Pressable onPress={() => setDualMode(false)} style={[s.modeBtn, !dualMode && s.modeBtnActive]}>
+                    <Ionicons name="person" size={14} color={!dualMode ? '#fff' : '#CBD5E1'} />
+                    <Text style={[s.modeBtnText, !dualMode && { color: '#fff' }]}>Solo avatar</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setDualMode(true)} style={[s.modeBtn, dualMode && s.modeBtnActive]}>
+                    <Ionicons name="people" size={14} color={dualMode ? '#fff' : '#CBD5E1'} />
+                    <Text style={[s.modeBtnText, dualMode && { color: '#fff' }]}>Dual (A + B)</Text>
+                  </Pressable>
+                </View>
+
+                {/* Dual-speaker UI branch */}
+                {dualMode ? (
+                  <>
+                    <Text style={s.sectionTitle}>Two-speaker split-screen</Text>
+                    <Text style={s.sectionSub}>
+                      Upload both Person A and Person B. We'll split-screen them,
+                      use voice A for A's lines and voice B for B's lines.
+                      {inferBusy ? '  (auto-detecting genders…)' : ''}
+                    </Text>
+
+                    {/* Gender chips */}
+                    <FieldLabel>Person A · Gender</FieldLabel>
+                    <View style={s.catRow}>
+                      {(['male','female','neutral'] as const).map(g => (
+                        <Chip key={'a'+g} label={g[0].toUpperCase()+g.slice(1)} active={genderA===g}
+                          onPress={() => { setGenderA(g); if (g==='male') setVoiceAId('en-US-GuyNeural'); if (g==='female') setVoiceAId('en-US-JennyNeural'); }}
+                          style={{ marginRight: 8, marginBottom: 8 }} />
+                      ))}
+                    </View>
+                    <FieldLabel>Person B · Gender</FieldLabel>
+                    <View style={s.catRow}>
+                      {(['male','female','neutral'] as const).map(g => (
+                        <Chip key={'b'+g} label={g[0].toUpperCase()+g.slice(1)} active={genderB===g}
+                          onPress={() => { setGenderB(g); if (g==='male') setVoiceBId('en-US-GuyNeural'); if (g==='female') setVoiceBId('en-US-JennyNeural'); }}
+                          style={{ marginRight: 8, marginBottom: 8 }} />
+                      ))}
+                    </View>
+
+                    {/* Voice pickers */}
+                    <FieldLabel>Voice A</FieldLabel>
+                    <VoicePicker selectedId={voiceAId} onSelect={setVoiceAId} />
+                    <FieldLabel style={{ marginTop: 14 }}>Voice B</FieldLabel>
+                    <VoicePicker selectedId={voiceBId} onSelect={setVoiceBId} />
+
+                    {/* Side-by-side upload slots */}
+                    <FieldLabel style={{ marginTop: 14 }}>Upload portraits</FieldLabel>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      {([
+                        { slot: 'A' as const, uri: imageAUri, label: 'Person A' },
+                        { slot: 'B' as const, uri: imageBUri, label: 'Person B' },
+                      ]).map(slot => (
+                        <Pressable key={slot.slot} onPress={() => pickAndUploadDual(slot.slot)}
+                          style={[s.dualUpload, slot.uri && { borderColor: '#EC4899' }]}>
+                          {slot.uri ? (
+                            <Image source={{ uri: slot.uri }} style={{ width: '100%', height: '100%', borderRadius: 10 }} resizeMode="cover" />
+                          ) : (
+                            <>
+                              <Ionicons name="cloud-upload-outline" size={28} color="#A855F7" />
+                              <Text style={s.uploadSub}>{slot.label}</Text>
+                            </>
+                          )}
+                        </Pressable>
+                      ))}
+                    </View>
+
+                    <View style={{ height: 16 }} />
+                    <GradientButton
+                      label={generating ? 'Generating split-screen…' : 'Generate Dual Avatar Video'}
+                      icon="people"
+                      loading={generating}
+                      disabled={!imageAPath || !imageBPath || !pickedDialogue || generating}
+                      onPress={generateDual}
+                    />
+                    <Text style={s.resHint}>
+                      V1 · split-screen image + combined A/B audio, single lipsync pass.
+                      True independent dual-lipsync coming in Phase 2 (Pro tier).
+                    </Text>
+
+                    {/* Shared progress + result below */}
+                    {generating && (
+                      <GlassCard style={{ marginTop: 16 }}>
+                        <View style={s.progressBar}><View style={[s.progressFill, { width: `${genProgress}%` }]} /></View>
+                        <Text style={s.progressText}>{genStage} ({genProgress}%)</Text>
+                      </GlassCard>
+                    )}
+                    {resultUrl && !generating && (
+                      <GlassCard glow style={{ marginTop: 16 }}>
+                        <FieldLabel>✨ Your dual avatar video is ready</FieldLabel>
+                        <Video source={{ uri: resultUrl }} style={s.videoResult} useNativeControls resizeMode={ResizeMode.CONTAIN} shouldPlay isLooping />
+                      </GlassCard>
+                    )}
+                    {!!resultError && !generating && (
+                      <GlassCard style={{ marginTop: 16 }}>
+                        <Text style={s.errorTitle}>Generation failed</Text>
+                        <Text style={s.errorText}>{resultError}</Text>
+                      </GlassCard>
+                    )}
+
+                    <View style={{ marginTop: 18 }}>
+                      <GhostButton label="Back to voice preview" icon="chevron-back" size="md" onPress={back} disabled={generating} />
+                    </View>
+                  </>
+                ) : (
+                <>
                 <Text style={s.sectionTitle}>Upload your photo</Text>
                 <Text style={s.sectionSub}>We'll animate it with your picked voice + dialogue.</Text>
 
@@ -1117,6 +1321,8 @@ export default function AvatarStudioScreen() {
                     disabled={generating}
                   />
                 </View>
+                </>
+                )}
               </>
             )}
 
@@ -1529,6 +1735,14 @@ const s = StyleSheet.create({
   progressText: { color: '#CBD5E1', fontSize: 12, textAlign: 'center' },
 
   videoResult: { width: '100%', aspectRatio: 9/16, borderRadius: 10, backgroundColor: '#000', maxHeight: 420 },
+  dualUpload: {
+    flex: 1, aspectRatio: 3/4,
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.12)',
+    borderStyle: 'dashed' as any, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden', gap: 6,
+  },
 
   /* Variant picker (issue #6) */
   variantGrid: {
