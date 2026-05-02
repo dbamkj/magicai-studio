@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Optional
+from typing import Optional, List
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -996,6 +996,97 @@ async def post_generate_character(req: GenerateCharacterRequest, background: Bac
     return {"job_id": job_id, "status": "queued", "style": req.style_id, "gender": gender, "role": req.role}
 
 
+class CharacterBatchSlot(BaseModel):
+    role: str = Field("A", description="A | B — identifies which half of the split-screen this character is for.")
+    gender: str = Field("neutral", description="male | female | neutral")
+
+
+class GenerateCharactersBatchRequest(BaseModel):
+    style_id: str
+    slots: List[CharacterBatchSlot] = Field(
+        default_factory=list,
+        description="Up to 6 slots. Each slot spawns a Nano-Banana job.",
+    )
+
+
+@router.post("/generate-characters-batch")
+async def post_generate_characters_batch(
+    req: GenerateCharactersBatchRequest,
+    background: BackgroundTasks,
+    request: Request,
+):
+    """Phase 2b (b3 hybrid) — kick multiple Nano-Banana character jobs in
+    ONE round-trip so the avatar-studio Dual-mode Step 5 can show a grid of
+    variants (Person A / Person B × male / female) for the user to pick.
+
+    Each slot spawns a real _process_avatar_job worker in the background.
+    The response contains job IDs — poll /api/avatar/jobs/{id} for each.
+    Returns HTTP 400 if style unknown or slots empty / >6.
+    """
+    if req.style_id not in STYLES:
+        raise HTTPException(status_code=400, detail=f"Unknown style. Use: {', '.join(STYLES.keys())}")
+    if not req.slots:
+        raise HTTPException(status_code=400, detail="At least one slot is required.")
+    if len(req.slots) > 6:
+        raise HTTPException(status_code=400, detail="Max 6 slots per batch (to stay within Nano-Banana rate limits).")
+
+    style = STYLES[req.style_id]
+    user = await _resolve_user(request)
+    user_tier = (user.get("subscription_tier") or "free").lower()
+    is_paid = user_tier in ("starter", "creator", "pro")
+
+    out_jobs: list[dict] = []
+    for slot in req.slots:
+        role = "B" if (slot.role or "A").upper() == "B" else "A"
+        gender = (slot.gender or "neutral").lower()
+        if gender not in ("male", "female", "neutral"):
+            gender = "neutral"
+        gender_txt = {
+            "male": "a male character",
+            "female": "a female character",
+            "neutral": "a character",
+        }[gender]
+        # Role-based visual diversity so 2× "male" for A vs B look different.
+        role_seed = "warm welcoming eyes, soft smile" if role == "A" else "bold confident expression, subtle smirk"
+        prompt = (
+            f"{style['tagline']} Create {gender_txt} with {role_seed}, "
+            f"friendly and expressive, front-facing portrait, upper body, clean background, "
+            f"consistent with the {style['label']} cartoon style."
+        )
+
+        job_id = f"av_{uuid.uuid4().hex[:12]}"
+        await db.avatar_jobs.insert_one({
+            "id": job_id,
+            "user_id": user.get("id"),
+            "user_tier": user_tier,
+            "style": req.style_id,
+            "emotion": "happy",
+            "status": "queued",
+            "created_at": datetime.now(timezone.utc),
+            "watermarked": not is_paid,
+            "kind": "character",
+            "role": role,
+            "gender": gender,
+        })
+        background.add_task(
+            _process_avatar_job,
+            job_id=job_id,
+            style=req.style_id,
+            emotion="happy",
+            prompt=prompt,
+            image_b64=None,
+            image_url=None,
+            watermark=not is_paid,
+        )
+        out_jobs.append({"job_id": job_id, "role": role, "gender": gender})
+
+    return {
+        "style": req.style_id,
+        "jobs": out_jobs,
+        "count": len(out_jobs),
+    }
+
+
 class DualLipsyncRequest(BaseModel):
     image_a_path: str = Field(..., description="Uploads path for Person A image.")
     image_b_path: str = Field(..., description="Uploads path for Person B image.")
@@ -1033,6 +1124,30 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
         raise HTTPException(status_code=400, detail=f"Image B not found: {req.image_b_path}")
     if not (req.script or "").strip():
         raise HTTPException(status_code=400, detail="Script is required")
+
+    # Session 25 round 6 — guard against 1×1 placeholder PNGs that crash
+    # ffmpeg's scale filter (same root cause as the "stuck @ 5%" solo bug).
+    import subprocess as _sp
+    for label, p_img in (("A", img_a), ("B", img_b)):
+        try:
+            probe = _sp.run(
+                ["/usr/bin/ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height",
+                 "-of", "default=nw=1:nk=1", str(p_img)],
+                capture_output=True, timeout=10,
+            )
+            dims = (probe.stdout.decode() or "").strip().split("\n")
+            if len(dims) >= 2:
+                w, h = int(dims[0] or "0"), int(dims[1] or "0")
+                if w < 64 or h < 64:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Image {label} is too small ({w}x{h}). Please upload a clearer photo.",
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
     user, cost = await preflight_and_reserve(request, job_type='lipsync', feature='lip_sync_dual')
 
@@ -1108,20 +1223,31 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
             if not combined.exists() or combined.stat().st_size < 500:
                 raise Exception("Audio concatenation failed")
 
-            # Probe duration (need 2.5s min for MH).
+            # Probe duration (need 2.5s min for MH). Also always append a
+            # 0.75s silent tail so the LAST spoken line isn't clipped by
+            # MH lipsync warp (Session 25 round 6).
             dur_r = subprocess.run([
                 "/usr/bin/ffprobe", "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(combined),
             ], capture_output=True, timeout=15)
             audio_dur = float((dur_r.stdout.decode() or "3.0").strip() or "3.0")
+            padded = UPLOAD_DIR / f"dual_{p.id[:8]}_padded.mp3"
             if audio_dur < 2.5:
-                padded = UPLOAD_DIR / f"dual_{p.id[:8]}_padded.mp3"
                 subprocess.run([
                     "/usr/bin/ffmpeg", "-y", "-i", str(combined),
-                    "-af", "apad=pad_dur=2.5", "-t", "3.0", str(padded),
+                    "-af", "apad=pad_dur=3.25", "-t", "3.75", str(padded),
                 ], capture_output=True, timeout=20)
-                if padded.exists(): combined = padded; audio_dur = 3.0
+                if padded.exists() and padded.stat().st_size > 500:
+                    combined = padded; audio_dur = 3.75
+            else:
+                subprocess.run([
+                    "/usr/bin/ffmpeg", "-y", "-i", str(combined),
+                    "-af", "apad=pad_dur=0.75", "-t", str(audio_dur + 0.75),
+                    str(padded),
+                ], capture_output=True, timeout=40)
+                if padded.exists() and padded.stat().st_size > 500:
+                    combined = padded; audio_dur = audio_dur + 0.75
 
             # 4) Build the split-screen A|B PNG and loop it for duration.
             await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 55}})

@@ -607,9 +607,20 @@ export default function AvatarStudioScreen() {
       const r = await axios.post(`${API}/avatar/dual-lipsync`, body, { timeout: 30000 });
       const pid = r.data?.project_id;
       if (!pid) throw new Error('No project id');
+      // Round 6 polish — same resilient polling we gave the solo flow:
+      // surfaces auth/network errors, hard-caps at 12 min, bails gracefully.
+      const POLL_START = Date.now();
+      const POLL_MAX_MS = 12 * 60 * 1000;
+      let consecutiveErrors = 0;
       pollRef.current = setInterval(async () => {
+        if (Date.now() - POLL_START > POLL_MAX_MS) {
+          clearInterval(pollRef.current);
+          setResultError('Dual render timed out after 12 minutes.'); setGenerating(false);
+          return;
+        }
         try {
           const j = await axios.get(`${API}/project/${pid}`, { timeout: 15000 });
+          consecutiveErrors = 0;
           const prog = j.data?.progress || 0; const st = j.data?.status || '';
           setGenProgress(prog);
           if (prog >= 90) setGenStage('Finalizing split-screen…');
@@ -624,7 +635,21 @@ export default function AvatarStudioScreen() {
             clearInterval(pollRef.current);
             setResultError(j.data?.error || 'Dual render failed'); setGenerating(false);
           }
-        } catch {}
+        } catch (pollErr: any) {
+          consecutiveErrors += 1;
+          const status = pollErr?.response?.status;
+          console.warn(`[dual-lipsync] poll err #${consecutiveErrors}`, status);
+          if (status === 401 || status === 403) {
+            clearInterval(pollRef.current);
+            setResultError('Session expired — please sign in again.'); setGenerating(false);
+            return;
+          }
+          if (consecutiveErrors >= 20) {
+            clearInterval(pollRef.current);
+            setResultError(`Lost connection to render server (${status || 'network'}). Please retry.`);
+            setGenerating(false);
+          }
+        }
       }, 3000);
     } catch (e: any) {
       setResultError(e?.response?.data?.detail || e?.message || 'Dual generation failed');

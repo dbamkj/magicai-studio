@@ -9447,3 +9447,68 @@ agent_communication:
         Voice B's first line sequentially (was only playing A
         before). New extractAB() helper parses the A:/B: lines.
 
+
+# ===================================================================
+# SESSION 25 — Round 7: Dual-lipsync hardening + b3 batch endpoint
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Three Next-Action-Items shipped:
+
+      1) DUAL-LIPSYNC HARDENING (routes/avatar.py)
+         • Added image dimension guard — rejects <64×64 images early
+           with HTTP 400 (same fix we applied to solo talking.py).
+           Prevents ffmpeg "divisible by 2 (1x1)" crash on corrupt
+           uploads before burning MH credits.
+         • Added always-on 0.75s silent tail on the combined A/B audio
+           so the LAST spoken syllable isn't clipped by MH lipsync
+           warp (same fix as routes/talking.py round 6).
+         • Frontend generateDual() polling upgraded — same resilient
+           pattern as solo:
+             - surfaces auth/network errors via console.warn
+             - bails on 401/403 with clear session-expired message
+             - 12-min hard cap instead of silent infinite hang
+             - 20-consecutive-error bailout
+         The dual flow now has the same reliability as solo.
+
+      2) B3 HYBRID CHARACTER GENERATION
+         New endpoint:
+           POST /api/avatar/generate-characters-batch
+           Body: {
+             style_id: "mythological",
+             slots: [{role:"A",gender:"male"}, ...]  // up to 6
+           }
+           Response: { style, jobs: [{job_id, role, gender}, ...], count }
+         Each slot spawns a real _process_avatar_job background worker.
+         Frontend polls /api/avatar/jobs/{id} for each to show a grid
+         of variant cards on Step 5 (Photo + Generate).
+         Validation:
+           • unknown style_id → HTTP 400
+           • empty slots → HTTP 400
+           • >6 slots → HTTP 400 (Nano Banana rate limit safeguard)
+           • role-based prompt seed (A: warm welcoming eyes / B: bold
+             confident expression) so 2x same-gender variants for A vs
+             B still look visually distinct.
+         VERIFIED end-to-end:
+           • 4 slots → 4 job_ids returned (HTTP 200)
+           • 1 job polled 30s later → status: completed, kind:
+             character, role: A, gender: male, prompt_used matches
+         Bug squashed mid-test: Pydantic errored on List[...] because
+         `List` wasn't imported — added `from typing import Optional,
+         List`.
+
+      3) STILL PENDING (frontend UI wiring for b3 hybrid):
+         Backend is complete; the UI grid for character variants on
+         Step 5 is the next piece. Proposed design:
+           • On Step 5 entry in dual mode, auto-call batch endpoint
+             with [A-M, A-F, B-M, B-F] using inferred genders
+           • Show 4 cards in a 2×2 grid (Person A: 2 variants; Person
+             B: 2 variants), each polling its own job_id every 3s
+           • User taps a card → selected; OR taps "Upload own photo"
+             → falls back to current upload slot
+           • "Regenerate variants" button spawns a new batch with
+             fresh seeds
+         This UI is the b3 hybrid's visible piece and should be the
+         next session's primary work.
+
