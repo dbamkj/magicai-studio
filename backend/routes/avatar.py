@@ -425,6 +425,11 @@ class AvatarDialoguesRequest(BaseModel):
     # 'solo'  → single-speaker 4-line monologue (no A/B prefixes)
     # 'dual'  → two-speaker 4-5 line A:/B: scene (legacy default)
     mode: Optional[str] = Field("dual", description="solo | dual — controls one-speaker vs two-speaker dialogues.")
+    # Session 25 round 4 — let the "Regenerate options" button actually
+    # produce DIFFERENT dialogues each click. Frontend sends a fresh
+    # nonce per regenerate; backend mixes it into the cache key so the
+    # cache miss → LLM re-runs.
+    nonce: Optional[str] = Field(None, description="Optional cache-busting token; pass a fresh value to force a new LLM call.")
 
 
 DIALOGUE_SYSTEM_PROMPT = """You are MagiCAi Studio's avatar scriptwriter.
@@ -658,7 +663,7 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
         dlg_mode = "dual"
 
     cache_key = _hashlib_av.sha256(
-        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}|{emotion}|{dlg_mode}".encode()
+        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}|{emotion}|{dlg_mode}|{req.nonce or ''}".encode()
     ).hexdigest()[:24]
     hit = _dialogue_cache.get(cache_key)
     if hit:

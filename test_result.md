@@ -9261,3 +9261,57 @@ agent_communication:
         ✅ Expo restarted cleanly, no new parse errors in logs
         ✅ VoiceStylePicker crash gone
 
+
+# ===================================================================
+# SESSION 25 — Round 4: Regenerate options + per-voice preview
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Two follow-up bugs squashed:
+
+      1) "Regenerate options" returned the SAME 3 dialogues every click
+         Root cause: the dialogue cache was keyed on
+         (style|idea|lang|count|emotion|mode), and re-clicks hit the
+         cache so no new LLM call ran.
+         Fix:
+           • Added `nonce` field to /api/avatar/dialogues request
+           • Cache key now includes nonce
+           • Frontend sends a fresh `${Date.now()}_${random}` per click
+           • Auto-fires fetchDialogues on solo↔dual toggle (used to need
+             a manual click) — useEffect hook with first-render guard
+         Verified: two requests with different nonces returned
+         completely different titles + text.
+
+      2) Voice preview always sounded like Vidya (Swara) regardless of
+         voice picked
+         Root cause #1: PreviewAudioRequest schema did not accept
+                        `voice_id` at all — only `voice_type`. Any voice_id
+                        from the frontend was silently dropped.
+         Root cause #2: Even when voice_type was set, _voice_to_sarvam()
+                        only matched generic descriptors ("warm",
+                        "energetic"); Edge-style ids like
+                        "hi-IN-MadhurNeural" fell through to the female
+                        default.
+         Root cause #3: target_lang line had `"hi-IN" if ... else "hi-IN"`
+                        — both branches identical (bug).
+         Fixes in /app/backend/routes/prompts.py:
+           • Added voice_id + voice_style to PreviewAudioRequest
+           • Combined voice_id + voice_type + voice_style into a single
+             descriptor before heuristic matching
+           • Added _EDGE_TO_SARVAM map: 12 Edge voice → Sarvam speaker
+             mappings (Madhur→Hitesh M, Swara→Vidya F, Guy→Hitesh,
+             Jenny→Vidya, etc.)
+           • Fixed language: english now → en-IN (Sarvam supports it),
+             everything else → hi-IN
+           • Cache key now includes the full voice descriptor
+         In /app/frontend/app/avatar-studio.tsx:
+           • Solo mode preview uses cartoonVoiceId (or style default)
+           • Dual mode preview uses voiceAId (Person A line)
+           • Sends voice_id, voice_type AND voice_style so backend has
+             every signal for mapping
+         Verified end-to-end with curl:
+           voice_id=Madhur → 8822 bytes mp3 (md5 3b27e58…)
+           voice_id=Swara  → 8508 bytes mp3 (md5 18f07da…)
+           Different files, different speakers, different durations. ✅
+

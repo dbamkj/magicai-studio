@@ -119,6 +119,10 @@ class GeneratePromptsResponse(BaseModel):
 class PreviewAudioRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=200)
     voice_type: Optional[str] = Field(default="warm_storyteller_female")
+    # Session 25 round 4 — accept the explicit Edge/Sarvam voice id
+    # picked in Avatar Studio so the preview matches the actual voice.
+    voice_id: Optional[str] = Field(default=None, description="Edge-style voice id (e.g. 'hi-IN-MadhurNeural') or Sarvam speaker name.")
+    voice_style: Optional[str] = Field(default=None)
     language: Optional[str] = Field(default="english")
     max_seconds: Optional[float] = Field(default=2.5, ge=0.5, le=4.0)
 
@@ -484,15 +488,46 @@ async def _call_llm(
 
 # Map LLM voice_type descriptors → Sarvam speaker.
 # Sarvam supports: anushka, manisha, vidya, arya (F), abhilash, karun, hitesh (M).
+# Session 25 round 4 — Edge voice IDs like 'hi-IN-MadhurNeural' now map to
+# distinct Sarvam speakers so different picks audibly differ.
+_EDGE_TO_SARVAM = {
+    # Hindi female
+    "swaraneural":   ("vidya",   "hi-IN"),
+    "kaviyaneural":  ("manisha", "hi-IN"),
+    "ananyaneural":  ("anushka", "hi-IN"),
+    # Hindi male
+    "madhurneural":  ("hitesh",   "hi-IN"),
+    "rohanneural":   ("karun",    "hi-IN"),
+    "arjunneural":   ("abhilash", "hi-IN"),
+    # English (US/IN) — fall back to the Sarvam Hindi speaker that
+    # carries the closest gender/personality (Sarvam can speak en-IN).
+    "guyneural":     ("hitesh",   "en-IN"),
+    "tonyneural":    ("karun",    "en-IN"),
+    "rogerneural":   ("abhilash", "en-IN"),
+    "jennyneural":   ("vidya",    "en-IN"),
+    "ariaeural":     ("anushka",  "en-IN"),
+    "anaeural":      ("manisha",  "en-IN"),
+    # Marathi/Tamil/Telugu fallbacks
+    "manoharneural": ("hitesh",   "hi-IN"),
+    "aaravneural":   ("karun",    "hi-IN"),
+    "aroharneural":  ("vidya",    "hi-IN"),
+}
+
+
 def _voice_to_sarvam(voice_type: str) -> tuple[str, str]:
     """Returns (speaker, target_language_code)."""
     v = (voice_type or "").lower()
-    is_female = any(t in v for t in ("female", "anushka", "manisha", "vidya", "jenny", "aria"))
-    is_male = any(t in v for t in ("male", "guy", "abhilash", "karun", "arvind"))
+    # 1) Try direct Edge-voice → Sarvam mapping first so explicit picks
+    #    actually differ in audio output.
+    for needle, mapped in _EDGE_TO_SARVAM.items():
+        if needle in v:
+            return mapped
+    is_female = any(t in v for t in ("female", "anushka", "manisha", "vidya", "jenny", "aria", "swara", "kaviya", "ananya"))
+    is_male = any(t in v for t in ("male", "guy", "abhilash", "karun", "arvind", "madhur", "rohan", "arjun", "hitesh"))
     if not is_female and not is_male:
         is_female = True   # default
-    is_calm = any(t in v for t in ("warm", "calm", "storyteller", "gentle", "soft"))
-    is_energetic = any(t in v for t in ("energetic", "confident", "bold", "punchy"))
+    is_calm = any(t in v for t in ("warm", "calm", "storyteller", "gentle", "soft", "devotional", "spiritual"))
+    is_energetic = any(t in v for t in ("energetic", "confident", "bold", "punchy", "playful", "excited"))
     if is_female:
         if is_calm:      speaker = "manisha"
         elif is_energetic: speaker = "anushka"
@@ -661,11 +696,21 @@ async def preview_audio(body: PreviewAudioRequest):
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
-    voice_type = body.voice_type or "warm_storyteller_female"
+    # Session 25 round 4 — combine voice_id + voice_type + voice_style so
+    # the heuristic picks the correct Sarvam speaker. Previously only
+    # voice_type was read which meant every preview collapsed onto Vidya
+    # (the default female fallback) regardless of what the user picked.
+    voice_descriptor = " ".join(filter(None, [
+        body.voice_id or "",
+        body.voice_type or "",
+        body.voice_style or "",
+    ])).strip() or "warm_storyteller_female"
     language = (body.language or "english").strip().lower()
-    target_lang = "hi-IN" if language in ("hindi", "hinglish", "marathi") else "hi-IN"
-    speaker, _ = _voice_to_sarvam(voice_type)
-    cache_id = hashlib.sha256(f"{text}|{speaker}|{target_lang}".encode()).hexdigest()[:32]
+    # Sarvam supports multi-language → respect user's language choice
+    # instead of forcing hi-IN every time (was a bug).
+    target_lang = "en-IN" if language == "english" else "hi-IN"
+    speaker, _ = _voice_to_sarvam(voice_descriptor)
+    cache_id = hashlib.sha256(f"{text}|{speaker}|{target_lang}|{voice_descriptor}".encode()).hexdigest()[:32]
     out_path = PREVIEW_AUDIO_DIR / f"{cache_id}.mp3"
     if not out_path.exists() or out_path.stat().st_size < 200:
         # Memcache shortcut

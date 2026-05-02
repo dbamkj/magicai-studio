@@ -269,7 +269,11 @@ export default function AvatarStudioScreen() {
   }, [styleId, emotion, language, categoryId]);
 
   // ────────────────────────── Fetch dialogues ──────────────────────────
-  const fetchDialogues = useCallback(async () => {
+  // The backend caches by (style|idea|lang|count|emotion|mode|nonce). Passing
+  // a fresh nonce per click guarantees the LLM is invoked again so the
+  // "Regenerate options" button actually produces NEW dialogues rather
+  // than returning the same cached batch.
+  const fetchDialogues = useCallback(async (opts?: { force?: boolean }) => {
     if (!styleId || !idea.trim()) return;
     setLoadingDialogues(true); setDialogueErr(null); setDialogueId(null);
     try {
@@ -280,6 +284,9 @@ export default function AvatarStudioScreen() {
         emotion,
         count: 3,
         mode: dualMode ? 'dual' : 'solo',
+        // Always pass a nonce so the cache becomes a per-request bucket.
+        // If `force=true` we add an extra random component for safety.
+        nonce: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${opts?.force ? '_f' : ''}`,
       }, { timeout: 45000 });
       const dlg: Dialogue[] = r.data?.dialogues || [];
       setDialogues(dlg);
@@ -290,6 +297,15 @@ export default function AvatarStudioScreen() {
       setLoadingDialogues(false);
     }
   }, [styleId, idea, language, emotion, dualMode]);
+
+  // Auto-refetch dialogues when the user toggles solo↔dual on Step 3.
+  // Skip the very first render — fetchDialogues is also called on Next
+  // from Step 2, and we don't want a duplicate call.
+  const dualModeFirstRender = useRef(true);
+  useEffect(() => {
+    if (dualModeFirstRender.current) { dualModeFirstRender.current = false; return; }
+    if (step === 2 && styleId && idea.trim()) fetchDialogues();
+  }, [dualMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ────────────────────────── Audio preview ──────────────────────────
   const playAudioPreview = useCallback(async () => {
@@ -307,18 +323,21 @@ export default function AvatarStudioScreen() {
       // first line for a quick preview.
       const cleaned = stripDialogueCues(pickedDialogue.text);
       const previewText = cleaned.slice(0, 180);
-      // Use the user-selected voice (if overridden) — falls back to the
-      // style's auto-matched voice. voice_type expects an Edge-style id;
-      // backend resolves both `voice_id` (Sarvam/Edge) and the legacy
-      // `voice_type` for compatibility.
-      const voiceForPreview = cartoonVoiceId || activeStyle.personality.voice_id;
-      const voiceStyleForPreview = cartoonVoiceStyle || activeStyle.personality.voice_style;
+      // Session 25 round 4 — preview must reflect the picked voice.
+      // Solo  → cartoon override (or style default)
+      // Dual  → Voice A (Person A), since the preview snippet is line A.
+      const voiceForPreview = dualMode
+        ? voiceAId
+        : (cartoonVoiceId || activeStyle.personality.voice_id);
+      const voiceStyleForPreview = dualMode
+        ? activeStyle.personality.voice_style
+        : (cartoonVoiceStyle || activeStyle.personality.voice_style);
       const r = await axios.post(
         `${API}/generate-prompts/preview-audio`,
         {
           text: previewText,
           voice_id: voiceForPreview,
-          voice_type: voiceStyleForPreview,
+          voice_type: voiceForPreview,
           voice_style: voiceStyleForPreview,
           language,
           max_seconds: 3.5,
@@ -336,7 +355,7 @@ export default function AvatarStudioScreen() {
     } finally {
       setAudioBusy(false);
     }
-  }, [pickedDialogue, activeStyle, language, cartoonVoiceId, cartoonVoiceStyle]);
+  }, [pickedDialogue, activeStyle, language, cartoonVoiceId, cartoonVoiceStyle, dualMode, voiceAId]);
 
   // ────────────────────────── Pick + upload image ──────────────────────────
   const pickAndUploadImage = useCallback(async () => {
