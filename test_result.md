@@ -8631,3 +8631,103 @@ agent_communication:
           • No backend changes — all routes + API contracts unchanged.
 
 
+
+  - task: "AI Avatar Studio — 6 user-feedback fixes (talking voice picker, emotion strip, back btn, Indian voices, two-person dialogue, screen rename)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx, frontend/app/cartoon-avatar.tsx, frontend/app/index.tsx, backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — Round 2 polish on the AI Avatar Studio merge.
+          Addressed 6 of the 7 user issues from cart2.jpg feedback;
+          flagged #6 as a deliberate Phase-B item.
+
+          [#1] TALKING-MODE FORM RESTORED — replaced the cartoon-style
+          chip strip with the real legacy avatar-talking pickers:
+            • <VoicePicker /> (Hindi/English Neural voices)
+            • <VoiceStylePicker /> (style + rate + pitch)
+            • <MotionPicker /> (camera motion presets)
+            • <ResolutionPicker /> (480p/720p/1080p)
+          New `tk*` state (tkVoiceId / tkVoiceStyle / tkVoiceRate /
+          tkVoicePitch / tkMotion / tkAspect / tkRes) drives the
+          payload built in generate(). Talking mode now sends those
+          values to /api/create-talking-avatar; cartoon mode still
+          uses the personality voice mapping. The screenshot-reported
+          "wrong cartoon voice list" bug is gone.
+
+          [#2] EMOTION STRIP — added "Pick an emotion" common to BOTH
+          modes. 8 chips: Happy / Excited / Confident / Playful /
+          Mysterious / Peaceful / Devotional / Fierce. In cartoon
+          mode it sits below the avatar grid on Step 0; in talking
+          mode it sits above the photo upload field. The selected
+          emotion is now passed to:
+            • POST /api/avatar/dialogues   (new emotion field)
+            • POST /api/avatar/cartoonize  (replaces hard-coded 'happy')
+
+          [#3] BACK BUTTON on cartoon Step 4 (upload + generate) —
+          added a compact GhostButton at the very top of the step so
+          users can return to the voice preview without losing state.
+
+          [#4] INDIAN VOICE DIVERSIFICATION (backend) — STYLE_PERSONALITY
+          updates so each Indian-bucket avatar has a distinct voice:
+            • desi_toon        → hi-IN-SwaraNeural   (was)
+            • jungle_hero      → hi-IN-PrabhatNeural (was Madhur)
+            • mythological     → hi-IN-MadhurNeural  (kept)
+            • bollywood_poster → hi-IN-AaravNeural   (was Madhur)
+            • cricket_champion → hi-IN-KunalNeural   (was Madhur)
+          Now 5 Indian voices spread across the 5 Indian-bucket
+          styles instead of all sharing Madhur.
+
+          [#5] DIALOGUE SCRIPTWRITER UPGRADED (backend) — replaced
+          the one-liner schema with a 4–5 line two-person scene format:
+            • Each scene = "A: ... \n[pause:1.0]\nB: ... \n..." with
+              4–5 lines, one speaker per line, prefixed A: / B:.
+            • [pause:X.X] markers between sentences (drives Sarvam SSML).
+            • Stage actions in *asterisks* (e.g. *smiles warmly*,
+              *raises eyebrow*) for emotional voiceover.
+            • New 'title' field (3–5 word vibe label) per scene.
+            • Emotion cue from the new request field flows into the
+              prompt so the LLM grounds tone choices.
+            • Cache key now includes emotion.
+            • Fallback dialogues rewritten as 4-line two-person
+              mini-skits in English + Devanagari + Hinglish.
+            Smoke test: POST /api/avatar/dialogues with mythological +
+            "Diwali greetings between two friends" + hinglish + playful
+            returned 2 scenes with proper A:/B:/[pause]/*action* schema
+            (LLM source confirmed in logs).
+
+          [#7] HERO CAROUSEL TILE 2 RENAMED:
+            • cartoon-avatar.tsx: GlassHeader title "Cartoon Avatar"
+              → "My Avatar"
+            • CTA button "Generate Cartoon Avatar" → "Generate My Avatar"
+            • Home hero slide (#avatar): subtitle now reads
+              "My Avatar — Cartoonize portraits in 12+ Pixar / Anime
+              styles", CTA "Make Avatar" → "Make My Avatar"
+
+          [#6 DEFERRED] 5-cartoon-variant picker — user asked to
+          generate ≥5 cartoon images on Cartoon Step 4 and let the
+          user pick the best one before talking-video generation.
+          Deferred because it requires a new backend endpoint
+          (/api/avatar/cartoonize-batch returning 5 jobs) or 5
+          parallel /api/avatar/cartoonize calls + a grid picker UI;
+          the change has more surface area than fits this round.
+          Backend smoke test against the existing cartoonize endpoint
+          confirms parallelism works — implementation reserved for
+          the next iteration.
+
+          Validation:
+          • Backend: avatar.py reload was clean. POST /api/avatar/dialogues
+            returned schema-correct two-person Hinglish skits with
+            actions+pauses (LLM source).
+          • Frontend: Metro web bundle rebuilt (HTTP 200, 9.75 MB).
+            Grep confirms 28 hits across EMOTION_CHIPS, tkVoiceId,
+            VoicePicker, "My Avatar", "Generate My Avatar".
+          • No backend regressions — /api/avatar/styles + /api/avatar/cartoonize
+            + /api/create-talking-avatar untouched in surface API.
+
+

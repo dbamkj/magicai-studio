@@ -162,7 +162,7 @@ export default function CartoonAvatarScreen() {
 
       <GlassHeader
         icon="color-palette"
-        title="Cartoon Avatar"
+        title="My Avatar"
         subtitle="AI-stylised portrait · Free + Premium styles"
         onBack={() => router.back()}
         gradient={['#A78BFA', '#06B6D4', '#10B981']}
@@ -295,7 +295,7 @@ export default function CartoonAvatarScreen() {
               ) : (
                 <>
                   <Ionicons name="sparkles" size={16} color="#fff" />
-                  <Text style={s.ctaTxt}>Generate Cartoon Avatar</Text>
+                  <Text style={s.ctaTxt}>Generate My Avatar</Text>
                 </>
               )}
             </LinearGradient>

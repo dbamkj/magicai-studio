@@ -278,7 +278,7 @@ STYLE_PERSONALITY: dict[str, dict] = {
         "tone": "cheerful, desi-playful, warm",
     },
     "jungle_hero": {
-        "voice_id": "hi-IN-MadhurNeural", "voice_style": "story",
+        "voice_id": "hi-IN-PrabhatNeural", "voice_style": "story",
         "mood": "inspiring", "bgm_style": "adventure tribal drums",
         "tone": "curious, adventurous, hopeful",
     },
@@ -293,12 +293,12 @@ STYLE_PERSONALITY: dict[str, dict] = {
         "tone": "reverent, calm, divine",
     },
     "bollywood_poster": {
-        "voice_id": "hi-IN-MadhurNeural", "voice_style": "motivation",
+        "voice_id": "hi-IN-AaravNeural", "voice_style": "motivation",
         "mood": "dramatic", "bgm_style": "bollywood retro brass",
         "tone": "theatrical, bold, vintage-drama",
     },
     "cricket_champion": {
-        "voice_id": "hi-IN-MadhurNeural", "voice_style": "motivation",
+        "voice_id": "hi-IN-KunalNeural", "voice_style": "motivation",
         "mood": "energetic", "bgm_style": "sports stadium anthem",
         "tone": "confident, victorious, energetic",
     },
@@ -419,52 +419,96 @@ class AvatarDialoguesRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=280)
     language: Optional[str] = Field("english", description="english | hindi | hinglish")
     count: Optional[int] = Field(3, ge=1, le=5)
+    emotion: Optional[str] = Field("happy", description="One of EMOTIONS keys (happy/excited/playful/...).")
 
 
 DIALOGUE_SYSTEM_PROMPT = """You are MagiCAi Studio's avatar scriptwriter.
-Given an avatar's personality + a user idea, produce short punchy ONE-LINERS
-that the avatar would say. These are spoken aloud by a cartoon/portrait
-avatar, so they MUST:
- • Be 8–15 words per line (spoken in ~2.5–4 seconds).
- • Be first-person, natural, creator-grade (NOT clickbait, NOT hashtag spam).
- • Match the avatar's personality, tone, and cultural setting precisely.
- • Avoid copyrighted names, songs, movies, or celebrity impersonations.
+Given an avatar's personality + a user idea + an emotion cue, produce
+short SCENES that the avatar(s) would perform on screen. Each scene is
+EXACTLY ONE option the user can pick.
+
+Each scene MUST contain 4–5 lines of dialogue formatted as a TWO-PERSON
+conversation between two characters (A and B), so the user gets a real
+performable mini-skit. Add expressive cues:
+ • [pause:1.0] markers between sentences for natural breathing rhythm
+ • Stage actions in *asterisks* (e.g. *smiles warmly*, *raises eyebrow*)
+ • The emotion cue must come through clearly in tone choices
+
+Hard rules:
+ • Each line is one speaker only, prefixed with "A:" or "B:"
+ • Each LINE is 6–14 words spoken (excluding pause/action markers)
+ • Total scene = 4–5 lines, ~25–45 spoken seconds
+ • Match avatar personality, tone, and cultural setting precisely
+ • Avoid copyrighted names, songs, movies, or celebrity impersonations
+ • The first line MUST hook the viewer in the first 3 seconds
 
 Output STRICT JSON (no prose, no code fences). Schema:
 {
   "dialogues": [
-    { "id": "d1", "text": "<one-liner>", "tone": "<one short descriptor>" },
-    { "id": "d2", "text": "...", "tone": "..." },
-    { "id": "d3", "text": "...", "tone": "..." }
+    {
+      "id": "d1",
+      "tone": "<one short label>",
+      "title": "<3-5 word vibe e.g. 'Festival Reunion'>",
+      "text": "A: *smiles warmly* Bhai, kahan gum ho gaye the?\\n[pause:1.0]\\nB: Yaar, kaam ki bheed mein khud ko bhool gaya.\\n[pause:0.8]\\nA: *hands over a sweet box* Diwali aaya, ab to mil hi lo!\\n[pause:1.0]\\nB: *eyes glisten* Yeh roshni — sirf diye ki nahi, dosti ki bhi hai."
+    },
+    { "id": "d2", "tone": "...", "title": "...", "text": "A: ...\\nB: ..." },
+    { "id": "d3", "tone": "...", "title": "...", "text": "A: ...\\nB: ..." }
   ]
 }
 
 Language rules:
- • english → write in English.
- • hindi   → write in Devanagari.
- • hinglish→ write Hindi words in Roman letters, mixed with English.
- • 'tone' field is ALWAYS in English (short label: warm, playful, bold, ...).
+ • english  → write everything in English (incl. action cues).
+ • hindi    → dialogue lines in Devanagari; action cues in English asterisks.
+ • hinglish → write Hindi words in Roman letters mixed with English; action
+              cues in English asterisks.
+ • The 'tone' and 'title' fields are ALWAYS in English.
 
-Make the 3 dialogues MEANINGFULLY different in angle (e.g. a warm opener,
-a bold hook, a playful tease) so the user has a real choice."""
+Make the 3 scenes MEANINGFULLY different in angle (e.g. heartfelt
+reunion / playful rivalry / dramatic reveal) so the user has a real
+choice."""
 
 
-def _dialogue_fallback(style_id: str, idea: str, count: int, language: str) -> dict:
-    """Deterministic fallback when the LLM is unreachable — keeps UX alive."""
+def _dialogue_fallback(style_id: str, idea: str, count: int, language: str, emotion: str = "happy") -> dict:
+    """Deterministic fallback when the LLM is unreachable — keeps UX alive.
+    Two-person mini-skits with pause + action cues; matches the new schema."""
     style = STYLES.get(style_id) or {}
     label = style.get("label", "Avatar")
     base = (idea or "your idea").strip()
     if (language or "").lower() == "hindi":
         items = [
-            {"id": "d1", "text": f"{base} — ये कहानी आज मैं सुनाता हूँ।", "tone": "warm"},
-            {"id": "d2", "text": f"रुकिए! {base} के बारे में एक राज़ है।",   "tone": "bold"},
-            {"id": "d3", "text": f"चलो मिलकर {base} का जादू महसूस करते हैं।", "tone": "playful"},
+            {"id": "d1", "tone": "warm", "title": "गर्मजोशी से मुलाक़ात",
+             "text": (f"A: *मुस्कुराते हुए* अरे, {base} — ये बात आज याद आ गई।\n[pause:1.0]\n"
+                      f"B: सच कहूँ तो दिल में बस यही चल रहा था।\n[pause:0.8]\n"
+                      f"A: *हाथ बढ़ाते हुए* तो चलो, इस पल को साथ जीते हैं।\n[pause:1.0]\n"
+                      f"B: *आँखें भर आईं* दोस्ती की रोशनी सबसे चमकदार होती है।")},
+            {"id": "d2", "tone": "bold", "title": "नाटकीय खुलासा",
+             "text": (f"A: *भौं उठाते हुए* रुको — {base} वैसा नहीं जैसा तुम सोचते हो।\n[pause:1.0]\n"
+                      f"B: मतलब? पूरी बात बताओ।\n[pause:0.8]\n"
+                      f"A: *धीमी आवाज़ में* एक राज़ है, जो हर किसी को नहीं पता।\n[pause:1.0]\n"
+                      f"B: *चौंकते हुए* तो आज ही सुना दो, अब और इंतज़ार नहीं!")},
+            {"id": "d3", "tone": "playful", "title": "मज़ाकिया झड़प",
+             "text": (f"A: *हँसते हुए* {base} पर तुम्हें मेरी राय चाहिए?\n[pause:1.0]\n"
+                      f"B: हाँ, पर सच्ची वाली, मीठी नहीं।\n[pause:0.8]\n"
+                      f"A: *आँख मारते हुए* ठीक है, तैयार रहो।\n[pause:1.0]\n"
+                      f"B: *हँसकर* चलो, सुनते हैं तुम्हारा फ़लसफ़ा।")},
         ]
     else:
         items = [
-            {"id": "d1", "text": f"Today I want to share a story about {base}.", "tone": "warm"},
-            {"id": "d2", "text": f"Wait — {base} is not what you think. Listen in.",        "tone": "bold"},
-            {"id": "d3", "text": f"Ever wondered what {label} would say about {base}?",    "tone": "playful"},
+            {"id": "d1", "tone": "warm", "title": "Heartfelt Reunion",
+             "text": (f"A: *smiles warmly* Hey — {base} just hit me hard.\n[pause:1.0]\n"
+                      f"B: Honestly, I was thinking the same thing today.\n[pause:0.8]\n"
+                      f"A: *reaches out a hand* Then let's live this moment together.\n[pause:1.0]\n"
+                      f"B: *eyes glisten* Friendship makes the brightest light.")},
+            {"id": "d2", "tone": "bold", "title": "Dramatic Reveal",
+             "text": (f"A: *raises eyebrow* Wait — {base} isn't what you think.\n[pause:1.0]\n"
+                      f"B: Hold on, what do you mean by that?\n[pause:0.8]\n"
+                      f"A: *lowers voice* There's a secret nobody saw coming.\n[pause:1.0]\n"
+                      f"B: *startled* Then tell me right now — no more waiting!")},
+            {"id": "d3", "tone": "playful", "title": f"{label} Banter",
+             "text": (f"A: *grins* You really want my take on {base}?\n[pause:1.0]\n"
+                      f"B: Yes — but the real version, not sugar-coated.\n[pause:0.8]\n"
+                      f"A: *winks* Alright, brace yourself for the truth.\n[pause:1.0]\n"
+                      f"B: *laughs* Go on then, sage of the streets.")},
         ]
     return {"dialogues": items[:count]}
 
@@ -482,9 +526,12 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
     persona = STYLE_PERSONALITY.get(req.style_id, DEFAULT_PERSONALITY)
     lang = (req.language or "english").strip().lower()
     count = max(1, min(5, req.count or 3))
+    emotion = (req.emotion or "happy").strip().lower()
+    if emotion not in EMOTIONS:
+        emotion = "happy"
 
     cache_key = _hashlib_av.sha256(
-        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}".encode()
+        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}|{emotion}".encode()
     ).hexdigest()[:24]
     hit = _dialogue_cache.get(cache_key)
     if hit:
@@ -493,7 +540,7 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
     api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         log.warning("avatar/dialogues: no EMERGENT_LLM_KEY — using fallback")
-        out = _dialogue_fallback(req.style_id, req.idea, count, lang)
+        out = _dialogue_fallback(req.style_id, req.idea, count, lang, emotion)
         _dialogue_cache.set(cache_key, out)
         return {**out, "cached": False, "source": "fallback", "personality": persona}
 
@@ -508,10 +555,12 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
             f"Avatar: {style['label']} ({style.get('tagline', '')})\n"
             f"Personality tone: {persona.get('tone')}\n"
             f"Voice style: {persona.get('voice_style')}, mood: {persona.get('mood')}\n"
+            f"Emotion cue: {emotion}\n"
             f"User idea: {req.idea!r}\n"
             f"language: {lang}\n"
             f"count: {count}\n"
-            f"Return the JSON now."
+            f"Return the JSON now. Each dialogue MUST be a 4–5 line two-person scene "
+            f"with [pause:X.X] markers between sentences and *action cues* in asterisks."
         )
         resp = await chat.send_message(UserMessage(text=user_text))
         text = (resp or "").strip()
@@ -540,13 +589,14 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
             d.setdefault("id", f"d{i+1}")
             d.setdefault("tone", persona.get("tone", "neutral"))
             d["text"] = str(d.get("text", "")).strip()
-        out = {"dialogues": dlg, "personality": persona, "style_id": req.style_id, "language": lang}
+        out = {"dialogues": dlg, "personality": persona, "style_id": req.style_id, "language": lang, "emotion": emotion}
         _dialogue_cache.set(cache_key, out)
         return {**out, "cached": False, "source": "llm"}
     except Exception as e:
         log.exception("avatar/dialogues: LLM error — falling back: %s", e)
-        out = _dialogue_fallback(req.style_id, req.idea, count, lang)
+        out = _dialogue_fallback(req.style_id, req.idea, count, lang, emotion)
         out["personality"] = persona
+        out["emotion"] = emotion
         _dialogue_cache.set(cache_key, out)
         return {**out, "cached": False, "source": "fallback"}
 

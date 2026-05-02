@@ -33,6 +33,10 @@ import { useAuth } from '../src/AuthContext';
 import AuthGateModal from '../src/components/AuthGateModal';
 import { uploadImageFile } from '../src/uploadHelper';
 import { Chip, GlassCard, GradientButton, GhostButton, FieldLabel } from '../src/ui';
+import VoicePicker from '../src/VoicePicker';
+import VoiceStylePicker from '../src/VoiceStylePicker';
+import MotionPicker from '../src/MotionPicker';
+import ResolutionPicker from '../src/ResolutionPicker';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 const API = `${BACKEND_URL}/api`;
@@ -94,6 +98,19 @@ const LANG_OPTIONS: { id: Language; label: string }[] = [
   { id: 'hinglish', label: 'Hinglish' },
 ];
 
+// Emotion chips — common to BOTH Cartoon and Talking modes (issue #2).
+// These IDs match the EMOTIONS keys in /api/avatar (backend).
+const EMOTION_CHIPS: { id: string; label: string; icon: string }[] = [
+  { id: 'happy',      label: 'Happy',      icon: '😊' },
+  { id: 'excited',    label: 'Excited',    icon: '🤩' },
+  { id: 'confident',  label: 'Confident',  icon: '😎' },
+  { id: 'playful',    label: 'Playful',    icon: '😋' },
+  { id: 'mysterious', label: 'Mysterious', icon: '🕶️' },
+  { id: 'peaceful',   label: 'Peaceful',   icon: '🧘' },
+  { id: 'devotional', label: 'Devotional', icon: '🙏' },
+  { id: 'fierce',     label: 'Fierce',     icon: '🔥' },
+];
+
 // ────────────────────────── Screen ──────────────────────────
 export default function AvatarStudioScreen() {
   const router = useRouter();
@@ -109,6 +126,18 @@ export default function AvatarStudioScreen() {
   // ── Mode toggle (Cartoon vs Talking). Drives whether we cartoonize the
   // uploaded photo before lip-syncing, and which step machine renders.
   const [mode, setMode] = useState<'cartoon' | 'talking'>('cartoon');
+
+  // ── Common — emotion + talking-mode field state ──
+  // Issue #2: emotion is shared across both modes, picked right after style.
+  const [emotion, setEmotion] = useState<string>('happy');
+  // Issue #1: legacy talking-avatar fields restored for the Talking branch.
+  const [tkVoiceId, setTkVoiceId]     = useState<string>('hi-IN-SwaraNeural');
+  const [tkVoiceStyle, setTkVoiceStyle] = useState<string | null>(null);
+  const [tkVoiceRate, setTkVoiceRate]   = useState<string | null>(null);
+  const [tkVoicePitch, setTkVoicePitch] = useState<string | null>(null);
+  const [tkMotion, setTkMotion]         = useState<string>('none');
+  const [tkAspect, setTkAspect]         = useState<string>('9:16');
+  const [tkRes, setTkRes]               = useState<string>('720p');
 
   // ── step 0..5 (zero-indexed) ──
   const [step, setStep] = useState(0);
@@ -186,6 +215,7 @@ export default function AvatarStudioScreen() {
         style_id: styleId,
         idea: idea.trim(),
         language,
+        emotion,
         count: 3,
       }, { timeout: 45000 });
       const dlg: Dialogue[] = r.data?.dialogues || [];
@@ -274,7 +304,7 @@ export default function AvatarStudioScreen() {
     setGenProgress(5);
 
     try {
-      const persona = activeStyle.personality;
+      const persona = activeStyle.personality;  // kept for future use; emotion handled via state
       let cartoonPath = imagePath;
 
       // ── CARTOON MODE: cartoonize the uploaded photo first ─────────
@@ -288,7 +318,7 @@ export default function AvatarStudioScreen() {
           const cr = await axios.post(`${API}/avatar/cartoonize`, {
             image_b64: b64,
             style: activeStyle.id,
-            emotion: 'happy',
+            emotion: emotion || 'happy',
           }, { timeout: 30000 });
           const jobId = cr.data?.job_id;
           if (!jobId) throw new Error('Cartoonize: no job_id');
@@ -325,14 +355,28 @@ export default function AvatarStudioScreen() {
       }
 
       setGenStage('Generating your talking video…');
-      const body = {
+      // Mode-specific delivery payload — Talking mode uses the user's
+      // explicit voice/style/motion/aspect/resolution (legacy avatar.tsx
+      // semantics restored). Cartoon mode uses style personality.
+      const persona2 = activeStyle.personality;
+      const body = mode === 'cartoon' ? {
         image_path: cartoonPath,
         script,
-        voice_id: persona.voice_id,
-        voice_style: persona.voice_style,
+        voice_id: persona2.voice_id,
+        voice_style: persona2.voice_style,
         motion: 'ken_burns',
         aspect_ratio: '9:16',
         resolution: userIsPro ? '720p' : '480p',
+      } : {
+        image_path: cartoonPath,
+        script,
+        voice_id: tkVoiceId,
+        voice_style: tkVoiceStyle || undefined,
+        voice_rate: tkVoiceRate || undefined,
+        voice_pitch: tkVoicePitch || undefined,
+        motion: tkMotion || 'none',
+        aspect_ratio: tkAspect || '9:16',
+        resolution: userIsPro ? tkRes : '480p',
       };
       const r = await axios.post(`${API}/create-talking-avatar`, body, { timeout: 30000 });
       const pid = r.data?.project_id;
@@ -468,51 +512,67 @@ export default function AvatarStudioScreen() {
                 {loadingStyles ? (
                   <ActivityIndicator color="#A855F7" style={{ marginTop: 40 }} />
                 ) : (
-                  <View style={s.avatarGrid}>
-                    {filteredStyles.map(st => {
-                      const locked = st.premium && !userIsPro;
-                      const active = st.id === styleId;
-                      return (
-                        <Pressable
-                          key={st.id}
-                          onPress={() => {
-                            if (locked) {
-                              Alert.alert(
-                                'Premium avatar',
-                                `${st.label} is a MagiCAi Premium style. Upgrade to unlock.`,
-                                [
-                                  { text: 'Cancel', style: 'cancel' },
-                                  { text: 'Upgrade', onPress: () => router.push('/subscription' as any) },
-                                ],
-                              );
-                              return;
-                            }
-                            setStyleId(st.id);
-                          }}
-                          style={[
-                            s.avatarCard,
-                            active && s.avatarCardActive,
-                            locked && { opacity: 0.6 },
-                          ]}
-                        >
-                          <Text style={s.avatarIcon}>{st.icon}</Text>
-                          <Text style={s.avatarLabel}>{st.label}</Text>
-                          <Text style={s.avatarTag} numberOfLines={2}>{st.tagline}</Text>
-                          {st.premium && (
-                            <View style={s.proPill}>
-                              <Ionicons name="diamond" size={9} color="#FBBF24" />
-                              <Text style={s.proPillText}>PRO</Text>
-                            </View>
-                          )}
-                          {active && !locked && (
-                            <View style={s.activeCheck}>
-                              <Ionicons name="checkmark-circle" size={18} color="#EC4899" />
-                            </View>
-                          )}
-                        </Pressable>
-                      );
-                    })}
-                  </View>
+                  <>
+                    <View style={s.avatarGrid}>
+                      {filteredStyles.map(st => {
+                        const locked = st.premium && !userIsPro;
+                        const active = st.id === styleId;
+                        return (
+                          <Pressable
+                            key={st.id}
+                            onPress={() => {
+                              if (locked) {
+                                Alert.alert(
+                                  'Premium avatar',
+                                  `${st.label} is a MagiCAi Premium style. Upgrade to unlock.`,
+                                  [
+                                    { text: 'Cancel', style: 'cancel' },
+                                    { text: 'Upgrade', onPress: () => router.push('/subscription' as any) },
+                                  ],
+                                );
+                                return;
+                              }
+                              setStyleId(st.id);
+                            }}
+                            style={[
+                              s.avatarCard,
+                              active && s.avatarCardActive,
+                              locked && { opacity: 0.6 },
+                            ]}
+                          >
+                            <Text style={s.avatarIcon}>{st.icon}</Text>
+                            <Text style={s.avatarLabel}>{st.label}</Text>
+                            <Text style={s.avatarTag} numberOfLines={2}>{st.tagline}</Text>
+                            {st.premium && (
+                              <View style={s.proPill}>
+                                <Ionicons name="diamond" size={9} color="#FBBF24" />
+                                <Text style={s.proPillText}>PRO</Text>
+                              </View>
+                            )}
+                            {active && !locked && (
+                              <View style={s.activeCheck}>
+                                <Ionicons name="checkmark-circle" size={18} color="#EC4899" />
+                              </View>
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    {/* Issue #2 — Emotion strip common to ALL avatar categories */}
+                    <FieldLabel style={{ marginTop: 18 }}>Pick an emotion</FieldLabel>
+                    <View style={s.catRow}>
+                      {EMOTION_CHIPS.map(em => (
+                        <Chip
+                          key={em.id}
+                          label={`${em.icon} ${em.label}`}
+                          active={em.id === emotion}
+                          onPress={() => setEmotion(em.id)}
+                          style={{ marginRight: 8, marginBottom: 8 }}
+                        />
+                      ))}
+                    </View>
+                  </>
                 )}
               </>
             )}
@@ -664,6 +724,15 @@ export default function AvatarStudioScreen() {
             {/* ═════════════════ STEP 4 — Photo + Generate ═════════════════ */}
             {mode === 'cartoon' && step === 4 && (
               <>
+                {/* Back chip — issue #3 */}
+                <View style={{ marginBottom: 8 }}>
+                  <GhostButton
+                    label="Back"
+                    icon="chevron-back"
+                    size="sm"
+                    onPress={back}
+                  />
+                </View>
                 <Text style={s.sectionTitle}>Upload your photo</Text>
                 <Text style={s.sectionSub}>We'll animate it with your picked voice + dialogue.</Text>
 
@@ -772,8 +841,22 @@ export default function AvatarStudioScreen() {
                   realistic talking video with a voice that matches your chosen vibe.
                 </Text>
 
+                {/* Emotion strip — common to both modes (issue #2) */}
+                <FieldLabel>Pick an emotion</FieldLabel>
+                <View style={s.catRow}>
+                  {EMOTION_CHIPS.map(em => (
+                    <Chip
+                      key={em.id}
+                      label={`${em.icon} ${em.label}`}
+                      active={em.id === emotion}
+                      onPress={() => setEmotion(em.id)}
+                      style={{ marginRight: 8, marginBottom: 8 }}
+                    />
+                  ))}
+                </View>
+
                 {/* 1) Upload */}
-                <FieldLabel>1 · Upload portrait</FieldLabel>
+                <FieldLabel style={{ marginTop: 14 }}>1 · Upload portrait</FieldLabel>
                 {imageUri ? (
                   <GlassCard>
                     <Image source={{ uri: imageUri }} style={s.photoPreview} />
@@ -805,24 +888,31 @@ export default function AvatarStudioScreen() {
                   style={s.textarea}
                 />
 
-                {/* 3) Voice vibe picker — reuses the style personality mapping */}
-                <FieldLabel>3 · Voice vibe</FieldLabel>
-                <View style={s.catRow}>
-                  {styles.slice(0, 8).map(st => (
-                    <Chip
-                      key={st.id}
-                      label={`${st.icon} ${st.label}`}
-                      active={st.id === styleId}
-                      onPress={() => setStyleId(st.id)}
-                      style={{ marginRight: 8, marginBottom: 8 }}
-                    />
-                  ))}
-                </View>
-                {activeStyle && (
-                  <Text style={s.voiceMeta}>
-                    ✨ Voice: {activeStyle.personality.voice_id} · {activeStyle.personality.tone}
-                  </Text>
-                )}
+                {/* 3) Voice picker — full legacy talking-avatar UX restored */}
+                <FieldLabel>3 · Voice</FieldLabel>
+                <VoicePicker selectedId={tkVoiceId} onSelect={setTkVoiceId} />
+
+                <FieldLabel style={{ marginTop: 16 }}>Voice style (optional)</FieldLabel>
+                <VoiceStylePicker
+                  voiceId={tkVoiceId}
+                  selectedStyle={tkVoiceStyle}
+                  selectedRate={tkVoiceRate}
+                  selectedPitch={tkVoicePitch}
+                  onStyleChange={setTkVoiceStyle}
+                  onRateChange={setTkVoiceRate}
+                  onPitchChange={setTkVoicePitch}
+                />
+
+                <FieldLabel style={{ marginTop: 16 }}>Camera motion</FieldLabel>
+                <MotionPicker selectedId={tkMotion} onSelect={setTkMotion} />
+
+                <FieldLabel style={{ marginTop: 16 }}>Resolution</FieldLabel>
+                <ResolutionPicker selectedId={tkRes} onSelect={setTkRes} />
+
+                {/* Optional: which emotion strip is currently active */}
+                <Text style={[s.voiceMeta, { marginTop: 10 }]}>
+                  Emotion: {EMOTION_CHIPS.find(e => e.id === emotion)?.icon} {emotion}
+                </Text>
 
                 {/* 4) Generate */}
                 <View style={{ height: 18 }} />
