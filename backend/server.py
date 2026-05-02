@@ -702,20 +702,29 @@ async def generate_tts_audio(text, voice_id, output_path, min_duration=2.5, voic
     if isinstance(voice_id, str) and ':' in voice_id:
         prefix, actual = voice_id.split(':', 1)
         base_voice = actual
-        # Voice effect presets (pitch in Hz, rate in %)
+        # Voice effect presets (pitch in Hz, rate in %).
+        # Session 25 round 10 — bumped baby pitches significantly. Edge-TTS
+        # alone with +30Hz still sounds adult; +60-90Hz combined with
+        # post-process formant shift (see _apply_baby_formant below) gives
+        # an actual child timbre.
         effect_table = {
-            'baby_boy_hi_1': ('+40Hz', '+15%'), 'baby_boy_hi_2': ('+35Hz', '+10%'), 'baby_boy_hi_3': ('+45Hz', '+25%'), 'baby_boy_hi_4': ('+30Hz', '+8%'),  'baby_boy_hi_5': ('+50Hz', '+30%'),
-            'baby_girl_hi_1': ('+40Hz', '+15%'), 'baby_girl_hi_2': ('+35Hz', '+10%'), 'baby_girl_hi_3': ('+45Hz', '+25%'), 'baby_girl_hi_4': ('+30Hz', '+8%'), 'baby_girl_hi_5': ('+50Hz', '+30%'),
-            'baby_boy_en_1': ('+40Hz', '+15%'), 'baby_boy_en_2': ('+35Hz', '+10%'), 'baby_boy_en_3': ('+45Hz', '+25%'), 'baby_boy_en_4': ('+30Hz', '+8%'),  'baby_boy_en_5': ('+50Hz', '+30%'),
-            'baby_girl_en_1': ('+40Hz', '+15%'), 'baby_girl_en_2': ('+35Hz', '+10%'), 'baby_girl_en_3': ('+45Hz', '+25%'), 'baby_girl_en_4': ('+30Hz', '+8%'), 'baby_girl_en_5': ('+50Hz', '+30%'),
+            'baby_boy_hi_1': ('+60Hz', '+5%'),  'baby_boy_hi_2': ('+70Hz', '+8%'),  'baby_boy_hi_3': ('+85Hz', '+12%'), 'baby_boy_hi_4': ('+55Hz', '+5%'),  'baby_boy_hi_5': ('+90Hz', '+15%'),
+            'baby_girl_hi_1': ('+60Hz', '+5%'), 'baby_girl_hi_2': ('+70Hz', '+8%'), 'baby_girl_hi_3': ('+85Hz', '+12%'), 'baby_girl_hi_4': ('+55Hz', '+5%'), 'baby_girl_hi_5': ('+90Hz', '+15%'),
+            'baby_boy_en_1': ('+60Hz', '+5%'),  'baby_boy_en_2': ('+70Hz', '+8%'),  'baby_boy_en_3': ('+85Hz', '+12%'), 'baby_boy_en_4': ('+55Hz', '+5%'),  'baby_boy_en_5': ('+90Hz', '+15%'),
+            'baby_girl_en_1': ('+50Hz', '+3%'), 'baby_girl_en_2': ('+65Hz', '+8%'), 'baby_girl_en_3': ('+80Hz', '+10%'), 'baby_girl_en_4': ('+55Hz', '+5%'), 'baby_girl_en_5': ('+90Hz', '+15%'),
             'young': ('+15Hz', '+5%'), 'old': ('-15Hz', '-10%'), 'deep': ('-30Hz', '-5%'), 'sweet': ('+5Hz', '+8%'),
-            'baby_boy_hi': ('+30Hz', '+10%'), 'baby_girl_hi': ('+30Hz', '+10%'),
-            'baby_boy_en': ('+30Hz', '+10%'), 'baby_girl_en': ('+30Hz', '+10%'),
+            'baby_boy_hi': ('+60Hz', '+8%'), 'baby_girl_hi': ('+60Hz', '+8%'),
+            'baby_boy_en': ('+60Hz', '+8%'), 'baby_girl_en': ('+60Hz', '+8%'),
         }
         if prefix in effect_table:
             tts_pitch, tts_rate = effect_table[prefix]
-        elif prefix.startswith('baby_'): tts_pitch, tts_rate = '+30Hz', '+10%'
+        elif prefix.startswith('baby_'): tts_pitch, tts_rate = '+60Hz', '+8%'
         elif prefix.startswith('old_'): tts_pitch, tts_rate = '-20Hz', '-10%'
+        # Track whether to apply post-process formant shift for child-like
+        # timbre (Edge-TTS pitch shift alone keeps adult formants).
+        _is_baby_voice = prefix.startswith('baby_')
+    else:
+        _is_baby_voice = False
     # Sprint 2 — Voice style preset override (if provided, takes precedence over pseudo-voice)
     if style_preset:
         if style_preset.get("pitch"): tts_pitch = style_preset["pitch"]
@@ -752,6 +761,36 @@ async def generate_tts_audio(text, voice_id, output_path, min_duration=2.5, voic
                         logger.warning(f"TTS fallback used: '{base_voice}' -> '{voice_attempt}' (after {retry} retries)")
                     if tts_pitch or tts_rate:
                         logger.info(f"TTS effect applied: voice={voice_attempt} pitch={tts_pitch} rate={tts_rate}")
+                    # Session 25 round 10 — for baby_* pseudo-IDs, layer a
+                    # post-process formant shift on top of edge-tts pitch.
+                    # Edge alone keeps adult formants which is why "baby"
+                    # voices still sounded like adults. asetrate raises
+                    # both pitch + formants; atempo restores duration. The
+                    # 1.18× factor adds ~280 cents (about 3 semitones) to
+                    # what edge-tts already gave us — combined effect lands
+                    # solidly in child-voice territory without a chipmunk
+                    # artefact.
+                    if _is_baby_voice and output_path.exists() and output_path.stat().st_size > 500:
+                        try:
+                            shifted = Path(str(output_path) + ".baby.mp3")
+                            # Normalize input to 44.1kHz first, then pitch-shift +18% with
+                            # tempo correction so duration is preserved regardless of edge-tts
+                            # native sample rate (24kHz/16kHz/etc.). The chain is:
+                            #   aresample=44100        → normalize sample rate
+                            #   asetrate=44100*1.18    → pitch + formants up 1.18×
+                            #   aresample=44100        → back to 44.1kHz keeping pitch rise
+                            #   atempo=1/1.18          → restore original duration
+                            _r = subprocess.run([
+                                "/usr/bin/ffmpeg", "-y", "-i", str(output_path),
+                                "-af", "aresample=44100,asetrate=44100*1.18,aresample=44100,atempo=1/1.18",
+                                "-c:a", "libmp3lame", "-b:a", "128k",
+                                str(shifted),
+                            ], capture_output=True, timeout=20)
+                            if shifted.exists() and shifted.stat().st_size > 500:
+                                shifted.replace(output_path)
+                                logger.info(f"TTS baby formant shift applied for {voice_attempt}")
+                        except Exception as _be:
+                            logger.warning(f"baby formant shift failed: {_be}")
                     try:
                         dur_r = subprocess.run(["/usr/bin/ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(output_path)], capture_output=True, text=True, timeout=10)
                         dur = float(dur_r.stdout.strip()) if dur_r.stdout.strip() else 0

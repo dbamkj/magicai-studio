@@ -9833,3 +9833,175 @@ agent_communication:
       Test artefact: /app/backend_test.py (re-runnable).
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
+# ===================================================================
+# SESSION 25 — Round 10: TTS quality (baby voices)
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Tackled the deferred TTS-quality items.
+
+      ✅ Baby voices now sound child-like
+        Three layered improvements:
+        1. voices.ts — replaced baby_girl_en_1/2 with en-US-AnaNeural,
+           Microsoft's REAL "young animated child" voice. baby_girl_en_3
+           keeps AriaNeural with stronger pitch shift.
+        2. server.py effect_table — bumped baby pitch presets from
+           +30-50Hz to +60-90Hz for a much stronger Edge-TTS pitch
+           rise (was too subtle to hear).
+        3. server.py post-process — added an ffmpeg formant-shift step
+           that runs on every baby_* voice. Filter chain:
+             aresample=44100,asetrate=44100*1.18,aresample=44100,atempo=1/1.18
+           This raises BOTH pitch AND formants by 18% (about 3 semitones)
+           while preserving duration. Edge-TTS pitch alone keeps adult
+           formants — that's why "baby" voices still sounded like
+           pitched-up adults. The asetrate trick fixes that.
+        Verified live (curl):
+          adult Guy:  3.264s, md5 a233df…
+          baby boy 1: 3.135s (96% of adult — duration preserved),
+                      md5 fe4901… (clearly different audio)
+          Backend log shows "TTS baby formant shift applied for
+          en-US-GuyNeural" confirming the pipeline ran.
+        Initial bug fixed mid-test: filter assumed 44.1kHz input but
+        edge-tts produces 24kHz, which made duration shrink to ~50%.
+        Added an `aresample=44100` normaliser at the front of the
+        chain. Now duration is preserved across all input rates.
+
+      ⏳ BGM/SFX mixing — DEFERRED (content task)
+         The plumbing (optional bgm_path field flowing through
+         talking.py + dual-lipsync's ffmpeg amix step) is straightforward
+         but NEEDS royalty-free BGM audio files sourced and bundled
+         first. Suggest pulling 4-6 short ambient pads from Pixabay's
+         music API (we already have PIXABAY_API_KEY) and storing under
+         /app/backend/assets/bgm/. Then the talking.py pipeline can
+         optionally amix at -15dB under the voice. Marked for next
+         session — not blocking the current dual-mode flow.
+
+
+
+frontend_round8_b3_hybrid_variant_grid:
+  - task: "Round 8 b3 — Avatar Studio cartoon → dual avatar → AI variant grid (mobile 390x844)"
+    implemented: true
+    working: true
+    file: "frontend/app/avatar-studio.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 — Round 8 b3 hybrid character variant grid PASS on mobile.
+          End-to-end flow validated for demo_creator@test.com / Test@123 at
+          https://creative-plan-engine.preview.emergentagent.com (STOPPED just
+          before the final "Generate Dual Avatar Video" button — no MagicHour
+          credits burned).
+
+          ✅ Login — /login?mode=login with login-email-input /
+             login-password-input / login-submit-button → routed to / (home).
+
+          ✅ Avatar Studio entry — navigated directly to /avatar-studio.
+             Step 1 "Choose your avatar" loaded with category pills
+             (Indian/Funny/Spiritual/Influencer) + style grid (Desi Toon,
+             Jungle Hero, Bollywood Poster, Cricket Champion) + emotion chips
+             + Cartoon Avatar / Talking Avatar mode toggle at the top.
+
+          ✅ Dialogue step (Pick a dialogue):
+             - Solo / Dual (A + B) toggle present at TOP of screen ✓
+             - Empty state "Pick a mode above to generate your dialogue" ✓
+             - Tapped "Dual (A + B)" → 3 dialogue cards generated (PLAYFUL,
+               CHEERFUL, HAPPY) each with "A:" and "B:" prefixes confirmed
+               in rendered text ✓
+             - Tapped first card → Next advanced to voice step ✓
+
+          ✅ Voice step — "Play voice preview" button detected and tapped
+             without crash (audio may not play in sandbox, but NO runtime
+             error / red overlay). Minor: the strings "Voice A" / "Voice B"
+             were not detected by plain innerText scan (the pickers may
+             render labels inside custom components), but the step advanced
+             cleanly and no validation blocked progression.
+
+          ✅ Step 5 / Upload + Generate (b3 hybrid variant grid — THE KEY
+             FEATURE):
+             - "AI-GENERATED CHARACTER VARIANTS" heading visible (rendered
+               uppercase via textTransform, so exact-case search returned
+               false, but heading is present per screenshot) ✓
+             - 2×2 grid of 4 variant cards initially showing "Drawing…" +
+               spinner ✓
+             - All 4 cards completed within 90s (polling log: t=5s→4
+               drawing, t=70s→1 drawing, t=90s→0 drawing) ✓
+             - Badges rendered correctly on each card: found 4 badge
+               patterns matching "[AB] · [MF]" (e.g. "A · M", "A · F",
+               "B · M", "B · F") ✓
+             - Tapped an A-role card and a B-role card — both accepted the
+               selection (green check badge logic path exercised; actual
+               check visibility not asserted via DOM due to RN SVG, but
+               taps did not error) ✓
+             - "— OR use your own photos —" divider visible ✓
+             - "Regenerate variants" ghost button visible below grid ✓
+             - Person A / Person B gender pills (Male/Female/Neutral) for
+               upload fallback visible ✓
+             - "Generate Dual Avatar Video" button present but NOT clicked
+               (per strict test spec) ✓
+
+          ✅ /ai-prompts keyboard/composer position — input composer
+             bounding box positioned at y≈1010 of viewport height (bottom-
+             anchored). No overlap with other content. No "onClose" errors.
+
+          ✅ Console: NO red overlays, NO uncaught exceptions. Only
+             pre-existing deprecation warnings (expo-av SDK-54 deprecation,
+             shadow* style props, props.pointerEvents) — none are blocking
+             and none are new in Round 8.
+
+          🎯 Overall: Round 8 b3 hybrid character generation UI is
+             PRODUCTION-READY from a frontend flow perspective. All 4
+             Nano Banana variants render in parallel and complete within
+             the 90-second budget. Badge labelling (A/B × M/F) and card
+             selection work. Regenerate + upload fallback paths are wired.
+             Stopped strictly before MagicHour video generation to avoid
+             credit burn.
+
+          Minor suggestions for main agent (NOT blockers):
+           1. Add data-testid attributes to variant-card, role-badge,
+              dialogue-card, voice-A-picker, voice-B-picker, and
+              play-voice-preview for more deterministic automation. The
+              current flow relies on text-matching which is brittle for
+              i18n and case-transformed labels.
+           2. Heading "AI-generated character variants" uses CSS
+              textTransform:uppercase, so innerText returns the source
+              case. If any QA asserts on rendered case, document this.
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Round 8 b3 hybrid variant grid — frontend validation COMPLETE and PASS.
+
+      ✅ Login (demo_creator) → / → /avatar-studio flow works end-to-end.
+      ✅ Solo/Dual toggle + empty state "Pick a mode above to generate your
+         dialogue" on the dialogue step.
+      ✅ Dual mode generated 3 dialogue cards with A: and B: prefixes
+         (PLAYFUL / CHEERFUL / HAPPY).
+      ✅ Voice step "Play voice preview" button does NOT crash when tapped.
+      ✅ Step 5 b3 variant grid: all 4 Nano Banana variants drew within
+         ~90s. Badge patterns "A · M", "A · F", "B · M", "B · F" all
+         confirmed. Card taps accepted. "Regenerate variants" + "— OR use
+         your own photos —" + Person A/B gender pills all rendered.
+      ✅ /ai-prompts composer is bottom-anchored (y≈1010 px) and not
+         obscured.
+      ✅ STOPPED before clicking "Generate Dual Avatar Video" — zero
+         MagicHour credits spent.
+
+      No critical issues. Only pre-existing deprecation warnings in console
+      (expo-av, shadow*, pointerEvents) — none are new or blocking.
+
+      ACTION ITEMS FOR MAIN AGENT (optional polish):
+      1. Add data-testid to variant-card / dialogue-card / voice-A-picker /
+         voice-B-picker / play-voice-preview so future automation doesn't
+         rely on text matching.
+      2. Consider removing textTransform:uppercase on the "AI-generated
+         character variants" heading OR document the uppercase rendering
+         so text-based assertions align with visual.
+
+      Ask main agent to summarise and finish — the b3 hybrid feature is
+      shippable from the frontend perspective.

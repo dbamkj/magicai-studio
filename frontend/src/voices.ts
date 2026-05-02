@@ -54,10 +54,12 @@ export const VOICE_LIBRARY: Voice[] = [
   { id: 'baby_boy_en_1:en-US-GuyNeural', name: 'Baby Boy EN 1', lang: 'English', gender: 'Baby', age: 'Baby Boy', category: 'baby_boy', note: 'Soft pitch' },
   { id: 'baby_boy_en_2:en-US-AndrewNeural', name: 'Baby Boy EN 2', lang: 'English', gender: 'Baby', age: 'Baby Boy', category: 'baby_boy', note: 'Light pitch' },
   { id: 'baby_boy_en_3:en-US-BrianNeural', name: 'Baby Boy EN 3', lang: 'English', gender: 'Baby', age: 'Baby Boy', category: 'baby_boy', note: 'High pitch' },
-  // ===== BABY GIRL ENGLISH (3) =====
-  { id: 'baby_girl_en_1:en-US-JennyNeural', name: 'Baby Girl EN 1', lang: 'English', gender: 'Baby', age: 'Baby Girl', category: 'baby_girl', note: 'Soft pitch' },
-  { id: 'baby_girl_en_2:en-US-AriaNeural', name: 'Baby Girl EN 2', lang: 'English', gender: 'Baby', age: 'Baby Girl', category: 'baby_girl', note: 'Light pitch' },
-  { id: 'baby_girl_en_3:en-US-EmmaNeural', name: 'Baby Girl EN 3', lang: 'English', gender: 'Baby', age: 'Baby Girl', category: 'baby_girl', note: 'High pitch' },
+  // ===== BABY GIRL ENGLISH (3) — Session 25 round 10: AnaNeural is
+  //       Microsoft's real "child" voice; pairs with AriaNeural + EmmaNeural
+  //       both with strong upward pitch shift for genuine child timbre.
+  { id: 'baby_girl_en_1:en-US-AnaNeural',  name: 'Baby Girl EN 1', lang: 'English', gender: 'Baby', age: 'Baby Girl', category: 'baby_girl', note: 'Real child voice' },
+  { id: 'baby_girl_en_2:en-US-AnaNeural',  name: 'Baby Girl EN 2', lang: 'English', gender: 'Baby', age: 'Baby Girl', category: 'baby_girl', note: 'Bright child' },
+  { id: 'baby_girl_en_3:en-US-AriaNeural', name: 'Baby Girl EN 3', lang: 'English', gender: 'Baby', age: 'Baby Girl', category: 'baby_girl', note: 'Higher pitch' },
   // ===== SARVAM AI (Indian voices, premium) =====
   { id: 'sarvam:anushka',  name: 'Anushka',  lang: 'Hindi (Sarvam)', gender: 'F', age: 'Premium', category: 'sarvam_female', provider: 'sarvam' },
   { id: 'sarvam:manisha',  name: 'Manisha',  lang: 'Hindi (Sarvam)', gender: 'F', age: 'Premium', category: 'sarvam_female', provider: 'sarvam' },
