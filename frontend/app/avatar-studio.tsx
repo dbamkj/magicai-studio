@@ -190,7 +190,10 @@ export default function AvatarStudioScreen() {
   const [pickedVariantPath, setPickedVariantPath] = useState<string | null>(null);
 
   // ── Phase 2a — dual-speaker (split-screen) state ──
-  const [dualMode, setDualMode] = useState(false);
+  // `dualMode === null` means the user hasn't picked solo or dual yet, which
+  // gates the auto dialogue fetch on Step 3 (per Session 25 round 5 feedback —
+  // "do not generate the dialogues unless user does not chooses the mode").
+  const [dualMode, setDualMode] = useState<boolean | null>(null);
   const [genderA, setGenderA] = useState<'male' | 'female' | 'neutral'>('neutral');
   const [genderB, setGenderB] = useState<'male' | 'female' | 'neutral'>('neutral');
   const [voiceAId, setVoiceAId] = useState<string>('en-US-JennyNeural');
@@ -299,11 +302,10 @@ export default function AvatarStudioScreen() {
   }, [styleId, idea, language, emotion, dualMode]);
 
   // Auto-refetch dialogues when the user toggles solo↔dual on Step 3.
-  // Skip the very first render — fetchDialogues is also called on Next
-  // from Step 2, and we don't want a duplicate call.
-  const dualModeFirstRender = useRef(true);
+  // Also acts as the FIRST trigger — Step 3 starts empty (dualMode=null)
+  // and the user MUST pick a mode to generate dialogues.
   useEffect(() => {
-    if (dualModeFirstRender.current) { dualModeFirstRender.current = false; return; }
+    if (dualMode === null) return;            // mode not yet chosen — wait
     if (step === 2 && styleId && idea.trim()) fetchDialogues();
   }, [dualMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -782,8 +784,10 @@ export default function AvatarStudioScreen() {
 
   const onNext = () => {
     if (step === 1) {
-      // fire dialogue gen + advance
-      fetchDialogues();
+      // Advance to dialogue step — but DON'T fetch dialogues yet.
+      // The user must first pick Solo or Dual on Step 3; dialogue
+      // generation kicks off when that toggle is set (see useEffect
+      // on dualMode below).
       next();
     } else {
       next();
@@ -993,23 +997,32 @@ export default function AvatarStudioScreen() {
 
                 {/* Solo / Dual mode toggle (Session 25 — moved from step 4).
                     Switching this regenerates dialogues so the user sees
-                    one-speaker monologues vs A/B two-speaker scenes. */}
+                    one-speaker monologues vs A/B two-speaker scenes.
+                    Round 5 — neither button is "active" until the user
+                    actually picks; dialogue gen only fires after pick. */}
                 <View style={[s.modeRow, { marginTop: 8, marginBottom: 12 }]}>
                   <Pressable
                     onPress={() => { setDualMode(false); setDialogueId(null); }}
-                    style={[s.modeBtn, !dualMode && s.modeBtnActive]}
+                    style={[s.modeBtn, dualMode === false && s.modeBtnActive]}
                   >
-                    <Ionicons name="person" size={14} color={!dualMode ? '#fff' : '#CBD5E1'} />
-                    <Text style={[s.modeBtnText, !dualMode && { color: '#fff' }]}>Solo avatar</Text>
+                    <Ionicons name="person" size={14} color={dualMode === false ? '#fff' : '#CBD5E1'} />
+                    <Text style={[s.modeBtnText, dualMode === false && { color: '#fff' }]}>Solo avatar</Text>
                   </Pressable>
                   <Pressable
                     onPress={() => { setDualMode(true); setDialogueId(null); }}
-                    style={[s.modeBtn, dualMode && s.modeBtnActive]}
+                    style={[s.modeBtn, dualMode === true && s.modeBtnActive]}
                   >
-                    <Ionicons name="people" size={14} color={dualMode ? '#fff' : '#CBD5E1'} />
-                    <Text style={[s.modeBtnText, dualMode && { color: '#fff' }]}>Dual (A + B)</Text>
+                    <Ionicons name="people" size={14} color={dualMode === true ? '#fff' : '#CBD5E1'} />
+                    <Text style={[s.modeBtnText, dualMode === true && { color: '#fff' }]}>Dual (A + B)</Text>
                   </Pressable>
                 </View>
+
+                {dualMode === null && (
+                  <View style={[s.centerBox, { paddingVertical: 24 }]}>
+                    <Ionicons name="hand-left-outline" size={28} color="#A855F7" />
+                    <Text style={s.centerBoxText}>Pick a mode above to generate your dialogue.</Text>
+                  </View>
+                )}
 
                 {loadingDialogues && (
                   <View style={s.centerBox}>

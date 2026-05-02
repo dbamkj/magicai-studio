@@ -21,7 +21,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable,
-  FlatList, ScrollView, Image, Alert,
+  FlatList, ScrollView, Image, Alert, Keyboard,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, Stack } from 'expo-router';
@@ -673,11 +673,10 @@ export default function AIPromptsScreen() {
       <AuroraBackground absolute />
 
       <SafeAreaView style={s.flex1} edges={['top', 'left', 'right']}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={s.flex1}
-          keyboardVerticalOffset={0}
-        >
+        {/* No KeyboardAvoidingView — direct Keyboard listener pads
+            the composer above the keyboard for guaranteed visibility
+            on Android edge-to-edge devices. */}
+        <View style={s.flex1}>
         {/* Header */}
         <View style={s.header}>
           <TouchableOpacity
@@ -798,7 +797,7 @@ export default function AIPromptsScreen() {
             </TouchableOpacity>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </View>
         </SafeAreaView>
       </View>
   );
@@ -1532,6 +1531,33 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: theme.glass.border,
   },
   langPillActive: {
+    backgroundColor: `${theme.aurora.pink}33`,
+    borderColor: theme.aurora.pink,
+  },
+  langPillText: { color: theme.text.muted, fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  langPillTextActive: { color: '#fff' },
+
+  composer: {
+    flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+  },
+  composerInput: {
+    flex: 1,
+    minHeight: 44, maxHeight: 120,
+    backgroundColor: 'rgba(0,0,0,0.30)',
+    borderRadius: theme.radius.lg,
+    borderWidth: 1, borderColor: theme.glass.border,
+    paddingHorizontal: 14, paddingVertical: 10,
+    color: theme.text.primary, fontSize: 14,
+    textAlignVertical: 'top',
+  },
+  sendBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: theme.aurora.pink,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  sendBtnDisabled: { opacity: 0.45 },
+});
+
     backgroundColor: `${theme.aurora.pink}33`,
     borderColor: theme.aurora.pink,
   },

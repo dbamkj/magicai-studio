@@ -551,10 +551,19 @@ avatar say" textarea. Rules:
  • Each idea unique — different angles (festival / funny / educational /
    personal).
 
-Language rule:
- • english → write in English.
- • hindi   → write in Devanagari.
- • hinglish→ write Hindi in Roman, mixed with English.
+Language rules — write EVERY suggestion in the requested language. Be
+strict; do NOT mix related languages:
+ • english   → write entirely in English (e.g. "Greet my viewers on Diwali").
+ • hindi     → write entirely in standard Hindi using Devanagari script
+               (हिन्दी). DO NOT write in Marathi, Sanskrit, Bhojpuri, or
+               any other Devanagari language. Use natural conversational
+               Hindi vocabulary (e.g. "दिवाली पर मेरे दर्शकों को बधाई").
+ • hinglish  → Hindi words written in Roman/Latin letters, mixed freely
+               with English (e.g. "Diwali pe sabko greet karo").
+ • marathi   → entirely in Marathi (मराठी), Devanagari script with
+               Marathi-specific grammar.
+ • tamil     → entirely in Tamil (தமிழ்), Tamil script.
+ • telugu    → entirely in Telugu (తెలుగు), Telugu script.
 
 Output STRICT JSON only:
 { "suggestions": ["...", "...", "...", "..."] }"""
@@ -610,7 +619,7 @@ async def post_avatar_suggestions(req: AvatarSuggestionsRequest):
             f"Avatar: {style['label']} — {style.get('tagline', '')}\n"
             f"Personality: {persona.get('tone')}, mood: {persona.get('mood')}\n"
             f"Emotion cue: {emotion}\n"
-            f"Language: {lang}\n"
+            f"Language: {lang}  (write ALL 4 suggestions strictly in this language — see system prompt for script + style rules)\n"
             f"Return JSON now."
         )
         resp = await chat.send_message(UserMessage(text=user_text))
