@@ -8731,3 +8731,76 @@ agent_communication:
             + /api/create-talking-avatar untouched in surface API.
 
 
+
+  - task: "Avatar Studio — round 3 polish (audio preview, 5 variants, back btn pos, safe-area, JSON parser)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx, backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Session 24 — Round 3 polish.
+
+          [#1 voice preview] Cartoon-mode "Play voice preview" was failing
+          because the new 4-5 line two-person dialogues are 300-500 chars
+          (server caps preview-audio at 200) AND contained literal
+          A:/B:/[pause:X]/*action* cues that TTS would speak literally.
+          Fix: new stripDialogueCues() helper removes the cues, then we
+          slice to 180 chars before sending to /api/generate-prompts/
+          preview-audio. Audio now plays cleanly.
+
+          [#6 5 cartoon variants] Implemented end-to-end:
+            • New state: variants[] + pickedVariantPath + variantsBusy.
+            • generateVariants() fires 5 parallel /api/avatar/cartoonize
+              calls — one per emotion (happy/excited/confident/playful/
+              peaceful) — and polls all 5 jobs concurrently up to 90s.
+            • UI: 3-col grid in cartoon Step 4 below the photo upload.
+              Each card shows a spinner while pending, the cartoon image
+              + emotion badge when complete, alert icon on failure.
+              Tapping a completed card sets pickedVariantPath; the
+              picked card gets a green ring + checkmark.
+            • generate() now skips the second cartoonize pass if the
+              user has picked a variant — saves ~25s + 1 MH credit.
+            • "Regenerate variants" + "Clear pick" controls.
+
+          [#3 back button position] Moved from TOP of cartoon Step 4 to
+          BOTTOM, below all generation UI (and below the variant grid).
+          Label is more contextual: "Back to voice preview".
+
+          [#4 safe-area overlap] Imported useSafeAreaInsets() and
+          dynamically pads the floating bottomNav with
+          Math.max(insets.bottom + 8, 14). This stops Android gesture
+          buttons / iPhone home indicator from overlapping the
+          Back/Next bar.
+
+          [+ Backend JSON parser bug] /api/avatar/dialogues was throwing
+          JSONDecodeError when GPT-4o-mini emitted literal newlines
+          INSIDE the multi-line text strings (instead of \\n). Added a
+          tolerant fallback parser that walks the JSON and escapes any
+          newline encountered while inside a string literal. Verified:
+          POST /api/avatar/dialogues with mythological+Diwali+hindi+
+          playful now returns source='llm' with proper Hinglish
+          two-person scenes (text starts "A: *chuckles softly*…").
+
+          [#5 hero rename] verified in source — files have:
+            • cartoon-avatar.tsx: GlassHeader title="My Avatar"
+            • cartoon-avatar.tsx CTA "Generate My Avatar"
+            • index.tsx hero slide #avatar: subtitle includes
+              "My Avatar — Cartoonize portraits in 12+ Pixar / Anime
+              styles"; cta="Make My Avatar".
+          If user still sees "Cartoon Avatar" in the live app, that's
+          Metro/CDN cache — instructed user below to force-reload.
+
+          Validation:
+          • Metro bundle rebuilt clean (HTTP 200, 9.78 MB).
+          • Bundle grep confirms 29 hits across stripDialogueCues,
+            generateVariants, variantCard, pickedVariantPath,
+            "My Avatar", useSafeAreaInsets.
+          • Backend smoke: /api/avatar/dialogues returns 200 with
+            source='llm' (real call); the new parser fix works.
+
+

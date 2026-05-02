@@ -18,7 +18,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   Image, TextInput, Alert, Platform, KeyboardAvoidingView, Pressable,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -115,6 +115,7 @@ const EMOTION_CHIPS: { id: string; label: string; icon: string }[] = [
 export default function AvatarStudioScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const userIsPro = !!user && (user.subscription_tier || 'free') !== 'free';
 
   const [showAuthGate, setShowAuthGate] = useState(false);
@@ -170,6 +171,13 @@ export default function AvatarStudioScreen() {
   // Manual script — used in Talking mode OR as an override in Cartoon mode.
   const [manualScript, setManualScript] = useState('');
   const [generating, setGenerating] = useState(false);
+  // Issue #6 — 5 cartoon variants picker. When the user opts in, we kick
+  // off 5 parallel /api/avatar/cartoonize calls (one per emotion) and let
+  // them pick the result they like best before generating the video.
+  type Variant = { id: string; emotion: string; jobId?: string; status: 'pending' | 'completed' | 'failed'; imageUrl?: string; localPath?: string; error?: string };
+  const [variants, setVariants] = useState<Variant[]>([]);
+  const [variantsBusy, setVariantsBusy] = useState(false);
+  const [pickedVariantPath, setPickedVariantPath] = useState<string | null>(null);
   const [genStage, setGenStage] = useState<string>('');
   const [genProgress, setGenProgress] = useState(0);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -238,11 +246,16 @@ export default function AvatarStudioScreen() {
         try { await audioRef.current.unloadAsync(); } catch {}
         audioRef.current = null;
       }
-      // hit the TTS preview endpoint (Sarvam, already in the app)
+      // The dialogue is a 4–5 line two-person scene with [pause] markers
+      // and *actions* — strip them so the TTS speaks only natural words,
+      // and trim to ~180 chars (server caps at 200). Just grab speaker A's
+      // first line for a quick preview.
+      const cleaned = stripDialogueCues(pickedDialogue.text);
+      const previewText = cleaned.slice(0, 180);
       const r = await axios.post(
         `${API}/generate-prompts/preview-audio`,
         {
-          text: pickedDialogue.text,
+          text: previewText,
           voice_type: activeStyle.personality.voice_style,
           language,
           max_seconds: 3.5,
@@ -288,6 +301,91 @@ export default function AvatarStudioScreen() {
     }
   }, [user]);
 
+  // ────────────────────────── 5-cartoon-variant generator (Issue #6) ──────────────────────────
+  // Fires 5 parallel /api/avatar/cartoonize calls — one per emotion — and
+  // polls all 5 jobs concurrently. Result is rendered as a 5-up grid; the
+  // user picks one and that pre-cartoonized image_path is then used by
+  // generate() (skipping the second cartoonize step).
+  const generateVariants = useCallback(async () => {
+    if (!requireLogin()) return;
+    if (!imageUri) { Alert.alert('Upload a photo first'); return; }
+    if (!activeStyle) { Alert.alert('Pick an avatar style first'); return; }
+
+    setVariantsBusy(true);
+    setPickedVariantPath(null);
+    setVariants([]);
+
+    const variantEmotions = ['happy', 'excited', 'confident', 'playful', 'peaceful'];
+    try {
+      const b64 = await fileToBase64(imageUri);
+      const initial: Variant[] = variantEmotions.map((em, i) => ({
+        id: `v${i + 1}`, emotion: em, status: 'pending',
+      }));
+      setVariants(initial);
+
+      // Kick off all 5 cartoonize jobs in parallel.
+      const startResults = await Promise.allSettled(
+        variantEmotions.map(em =>
+          axios.post(`${API}/avatar/cartoonize`, {
+            image_b64: b64,
+            style: activeStyle.id,
+            emotion: em,
+          }, { timeout: 30000 }),
+        ),
+      );
+
+      const withJobIds: Variant[] = startResults.map((r, i) => {
+        if (r.status === 'fulfilled' && r.value?.data?.job_id) {
+          return { ...initial[i], jobId: r.value.data.job_id };
+        }
+        return { ...initial[i], status: 'failed', error: 'Could not start variant' };
+      });
+      setVariants([...withJobIds]);
+
+      // Poll all variants in parallel up to 90s.
+      const t0 = Date.now();
+      const pending = new Set(withJobIds.filter(v => v.jobId && v.status === 'pending').map(v => v.id));
+
+      while (pending.size > 0 && Date.now() - t0 < 90_000) {
+        await new Promise(r => setTimeout(r, 2500));
+        // Snapshot current state into a local var so we can update in batch.
+        await Promise.allSettled(Array.from(pending).map(async (vid) => {
+          const v = withJobIds.find(x => x.id === vid);
+          if (!v?.jobId) return;
+          try {
+            const jr = await axios.get(`${API}/avatar/jobs/${v.jobId}`, { timeout: 10000 });
+            const st = jr.data?.status;
+            if (st === 'completed' && jr.data?.image_url) {
+              const imgUrl = jr.data.image_url as string;
+              const m = imgUrl.match(/\/serve-file\/([^/?#]+)/);
+              const localPath = m ? `/api/uploads/${m[1]}` : null;
+              const idx = withJobIds.findIndex(x => x.id === vid);
+              if (idx >= 0) {
+                withJobIds[idx] = { ...withJobIds[idx], status: 'completed', imageUrl: imgUrl, localPath: localPath || undefined };
+                pending.delete(vid);
+                setVariants([...withJobIds]);
+              }
+            } else if (st === 'failed') {
+              const idx = withJobIds.findIndex(x => x.id === vid);
+              if (idx >= 0) {
+                withJobIds[idx] = { ...withJobIds[idx], status: 'failed', error: jr.data?.error || 'Render failed' };
+                pending.delete(vid);
+                setVariants([...withJobIds]);
+              }
+            }
+          } catch { /* keep polling */ }
+        }));
+      }
+      // Mark any that are still pending as timed-out.
+      const final = withJobIds.map(v => v.status === 'pending' ? { ...v, status: 'failed' as const, error: 'Timed out' } : v);
+      setVariants(final);
+    } catch (e: any) {
+      Alert.alert('Could not generate variants', e?.message || 'Try again later.');
+    } finally {
+      setVariantsBusy(false);
+    }
+  }, [imageUri, activeStyle, user]);
+
   // ────────────────────────── Generate video ──────────────────────────
   // Cartoon mode → cartoonize(photo) → create-talking-avatar(cartoon, voice)
   // Talking mode → create-talking-avatar(photo, voice)   [no cartoonize]
@@ -308,7 +406,14 @@ export default function AvatarStudioScreen() {
       let cartoonPath = imagePath;
 
       // ── CARTOON MODE: cartoonize the uploaded photo first ─────────
-      if (mode === 'cartoon') {
+      // …unless the user already picked a variant on Step 4 — in that
+      // case we use the picked cartoon image directly and skip a 2nd
+      // cartoonize pass (saves ~25s and one MagicHour credit).
+      if (mode === 'cartoon' && pickedVariantPath) {
+        cartoonPath = pickedVariantPath;
+        setGenStage('Using your picked variant…');
+        setGenProgress(35);
+      } else if (mode === 'cartoon') {
         setGenStage(`Cartoonizing in ${activeStyle.label} style…`);
         setGenProgress(10);
         try {
@@ -724,15 +829,6 @@ export default function AvatarStudioScreen() {
             {/* ═════════════════ STEP 4 — Photo + Generate ═════════════════ */}
             {mode === 'cartoon' && step === 4 && (
               <>
-                {/* Back chip — issue #3 */}
-                <View style={{ marginBottom: 8 }}>
-                  <GhostButton
-                    label="Back"
-                    icon="chevron-back"
-                    size="sm"
-                    onPress={back}
-                  />
-                </View>
                 <Text style={s.sectionTitle}>Upload your photo</Text>
                 <Text style={s.sectionSub}>We'll animate it with your picked voice + dialogue.</Text>
 
@@ -760,6 +856,103 @@ export default function AvatarStudioScreen() {
                     <Text style={s.uploadSub}>JPG / PNG · portrait works best</Text>
                   </GlassCard>
                 )}
+
+                {/* Issue #6 — 5 cartoon variants picker */}
+                {imagePath && (
+                  <View style={{ marginTop: 16 }}>
+                    <FieldLabel>Try 5 cartoon variants</FieldLabel>
+                    <Text style={s.sectionSub}>
+                      Skip the surprise — generate 5 quick previews in {activeStyle?.label} style
+                      and pick your favorite before we make the talking video.
+                    </Text>
+                    {variants.length === 0 && (
+                      <GradientButton
+                        label={variantsBusy ? 'Cooking up 5 variants…' : 'Generate 5 cartoon previews'}
+                        icon="grid"
+                        loading={variantsBusy}
+                        disabled={variantsBusy || generating}
+                        onPress={generateVariants}
+                        size="md"
+                        colors={['#A855F7', '#EC4899']}
+                      />
+                    )}
+                    {variants.length > 0 && (
+                      <>
+                        <View style={s.variantGrid}>
+                          {variants.map(v => {
+                            const isPicked = !!v.localPath && pickedVariantPath === v.localPath;
+                            return (
+                              <Pressable
+                                key={v.id}
+                                onPress={() => {
+                                  if (v.status === 'completed' && v.localPath) {
+                                    setPickedVariantPath(v.localPath);
+                                  }
+                                }}
+                                style={[s.variantCard, isPicked && s.variantCardActive]}
+                              >
+                                {v.status === 'pending' && (
+                                  <View style={s.variantPlaceholder}>
+                                    <ActivityIndicator color="#A855F7" />
+                                    <Text style={s.variantStatusText}>{v.emotion}</Text>
+                                  </View>
+                                )}
+                                {v.status === 'completed' && v.imageUrl && (
+                                  <>
+                                    <Image
+                                      source={{ uri: `${BACKEND_URL}${v.imageUrl}` }}
+                                      style={s.variantImage}
+                                      resizeMode="cover"
+                                    />
+                                    <View style={s.variantBadge}>
+                                      <Text style={s.variantBadgeText}>{v.emotion}</Text>
+                                    </View>
+                                    {isPicked && (
+                                      <View style={s.variantPickedBadge}>
+                                        <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                                      </View>
+                                    )}
+                                  </>
+                                )}
+                                {v.status === 'failed' && (
+                                  <View style={s.variantPlaceholder}>
+                                    <Ionicons name="alert-circle-outline" size={22} color="#F87171" />
+                                    <Text style={[s.variantStatusText, { color: '#F87171' }]}>retry</Text>
+                                  </View>
+                                )}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                          <GhostButton
+                            label="Regenerate variants"
+                            icon="refresh"
+                            size="sm"
+                            disabled={variantsBusy || generating}
+                            onPress={generateVariants}
+                            style={{ flex: 1 }}
+                          />
+                          {pickedVariantPath && (
+                            <GhostButton
+                              label="Clear pick"
+                              icon="close"
+                              size="sm"
+                              onPress={() => setPickedVariantPath(null)}
+                              style={{ flex: 1 }}
+                            />
+                          )}
+                        </View>
+                        {pickedVariantPath && (
+                          <Text style={[s.voiceHint, { marginTop: 8, color: '#34D399' }]}>
+                            ✓ Variant picked — tap "Generate Avatar Video" below
+                          </Text>
+                        )}
+                      </>
+                    )}
+                  </View>
+                )}
+
 
                 <View style={{ height: 20 }} />
 
@@ -827,6 +1020,17 @@ export default function AvatarStudioScreen() {
                     <Text style={s.errorText}>{resultError}</Text>
                   </GlassCard>
                 )}
+
+                {/* Back to previous step — bottom placement (issue #3) */}
+                <View style={{ marginTop: 18 }}>
+                  <GhostButton
+                    label="Back to voice preview"
+                    icon="chevron-back"
+                    size="md"
+                    onPress={back}
+                    disabled={generating}
+                  />
+                </View>
               </>
             )}
 
@@ -984,7 +1188,7 @@ export default function AvatarStudioScreen() {
           {/* Bottom nav — only for steps 0..3 (step 4 has its own CTA) */}
           {/* Bottom nav — only for cartoon mode steps 0..3 (step 4 + talking mode have own CTAs) */}
           {mode === 'cartoon' && step < 4 && (
-            <View style={s.bottomNav}>
+            <View style={[s.bottomNav, { paddingBottom: Math.max(insets.bottom + 8, 14) }]}>
               <GhostButton
                 label="Back"
                 icon="chevron-back"
@@ -1029,6 +1233,20 @@ const STEP_TITLES = [
   'Upload + generate',
   'Done',
 ];
+
+/** Strip dialogue cues for TTS preview — removes A:/B: prefixes,
+ *  [pause:X.X] markers, and *action* asterisks. Keeps only the spoken
+ *  words. Used by the cartoon-mode voice preview button. */
+function stripDialogueCues(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/^[ \t]*[A-Za-z]:\s*/gm, '')                 // strip "A:" / "B:" prefixes
+    .replace(/\[pause:[0-9.]+\]/gi, '')                   // strip [pause:X.X]
+    .replace(/\*[^*\n]+\*/g, '')                          // strip *action* cues
+    .replace(/\n+/g, ' ')                                 // collapse newlines
+    .replace(/\s{2,}/g, ' ')                              // collapse repeats
+    .trim();
+}
 
 /** Convert an ArrayBuffer to base64 — used for audio preview playback. */
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -1225,6 +1443,40 @@ const s = StyleSheet.create({
   progressText: { color: '#CBD5E1', fontSize: 12, textAlign: 'center' },
 
   videoResult: { width: '100%', aspectRatio: 9/16, borderRadius: 10, backgroundColor: '#000', maxHeight: 420 },
+
+  /* Variant picker (issue #6) */
+  variantGrid: {
+    flexDirection: 'row', flexWrap: 'wrap',
+    gap: 8, marginTop: 8,
+  },
+  variantCard: {
+    width: '31%', aspectRatio: 1,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.10)',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  variantCardActive: {
+    borderColor: '#34D399',
+    backgroundColor: 'rgba(52,211,153,0.10)',
+  },
+  variantImage: { width: '100%', height: '100%' },
+  variantPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  variantStatusText: { color: '#94A3B8', fontSize: 10, fontWeight: '700', textTransform: 'capitalize' },
+  variantBadge: {
+    position: 'absolute', bottom: 4, left: 4,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 6,
+  },
+  variantBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.4 },
+  variantPickedBadge: {
+    position: 'absolute', top: 4, right: 4,
+    backgroundColor: '#34D399',
+    width: 24, height: 24, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+  },
 
   /* Misc */
   centerBox: {

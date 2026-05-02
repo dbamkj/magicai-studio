@@ -572,12 +572,35 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
         try:
             data = _json_av.loads(text)
         except _json_av.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                data = _json_av.loads(text[start : end + 1])
-            else:
-                raise
+            # GPT-4o-mini occasionally emits literal newlines INSIDE the
+            # multi-line dialogue strings (instead of \\n). That breaks
+            # strict JSON. Fix: walk the string and escape any newline
+            # that occurs while we're inside a JSON string literal.
+            try:
+                fixed_chars = []
+                in_str = False
+                escape = False
+                src = text[text.find("{") : text.rfind("}") + 1] or text
+                for ch in src:
+                    if escape:
+                        fixed_chars.append(ch); escape = False; continue
+                    if ch == "\\":
+                        fixed_chars.append(ch); escape = True; continue
+                    if ch == '"':
+                        fixed_chars.append(ch); in_str = not in_str; continue
+                    if in_str and ch == "\n":
+                        fixed_chars.append("\\n"); continue
+                    if in_str and ch == "\r":
+                        continue
+                    fixed_chars.append(ch)
+                data = _json_av.loads("".join(fixed_chars))
+            except Exception:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start >= 0 and end > start:
+                    data = _json_av.loads(text[start : end + 1])
+                else:
+                    raise
         dlg = data.get("dialogues") or []
         if not isinstance(dlg, list) or not dlg:
             raise ValueError("missing dialogues[]")
