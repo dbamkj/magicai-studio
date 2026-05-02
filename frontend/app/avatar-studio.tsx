@@ -165,6 +165,12 @@ export default function AvatarStudioScreen() {
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
   // ── step 4: voice + preview audio ──
+  // Cartoon mode auto-matches the voice to the picked style, but the user
+  // can override it before previewing (Issue from Session 25 cart4.jpeg).
+  // `cartoonVoiceId === null` means "use the style default"; setting it to
+  // a string selects an explicit Edge/Sarvam voice.
+  const [cartoonVoiceId, setCartoonVoiceId] = useState<string | null>(null);
+  const [cartoonVoiceStyle, setCartoonVoiceStyle] = useState<string | undefined>(undefined);
   const [audioBusy, setAudioBusy] = useState(false);
   const audioRef = useRef<Audio.Sound | null>(null);
 
@@ -230,6 +236,13 @@ export default function AvatarStudioScreen() {
     };
   }, []);
 
+  // Reset cartoon voice override whenever the user picks a different style —
+  // a voice tuned for "Krishna" shouldn't carry over to "Comedian", etc.
+  useEffect(() => {
+    setCartoonVoiceId(null);
+    setCartoonVoiceStyle(undefined);
+  }, [styleId]);
+
   // ────────────────────────── Dynamic idea suggestions (Issue #1) ──────────────────────────
   // Refetches whenever the user changes avatar style, emotion or language.
   // Debounced so rapid chip toggling doesn't spam the LLM.
@@ -293,11 +306,19 @@ export default function AvatarStudioScreen() {
       // first line for a quick preview.
       const cleaned = stripDialogueCues(pickedDialogue.text);
       const previewText = cleaned.slice(0, 180);
+      // Use the user-selected voice (if overridden) — falls back to the
+      // style's auto-matched voice. voice_type expects an Edge-style id;
+      // backend resolves both `voice_id` (Sarvam/Edge) and the legacy
+      // `voice_type` for compatibility.
+      const voiceForPreview = cartoonVoiceId || activeStyle.personality.voice_id;
+      const voiceStyleForPreview = cartoonVoiceStyle || activeStyle.personality.voice_style;
       const r = await axios.post(
         `${API}/generate-prompts/preview-audio`,
         {
           text: previewText,
-          voice_type: activeStyle.personality.voice_style,
+          voice_id: voiceForPreview,
+          voice_type: voiceStyleForPreview,
+          voice_style: voiceStyleForPreview,
           language,
           max_seconds: 3.5,
         },
@@ -314,7 +335,7 @@ export default function AvatarStudioScreen() {
     } finally {
       setAudioBusy(false);
     }
-  }, [pickedDialogue, activeStyle, language]);
+  }, [pickedDialogue, activeStyle, language, cartoonVoiceId, cartoonVoiceStyle]);
 
   // ────────────────────────── Pick + upload image ──────────────────────────
   const pickAndUploadImage = useCallback(async () => {
@@ -649,8 +670,8 @@ export default function AvatarStudioScreen() {
       const body = mode === 'cartoon' ? {
         image_path: cartoonPath,
         script,
-        voice_id: persona2.voice_id,
-        voice_style: persona2.voice_style,
+        voice_id: cartoonVoiceId || persona2.voice_id,
+        voice_style: cartoonVoiceStyle || persona2.voice_style,
         motion: 'ken_burns',
         aspect_ratio: '9:16',
         resolution: userIsPro ? '720p' : '480p',
@@ -1026,6 +1047,26 @@ export default function AvatarStudioScreen() {
                     <Text style={s.quotedText}>"{pickedDialogue.text}"</Text>
                   </GlassCard>
                 )}
+
+                {/* Voice override (Session 25) — let users pick any Edge/
+                    Sarvam voice before previewing. Defaults to the
+                    auto-matched voice from the style. */}
+                <FieldLabel style={{ marginTop: 16 }}>Choose a different voice (optional)</FieldLabel>
+                <VoicePicker
+                  selectedId={cartoonVoiceId || activeStyle.personality.voice_id}
+                  onSelect={(id) => setCartoonVoiceId(id)}
+                />
+
+                <FieldLabel style={{ marginTop: 16 }}>Voice style (optional)</FieldLabel>
+                <VoiceStylePicker
+                  voiceId={cartoonVoiceId || activeStyle.personality.voice_id}
+                  selectedStyle={cartoonVoiceStyle}
+                  selectedRate={undefined}
+                  selectedPitch={undefined}
+                  onStyleChange={setCartoonVoiceStyle}
+                  onRateChange={() => {}}
+                  onPitchChange={() => {}}
+                />
 
                 <GradientButton
                   label={audioBusy ? 'Loading voice…' : 'Play voice preview'}

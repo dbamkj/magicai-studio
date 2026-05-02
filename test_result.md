@@ -9172,3 +9172,40 @@ agent_communication:
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
 
+
+# ===================================================================
+# SESSION 25 — Follow-up fixes (round 2)
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Round 2 fixes after user verification:
+
+      A) /ai-prompts keyboard "input box position keeps jumping":
+         Root cause was double-shifting — `softwareKeyboardLayoutMode: "pan"`
+         in app.json already moves the entire layout up by the keyboard
+         height; layering KeyboardAvoidingView with `behavior="height"`
+         on top caused the parent to also shrink, producing visible
+         layout flicker every focus.
+         Fix: KeyboardAvoidingView now passes `behavior={undefined}` on
+         Android (KAV is a no-op) — the OS pan handles repositioning
+         natively. iOS continues with `behavior="padding"` which is the
+         platform-correct path.
+
+      B) Cartoon-mode Step 4 voice picker (cart4.jpeg):
+         Added VoicePicker + VoiceStylePicker directly above the
+         "Play voice preview" gradient button on the auto-matched
+         voice screen.
+         • New state: cartoonVoiceId / cartoonVoiceStyle (null = use
+           the style's auto-matched voice)
+         • Reset on styleId change so a Krishna voice doesn't carry to
+           a Comedian style
+         • playAudioPreview() and the create-talking-avatar request
+           body both prefer the override when set
+         • UX: user sees auto-matched voice card → can override below
+           it → previews → continues to upload
+
+      Frontend restarted via `supervisorctl restart expo`. No new
+      backend changes. Pending P1 items unchanged: dual-speaker
+      character generation + /api/avatar/dual-lipsync split-screen.
+
