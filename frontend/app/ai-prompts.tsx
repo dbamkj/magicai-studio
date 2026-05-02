@@ -1506,7 +1506,7 @@ const s = StyleSheet.create({
   composerWrap: {
     paddingHorizontal: theme.space.md,
     paddingTop: theme.space.sm,
-    paddingBottom: Platform.select({ ios: theme.space.lg, android: 28, default: theme.space.md }) as number,
+    paddingBottom: Platform.select({ ios: theme.space.lg, android: 48, default: theme.space.md }) as number,
     backgroundColor: 'rgba(15,12,41,0.85)',
     borderTopWidth: 1, borderTopColor: theme.glass.border,
   },

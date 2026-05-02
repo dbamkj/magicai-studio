@@ -421,6 +421,10 @@ class AvatarDialoguesRequest(BaseModel):
     language: Optional[str] = Field("english", description="english | hindi | hinglish")
     count: Optional[int] = Field(3, ge=1, le=5)
     emotion: Optional[str] = Field("happy", description="One of EMOTIONS keys (happy/excited/playful/...).")
+    # Session 25 — Cartoon Avatar mode toggle on the dialogue step.
+    # 'solo'  → single-speaker 4-line monologue (no A/B prefixes)
+    # 'dual'  → two-speaker 4-5 line A:/B: scene (legacy default)
+    mode: Optional[str] = Field("dual", description="solo | dual — controls one-speaker vs two-speaker dialogues.")
 
 
 DIALOGUE_SYSTEM_PROMPT = """You are MagiCAi Studio's avatar scriptwriter.
@@ -649,9 +653,12 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
     emotion = (req.emotion or "happy").strip().lower()
     if emotion not in EMOTIONS:
         emotion = "happy"
+    dlg_mode = (req.mode or "dual").strip().lower()
+    if dlg_mode not in ("solo", "dual"):
+        dlg_mode = "dual"
 
     cache_key = _hashlib_av.sha256(
-        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}|{emotion}".encode()
+        f"{req.style_id}|{req.idea.strip().lower()}|{lang}|{count}|{emotion}|{dlg_mode}".encode()
     ).hexdigest()[:24]
     hit = _dialogue_cache.get(cache_key)
     if hit:
@@ -679,8 +686,17 @@ async def post_avatar_dialogues(req: AvatarDialoguesRequest):
             f"User idea: {req.idea!r}\n"
             f"language: {lang}\n"
             f"count: {count}\n"
-            f"Return the JSON now. Each dialogue MUST be a 4–5 line two-person scene "
-            f"with [pause:X.X] markers between sentences and *action cues* in asterisks."
+            f"mode: {dlg_mode}\n"
+            + (
+                "Return the JSON now. Each dialogue MUST be a SINGLE-SPEAKER "
+                "4-line monologue (NO 'A:' / 'B:' prefixes). Each line is one "
+                "punchy sentence. Add [pause:X.X] markers between lines and "
+                "*action cues* in asterisks where natural."
+                if dlg_mode == "solo" else
+                "Return the JSON now. Each dialogue MUST be a 4–5 line two-person scene "
+                "with [pause:X.X] markers between sentences and *action cues* in asterisks. "
+                "Lines MUST alternate between 'A:' and 'B:'."
+            )
         )
         resp = await chat.send_message(UserMessage(text=user_text))
         text = (resp or "").strip()

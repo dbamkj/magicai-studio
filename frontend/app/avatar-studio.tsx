@@ -279,6 +279,7 @@ export default function AvatarStudioScreen() {
         language,
         emotion,
         count: 3,
+        mode: dualMode ? 'dual' : 'solo',
       }, { timeout: 45000 });
       const dlg: Dialogue[] = r.data?.dialogues || [];
       setDialogues(dlg);
@@ -288,7 +289,7 @@ export default function AvatarStudioScreen() {
     } finally {
       setLoadingDialogues(false);
     }
-  }, [styleId, idea, language]);
+  }, [styleId, idea, language, emotion, dualMode]);
 
   // ────────────────────────── Audio preview ──────────────────────────
   const playAudioPreview = useCallback(async () => {
@@ -971,6 +972,26 @@ export default function AvatarStudioScreen() {
                   AI-crafted to match {activeStyle?.label}'s personality.
                 </Text>
 
+                {/* Solo / Dual mode toggle (Session 25 — moved from step 4).
+                    Switching this regenerates dialogues so the user sees
+                    one-speaker monologues vs A/B two-speaker scenes. */}
+                <View style={[s.modeRow, { marginTop: 8, marginBottom: 12 }]}>
+                  <Pressable
+                    onPress={() => { setDualMode(false); setDialogueId(null); }}
+                    style={[s.modeBtn, !dualMode && s.modeBtnActive]}
+                  >
+                    <Ionicons name="person" size={14} color={!dualMode ? '#fff' : '#CBD5E1'} />
+                    <Text style={[s.modeBtnText, !dualMode && { color: '#fff' }]}>Solo avatar</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => { setDualMode(true); setDialogueId(null); }}
+                    style={[s.modeBtn, dualMode && s.modeBtnActive]}
+                  >
+                    <Ionicons name="people" size={14} color={dualMode ? '#fff' : '#CBD5E1'} />
+                    <Text style={[s.modeBtnText, dualMode && { color: '#fff' }]}>Dual (A + B)</Text>
+                  </Pressable>
+                </View>
+
                 {loadingDialogues && (
                   <View style={s.centerBox}>
                     <ActivityIndicator color="#A855F7" />
@@ -1048,25 +1069,25 @@ export default function AvatarStudioScreen() {
                   </GlassCard>
                 )}
 
-                {/* Voice override (Session 25) — let users pick any Edge/
-                    Sarvam voice before previewing. Defaults to the
-                    auto-matched voice from the style. */}
-                <FieldLabel style={{ marginTop: 16 }}>Choose a different voice (optional)</FieldLabel>
-                <VoicePicker
-                  selectedId={cartoonVoiceId || activeStyle.personality.voice_id}
-                  onSelect={(id) => setCartoonVoiceId(id)}
-                />
-
-                <FieldLabel style={{ marginTop: 16 }}>Voice style (optional)</FieldLabel>
-                <VoiceStylePicker
-                  voiceId={cartoonVoiceId || activeStyle.personality.voice_id}
-                  selectedStyle={cartoonVoiceStyle}
-                  selectedRate={undefined}
-                  selectedPitch={undefined}
-                  onStyleChange={setCartoonVoiceStyle}
-                  onRateChange={() => {}}
-                  onPitchChange={() => {}}
-                />
+                {/* Voice pickers (Session 25) — solo OR dual based on the
+                    mode the user toggled on Step 3. Voice override is
+                    optional; defaults to the auto-matched style voice. */}
+                {!dualMode ? (
+                  <>
+                    <FieldLabel style={{ marginTop: 16 }}>Choose a different voice (optional)</FieldLabel>
+                    <VoicePicker
+                      selectedId={cartoonVoiceId || activeStyle.personality.voice_id}
+                      onSelect={(id) => setCartoonVoiceId(id)}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <FieldLabel style={{ marginTop: 16 }}>Voice A (Person A)</FieldLabel>
+                    <VoicePicker selectedId={voiceAId} onSelect={setVoiceAId} />
+                    <FieldLabel style={{ marginTop: 14 }}>Voice B (Person B)</FieldLabel>
+                    <VoicePicker selectedId={voiceBId} onSelect={setVoiceBId} />
+                  </>
+                )}
 
                 <GradientButton
                   label={audioBusy ? 'Loading voice…' : 'Play voice preview'}
@@ -1085,19 +1106,9 @@ export default function AvatarStudioScreen() {
             {/* ═════════════════ STEP 4 — Photo + Generate ═════════════════ */}
             {mode === 'cartoon' && step === 4 && (
               <>
-                {/* Dual-speaker sub-toggle (Phase 2a) */}
-                <View style={s.modeRow}>
-                  <Pressable onPress={() => setDualMode(false)} style={[s.modeBtn, !dualMode && s.modeBtnActive]}>
-                    <Ionicons name="person" size={14} color={!dualMode ? '#fff' : '#CBD5E1'} />
-                    <Text style={[s.modeBtnText, !dualMode && { color: '#fff' }]}>Solo avatar</Text>
-                  </Pressable>
-                  <Pressable onPress={() => setDualMode(true)} style={[s.modeBtn, dualMode && s.modeBtnActive]}>
-                    <Ionicons name="people" size={14} color={dualMode ? '#fff' : '#CBD5E1'} />
-                    <Text style={[s.modeBtnText, dualMode && { color: '#fff' }]}>Dual (A + B)</Text>
-                  </Pressable>
-                </View>
-
-                {/* Dual-speaker UI branch */}
+                {/* Dual-speaker UI branch — toggle moved to Step 3 (dialogue
+                    picker), voice pickers moved to Step 4 (auto-matched).
+                    This step is now PURELY photo upload + generate. */}
                 {dualMode ? (
                   <>
                     <Text style={s.sectionTitle}>Two-speaker split-screen</Text>
@@ -1107,7 +1118,9 @@ export default function AvatarStudioScreen() {
                       {inferBusy ? '  (auto-detecting genders…)' : ''}
                     </Text>
 
-                    {/* Gender chips */}
+                    {/* Gender chips — used for character generation if user
+                        skips upload. Kept here so the user can fine-tune
+                        right before uploading their own portraits. */}
                     <FieldLabel>Person A · Gender</FieldLabel>
                     <View style={s.catRow}>
                       {(['male','female','neutral'] as const).map(g => (
@@ -1124,12 +1137,6 @@ export default function AvatarStudioScreen() {
                           style={{ marginRight: 8, marginBottom: 8 }} />
                       ))}
                     </View>
-
-                    {/* Voice pickers */}
-                    <FieldLabel>Voice A</FieldLabel>
-                    <VoicePicker selectedId={voiceAId} onSelect={setVoiceAId} />
-                    <FieldLabel style={{ marginTop: 14 }}>Voice B</FieldLabel>
-                    <VoicePicker selectedId={voiceBId} onSelect={setVoiceBId} />
 
                     {/* Side-by-side upload slots */}
                     <FieldLabel style={{ marginTop: 14 }}>Upload portraits</FieldLabel>

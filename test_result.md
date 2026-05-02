@@ -9209,3 +9209,55 @@ agent_communication:
       backend changes. Pending P1 items unchanged: dual-speaker
       character generation + /api/avatar/dual-lipsync split-screen.
 
+
+# ===================================================================
+# SESSION 25 — Round 3: Cartoon Avatar flow restructure
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Restructured cartoon avatar flow per user request:
+
+      ROLLBACK:
+        Removed VoicePicker + VoiceStylePicker from cartoon Step 4
+        (auto-matched voice screen / code: step === 3). The crashing
+        VoiceStylePicker call (`onSelect is not a function`) is now gone.
+
+      NEW FLOW:
+        • Step 3 (UI) / step === 2 (code) — "Pick your dialogue":
+          ADDED solo / dual (A+B) toggle at the top of the dialogue
+          step. Switching the toggle clears `dialogueId` and refetches
+          dialogues with the appropriate mode so the user sees:
+            - solo  → single-speaker 4-line monologues, no prefixes
+            - dual  → 4–5 line A:/B: two-speaker scenes
+          Verified live with curl on /api/avatar/dialogues.
+
+        • Step 4 (UI) / step === 3 (code) — "Voice — auto-matched":
+          Now renders mode-aware voice pickers:
+            - solo  → single VoicePicker (override optional, defaults
+                      to style.personality.voice_id)
+            - dual  → two VoicePickers (Voice A + Voice B)
+          "Play voice preview" button stays at the bottom of this step.
+
+        • Step 5 (UI) / step === 4 (code) — "Photo + Generate":
+          Stripped to ONLY upload + generate. Removed the duplicate
+          dual-toggle and the Voice A/B pickers (those moved to Step 4).
+          Gender chips remain here — they affect future character
+          generation (b3 hybrid auto-character coming next).
+
+      BACKEND:
+        /api/avatar/dialogues now accepts a `mode` field
+        ('solo' | 'dual', default 'dual' for backward compat). Cache
+        key includes mode. The LLM user-message branches the dialogue
+        format instructions accordingly. Verified both modes return
+        correct shapes.
+
+      OTHER FIX:
+        /ai-prompts composer paddingBottom (Android) bumped from 28 → 48
+        per user feedback ("uplift the text box position a bit").
+
+      VERIFIED:
+        ✅ Backend solo/dual dialogues — curl test PASS on both modes
+        ✅ Expo restarted cleanly, no new parse errors in logs
+        ✅ VoiceStylePicker crash gone
+
