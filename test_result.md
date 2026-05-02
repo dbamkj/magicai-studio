@@ -9512,3 +9512,69 @@ agent_communication:
          This UI is the b3 hybrid's visible piece and should be the
          next session's primary work.
 
+
+# ===================================================================
+# SESSION 25 — Round 8: b3 hybrid character variant grid UI
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Wired the b3 hybrid character generation UI on cartoon Step 5
+      (dual mode). Everything in avatar-studio.tsx.
+
+      NEW STATE:
+        VariantJob type: { job_id, role, gender, status, image_url }
+        - variantJobs[]         — the 4 jobs returned by the batch endpoint
+        - variantsKicking       — guard flag while POSTing the batch
+        - variantErr            — error text surfaced to user
+        - pickedVariantA / B    — job_ids currently adopted
+
+      NEW FUNCTIONS:
+        generateDualVariants() → POST /api/avatar/generate-characters-batch
+          with 4 slots: [A-gA1, A-gA2, B-gB1, B-gB2]. Gender-pair logic:
+            genderA==='neutral' → [male, female]
+            else               → [chosen, opposite]
+          Same for B. Gives each role one matching and one contrasting
+          variant so the grid always shows visual diversity.
+        adoptVariant(v) → sets imageAPath (or B) to v.image_url and
+          imageAUri to the full backend URL for display. Because
+          dual-lipsync's _resolve_upload_path already handles the
+          /api/serve-file/ prefix, NO file re-upload is required.
+
+      NEW EFFECTS:
+        • Auto-kicks generateDualVariants() when entering Step 5 (dual
+          mode) if variantJobs is empty. No manual button press needed.
+        • Concurrent poller — every 3s hits /api/avatar/jobs/{id} for
+          each queued/processing job and flips their status to
+          completed/failed as they come in. Cancels automatically
+          when all 4 terminate.
+
+      UI:
+        • 2×2 grid below the A/B gender chips, before the upload slots.
+        • Each card:
+            - loading spinner + "Drawing…" while processing
+            - the generated portrait on complete
+            - red alert icon + "Failed" if Nano-Banana errors
+            - "A · M" / "B · F" badge at bottom-left
+            - green check at top-right when adopted
+        • "Regenerate variants" ghost button below the grid
+        • "— OR use your own photos —" divider
+        • Existing upload slots (unchanged)
+        • All existing flow (gender chips, voice pickers, generate
+          button) remains — the grid is purely additive.
+
+      STYLES: added variantGrid, variantCard, variantCardPicked,
+        variantImg, variantPlaceholder, variantCenter, variantBadge,
+        variantCheck, ghostBtn, orDivider, orLine, orText.
+
+      VERIFIED:
+        • Web bundle — "Web Bundled 4073ms (1211 modules)", 200 OK
+        • No syntax errors in expo logs
+        • Backend batch endpoint already end-to-end tested in Round 7
+
+      PENDING (for user verification + Session 26):
+        • Try cartoon → Dual → Step 5 in the app — 4 cards should appear
+          and fill in within ~30-60s
+        • Pick one for A, one for B → upload slots populate automatically
+        • Generate Dual Avatar Video → real split-screen output
+

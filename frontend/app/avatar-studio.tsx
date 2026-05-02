@@ -202,6 +202,23 @@ export default function AvatarStudioScreen() {
   const [imageAPath, setImageAPath] = useState<string | null>(null);
   const [imageBUri, setImageBUri] = useState<string | null>(null);
   const [imageBPath, setImageBPath] = useState<string | null>(null);
+
+  // ── Phase 2b (b3 hybrid) — AI-generated character variants ──
+  // 4-card grid on Step 5 (dual mode). Each card polls its Nano-Banana
+  // job; user taps one to "adopt" that image as imageAPath/imageBPath.
+  type VariantJob = {
+    job_id: string;
+    role: 'A' | 'B';
+    gender: 'male' | 'female' | 'neutral';
+    status: 'queued' | 'processing' | 'completed' | 'failed';
+    image_url?: string | null;
+    error?: string | null;
+  };
+  const [variantJobs, setVariantJobs] = useState<VariantJob[]>([]);
+  const [variantsKicking, setVariantsKicking] = useState(false);
+  const [variantErr, setVariantErr] = useState<string | null>(null);
+  const [pickedVariantA, setPickedVariantA] = useState<string | null>(null);
+  const [pickedVariantB, setPickedVariantB] = useState<string | null>(null);
   const [inferBusy, setInferBusy] = useState(false);
   const [genStage, setGenStage] = useState<string>('');
   const [genProgress, setGenProgress] = useState(0);
@@ -585,13 +602,110 @@ export default function AvatarStudioScreen() {
     return () => { cancelled = true; };
   }, [dualMode, pickedDialogue?.id]);
 
+  // ── Phase 2b: AI character variant grid (b3 hybrid) ──
+  // Kicks 4 Nano-Banana character jobs (2 per role with gender variety),
+  // then polls them concurrently. User taps a card to adopt the image.
+  const generateDualVariants = useCallback(async () => {
+    if (!styleId) return;
+    setVariantsKicking(true);
+    setVariantErr(null);
+    setVariantJobs([]);
+    setPickedVariantA(null);
+    setPickedVariantB(null);
+    try {
+      const gA1 = genderA === 'neutral' ? 'male' : genderA;
+      const gA2 = genderA === 'male' ? 'female' : genderA === 'female' ? 'male' : 'female';
+      const gB1 = genderB === 'neutral' ? 'male' : genderB;
+      const gB2 = genderB === 'male' ? 'female' : genderB === 'female' ? 'male' : 'female';
+      const r = await axios.post(`${API}/avatar/generate-characters-batch`, {
+        style_id: styleId,
+        slots: [
+          { role: 'A', gender: gA1 },
+          { role: 'A', gender: gA2 },
+          { role: 'B', gender: gB1 },
+          { role: 'B', gender: gB2 },
+        ],
+      }, { timeout: 15000 });
+      const jobs: VariantJob[] = (r.data?.jobs || []).map((j: any) => ({
+        job_id: j.job_id, role: j.role, gender: j.gender,
+        status: 'queued', image_url: null,
+      }));
+      setVariantJobs(jobs);
+    } catch (e: any) {
+      setVariantErr(e?.response?.data?.detail || e?.message || 'Could not start character generation.');
+    } finally {
+      setVariantsKicking(false);
+    }
+  }, [styleId, genderA, genderB]);
+
+  // Poll every queued/processing variant job every 3s.
+  useEffect(() => {
+    const active = variantJobs.filter(v => v.status === 'queued' || v.status === 'processing');
+    if (active.length === 0) return;
+    let stopped = false;
+    const tick = async () => {
+      await Promise.all(active.map(async (job) => {
+        try {
+          const r = await axios.get(`${API}/avatar/jobs/${job.job_id}`, { timeout: 10000 });
+          const d = r.data || {};
+          if (stopped) return;
+          if (d.status === 'completed' || d.status === 'failed') {
+            setVariantJobs(prev => prev.map(v =>
+              v.job_id === job.job_id
+                ? { ...v, status: d.status, image_url: d.image_url || null, error: d.error || null }
+                : v,
+            ));
+          } else if (d.status === 'processing' && job.status !== 'processing') {
+            setVariantJobs(prev => prev.map(v =>
+              v.job_id === job.job_id ? { ...v, status: 'processing' } : v,
+            ));
+          }
+        } catch (e: any) {
+          const s = e?.response?.status;
+          if (s === 404) {
+            setVariantJobs(prev => prev.map(v =>
+              v.job_id === job.job_id ? { ...v, status: 'failed', error: 'Job not found' } : v,
+            ));
+          }
+        }
+      }));
+    };
+    const timer = setInterval(tick, 3000);
+    tick();
+    return () => { stopped = true; clearInterval(timer); };
+  }, [variantJobs]);
+
+  // Auto-kick variants when entering Step 5 in dual mode if none yet.
+  useEffect(() => {
+    if (dualMode && step === 4 && styleId && variantJobs.length === 0 && !variantsKicking) {
+      generateDualVariants();
+    }
+  }, [dualMode, step, styleId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Adopt a completed variant for role A or B.
+  const adoptVariant = useCallback((v: VariantJob) => {
+    if (v.status !== 'completed' || !v.image_url) return;
+    const displayUri = v.image_url.startsWith('http')
+      ? v.image_url
+      : `${BACKEND_URL}${v.image_url}`;
+    if (v.role === 'A') {
+      setPickedVariantA(v.job_id);
+      setImageAPath(v.image_url);
+      setImageAUri(displayUri);
+    } else {
+      setPickedVariantB(v.job_id);
+      setImageBPath(v.image_url);
+      setImageBUri(displayUri);
+    }
+  }, []);
+
+
   // Kick off the dual-lipsync split-screen pipeline.
   const generateDual = useCallback(async () => {
     if (!requireLogin()) return;
     if (!imageAPath || !imageBPath) { Alert.alert('Upload both Person A and Person B photos.'); return; }
     if (!pickedDialogue) { Alert.alert('Pick a dialogue first'); return; }
-    setGenerating(true); setResultUrl(null); setResultError('');
-    setGenStage('Preparing split-screen pipeline…'); setGenProgress(5);
+    setGenerating(true); setResultUrl(null); setResultError('');    setGenStage('Preparing split-screen pipeline…'); setGenProgress(5);
     try {
       const body = {
         image_a_path: imageAPath,
@@ -1219,8 +1333,95 @@ export default function AvatarStudioScreen() {
                       ))}
                     </View>
 
+                    {/* ── Phase 2b: AI-generated character variants grid ── */}
+                    <FieldLabel style={{ marginTop: 16 }}>
+                      AI-generated character variants
+                    </FieldLabel>
+                    <Text style={s.sectionSub}>
+                      Tap a card to use it. First two are for Person A, last two for Person B.
+                    </Text>
+                    <View style={s.variantGrid}>
+                      {variantJobs.length === 0 && variantsKicking && (
+                        <View style={s.variantPlaceholder}>
+                          <ActivityIndicator color="#A855F7" />
+                          <Text style={s.variantStatusText}>Starting AI artists…</Text>
+                        </View>
+                      )}
+                      {variantJobs.length === 0 && !variantsKicking && (
+                        <View style={s.variantPlaceholder}>
+                          <Text style={s.variantStatusText}>
+                            {variantErr || 'Character generation will start automatically.'}
+                          </Text>
+                        </View>
+                      )}
+                      {variantJobs.map((v) => {
+                        const isPicked = (v.role === 'A' && pickedVariantA === v.job_id) ||
+                                         (v.role === 'B' && pickedVariantB === v.job_id);
+                        const done = v.status === 'completed' && !!v.image_url;
+                        const failed = v.status === 'failed';
+                        const displayUri = done && v.image_url
+                          ? (v.image_url.startsWith('http') ? v.image_url : `${BACKEND_URL}${v.image_url}`)
+                          : null;
+                        return (
+                          <Pressable
+                            key={v.job_id}
+                            onPress={() => done && adoptVariant(v)}
+                            disabled={!done}
+                            style={[
+                              s.variantCard,
+                              isPicked && s.variantCardPicked,
+                              failed && { opacity: 0.5 },
+                            ]}
+                          >
+                            {done && displayUri ? (
+                              <Image source={{ uri: displayUri }} style={s.variantImg} resizeMode="cover" />
+                            ) : failed ? (
+                              <View style={s.variantCenter}>
+                                <Ionicons name="alert-circle-outline" size={22} color="#EF4444" />
+                                <Text style={s.variantErrText}>Failed</Text>
+                              </View>
+                            ) : (
+                              <View style={s.variantCenter}>
+                                <ActivityIndicator color="#A855F7" />
+                                <Text style={s.variantStatusText}>Drawing…</Text>
+                              </View>
+                            )}
+                            <View style={s.variantBadge}>
+                              <Text style={s.variantBadgeText}>
+                                {v.role} · {v.gender[0].toUpperCase()}
+                              </Text>
+                            </View>
+                            {isPicked && (
+                              <View style={s.variantCheck}>
+                                <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
+                              </View>
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                      <Pressable
+                        onPress={generateDualVariants}
+                        disabled={variantsKicking}
+                        style={[s.ghostBtn, variantsKicking && { opacity: 0.5 }]}
+                      >
+                        <Ionicons name="refresh" size={14} color="#A855F7" />
+                        <Text style={s.ghostBtnText}>
+                          {variantsKicking ? 'Starting…' : 'Regenerate variants'}
+                        </Text>
+                      </Pressable>
+                    </View>
+
+                    <View style={s.orDivider}>
+                      <View style={s.orLine} />
+                      <Text style={s.orText}>OR use your own photos</Text>
+                      <View style={s.orLine} />
+                    </View>
+
                     {/* Side-by-side upload slots */}
-                    <FieldLabel style={{ marginTop: 14 }}>Upload portraits</FieldLabel>
+                    <FieldLabel style={{ marginTop: 6 }}>Upload portraits</FieldLabel>
                     <View style={{ flexDirection: 'row', gap: 10 }}>
                       {([
                         { slot: 'A' as const, uri: imageAUri, label: 'Person A' },
@@ -1980,4 +2181,68 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(10,1,24,0.88)',
     borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)',
   },
+
+  /* Phase 2b — character variant grid */
+  variantGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 10,
+  },
+  variantCard: {
+    width: '48%',
+    aspectRatio: 0.85,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'rgba(168,85,247,0.35)',
+    backgroundColor: 'rgba(10,1,24,0.55)',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  variantCardPicked: {
+    borderColor: '#22C55E',
+    backgroundColor: 'rgba(34,197,94,0.10)',
+  },
+  variantImg: { width: '100%', height: '100%' },
+  variantPlaceholder: {
+    width: '100%',
+    paddingVertical: 32,
+    alignItems: 'center', justifyContent: 'center',
+    borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.25)',
+    backgroundColor: 'rgba(10,1,24,0.55)',
+    gap: 8,
+  },
+  variantCenter: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4,
+  },
+  variantStatusText: { color: '#CBD5E1', fontSize: 12 },
+  variantErrText: { color: '#EF4444', fontSize: 12 },
+  variantBadge: {
+    position: 'absolute', bottom: 6, left: 6,
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  variantBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  variantCheck: {
+    position: 'absolute', top: 6, right: 6,
+    backgroundColor: '#fff', borderRadius: 12,
+  },
+
+  /* Regenerate + or divider */
+  ghostBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.4)',
+    backgroundColor: 'rgba(168,85,247,0.08)',
+  },
+  ghostBtnText: { color: '#A855F7', fontSize: 12, fontWeight: '700' },
+  orDivider: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    marginTop: 18, marginBottom: 6,
+  },
+  orLine: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.12)' },
+  orText: { color: '#94A3B8', fontSize: 11, fontWeight: '700', letterSpacing: 1 },
 });
