@@ -669,10 +669,23 @@ export default function AvatarStudioScreen() {
       const pid = r.data?.project_id;
       if (!pid) throw new Error('No project id returned');
 
-      // Poll /api/project/{pid}
+      // Poll /api/project/{pid} — with diagnostics + max-poll timeout so
+      // we never silently hang at low progress (root cause of "stuck @ 5%"
+      // bug from session 24).
+      const POLL_START = Date.now();
+      const POLL_MAX_MS = 12 * 60 * 1000; // 12 min hard cap
+      let consecutiveErrors = 0;
       pollRef.current = setInterval(async () => {
+        // Hard timeout check
+        if (Date.now() - POLL_START > POLL_MAX_MS) {
+          clearInterval(pollRef.current);
+          setResultError('Generation timed out after 12 minutes. Please try again.');
+          setGenerating(false);
+          return;
+        }
         try {
           const j = await axios.get(`${API}/project/${pid}`, { timeout: 15000 });
+          consecutiveErrors = 0;
           const prog = j.data?.progress || 0;
           const st = j.data?.status || '';
           setGenProgress(Math.max(40, prog));
@@ -688,7 +701,27 @@ export default function AvatarStudioScreen() {
             setResultError(j.data?.error || 'Render failed');
             setGenerating(false);
           }
-        } catch { /* keep polling */ }
+        } catch (pollErr: any) {
+          consecutiveErrors += 1;
+          // Surface poll errors so the next agent can see what's happening
+          // rather than silently hanging the UI at 5%.
+          const status = pollErr?.response?.status;
+          const detail = pollErr?.response?.data?.detail || pollErr?.message || 'unknown';
+          console.warn(`[avatar-studio] poll err #${consecutiveErrors}`, status, String(detail).slice(0, 200));
+          // Auth failure → bail out immediately, the user needs to log in again.
+          if (status === 401 || status === 403) {
+            clearInterval(pollRef.current);
+            setResultError('Session expired — please sign in again.');
+            setGenerating(false);
+            return;
+          }
+          // After ~1 minute of consecutive failures, give up.
+          if (consecutiveErrors >= 20) {
+            clearInterval(pollRef.current);
+            setResultError(`Lost connection to render server (${status || 'network'}). Please retry.`);
+            setGenerating(false);
+          }
+        }
       }, 3000);
     } catch (e: any) {
       setResultError(e?.response?.data?.detail || e?.message || 'Generation failed');

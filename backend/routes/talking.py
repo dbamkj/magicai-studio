@@ -69,6 +69,38 @@ async def create_talking_avatar(
     if not (req.script or "").strip():
         raise HTTPException(status_code=400, detail="Script is required")
 
+    # Phase-B: validate image dimensions early — a 1×1 placeholder PNG (which
+    # can sneak through if upload was interrupted) crashes ffmpeg's scale
+    # filter with "divisible by 2 (1x1)" and silently fails the whole job.
+    # We bail out with a clear 400 instead of charging credits + burning MH.
+    try:
+        probe = subprocess.run(
+            [
+                "/usr/bin/ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "default=nw=1:nk=1",
+                str(img_abs),
+            ],
+            capture_output=True, timeout=10,
+        )
+        dims = (probe.stdout.decode() or "").strip().split("\n")
+        if len(dims) >= 2:
+            w, h = int(dims[0] or "0"), int(dims[1] or "0")
+            if w < 64 or h < 64:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Source image is too small ({w}x{h}). "
+                        "Please upload a clearer photo (min 64x64)."
+                    ),
+                )
+    except HTTPException:
+        raise
+    except Exception as _probe_err:
+        # ffprobe failure shouldn't block the entire flow — just log it.
+        log.warning("talking: ffprobe failed on %s: %s", img_abs, _probe_err)
+
     user, cost = await preflight_and_reserve(request, job_type='lipsync', feature='lip_sync')
 
     p = VideoProject(
@@ -128,13 +160,17 @@ async def create_talking_avatar(
                     audio_dur = 3.0
 
             # 3) Create still video from the image (duration matches audio+1)
+            # Scale filter: ensure min 256px on shortest side and even dims —
+            # `trunc(iw/2)*2:trunc(ih/2)*2` alone explodes on 1×1 placeholders.
             still_v = UPLOAD_DIR / f"avatar_still_{uuid.uuid4().hex}.mp4"
             r1 = subprocess.run(
                 [
                     "/usr/bin/ffmpeg", "-y", "-loop", "1", "-i", str(img_abs),
                     "-c:v", "libx264", "-t", str(audio_dur + 1),
                     "-pix_fmt", "yuv420p", "-r", "25",
-                    "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                    "-vf",
+                    "scale='if(gt(iw,ih),max(iw,256),-2)':'if(gt(iw,ih),-2,max(ih,256))',"
+                    "scale=trunc(iw/2)*2:trunc(ih/2)*2",
                     str(still_v),
                 ],
                 capture_output=True, timeout=60,

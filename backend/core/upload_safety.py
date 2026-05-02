@@ -71,6 +71,25 @@ def validate_image_upload(payload: bytes, content_type: str | None = None, filen
     # Magic-byte sniff — confirm the file is what its MIME says.
     if not _matches_any(payload[:32], IMAGE_SIGNATURES):
         raise HTTPException(status_code=400, detail="File contents do not look like a valid image (signature mismatch)")
+    # Phase-B fix: reject 1x1 placeholder PNGs (and similar tiny corrupt
+    # uploads) that crash downstream ffmpeg pipelines (avatar still video).
+    # Using PIL here keeps validation cheap (header read only).
+    try:
+        from io import BytesIO
+        from PIL import Image as _PILImage
+        with _PILImage.open(BytesIO(payload)) as _im:
+            w, h = _im.size
+            if w < 64 or h < 64:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image too small ({w}x{h}). Minimum 64x64 px required.",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        # PIL couldn't decode → already covered by magic-byte check; let it pass
+        # rather than blocking exotic-but-valid formats (HEIC etc.).
+        pass
 
 
 def validate_video_upload(payload: bytes, content_type: str | None = None, filename: str | None = None) -> None:
