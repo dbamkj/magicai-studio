@@ -1741,12 +1741,9 @@ async def create_bodyswap(req: CreateBodySwapRequest, background_tasks: Backgrou
     await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks)
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
-@api_router.get("/project/{project_id}")
-async def get_project(project_id: str, request: Request = None):
-    await get_current_user(request)
-    p = await db.video_projects.find_one({"id": project_id}, {"_id": 0})
-    if not p: raise HTTPException(status_code=404, detail="Not found")
-    return p
+# NOTE: /api/project/{id}, /api/project/{id}/versions, /api/projects,
+# DELETE /api/project/{id}, and /api/download-video moved to
+# routes/projects.py (Session 25 round 9 — Phase-B refactor).
 
 # ================= SPRINT 1 — VERSIONING: Edit / Recreate / Regenerate =================
 
@@ -1771,22 +1768,7 @@ async def _link_as_version(new_project_id: str, parent_id: Optional[str]):
     logger.info(f"Linked {new_project_id} as v{next_version} of family {root_id}")
 
 
-@api_router.get("/project/{project_id}/versions")
-async def list_project_versions(project_id: str, request: Request = None):
-    """Return all versions in the same family (parent + children), sorted by version asc."""
-    await get_current_user(request)
-    p = await db.video_projects.find_one({"id": project_id}, {"_id": 0})
-    if not p:
-        raise HTTPException(status_code=404, detail="Not found")
-    # Root of family = parent_id if set, else the project itself
-    root_id = p.get("parent_id") or p["id"]
-    # Query: the root project itself + all descendants (parent_id==root_id)
-    cursor = db.video_projects.find(
-        {"$or": [{"id": root_id}, {"parent_id": root_id}]},
-        {"_id": 0},
-    ).sort("version", 1)
-    rows = await cursor.to_list(length=50)
-    return {"parent_id": root_id, "count": len(rows), "versions": rows}
+# /api/project/{id}/versions moved to routes/projects.py (round 9).
 
 
 # Dispatcher — maps a stored endpoint string back to its background task + payload model.
@@ -1970,26 +1952,8 @@ async def rerun_project(project_id: str, background_tasks: BackgroundTasks, requ
 # ================= END SPRINT 1 =================
 
 
-@api_router.get("/projects")
-async def get_projects(request: Request = None):
-    user = await get_current_user(request)
-    return await db.video_projects.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
-
-@api_router.delete("/project/{project_id}")
-async def delete_project(project_id: str, request: Request = None):
-    await get_current_user(request)
-    r = await db.video_projects.delete_one({"id": project_id})
-    if r.deleted_count == 0: raise HTTPException(status_code=404, detail="Not found")
-    return {"message": "Deleted"}
-
-@api_router.get("/download-video")
-async def download_video(url: str):
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), follow_redirects=True) as c:
-        resp = await c.get(url)
-        if resp.status_code != 200: raise HTTPException(status_code=502, detail="Download failed")
-        ct = resp.headers.get("content-type", "video/mp4")
-        ext = "mp4" if "video" in ct else "png"
-        return StreamingResponse(iter([resp.content]), media_type=ct, headers={"Content-Disposition": f"attachment; filename=magicai_output.{ext}"})
+# /api/projects, DELETE /api/project/{id}, and /api/download-video moved
+# to routes/projects.py (round 9).
 
 @api_router.post("/create-multi-swap")
 async def create_multi_swap(request: Request, background_tasks: BackgroundTasks):
@@ -3367,6 +3331,10 @@ app.include_router(_media_router)
 
 from routes.talking import router as _talking_router
 app.include_router(_talking_router)
+
+# Phase-B refactor round 9 — project CRUD extracted.
+from routes.projects import router as _projects_router
+app.include_router(_projects_router)
 # Sprint 6 — Content Intelligence: templates router (Batch 2 refactor seed)
 from routes.templates import router as _templates_router
 app.include_router(_templates_router)
