@@ -1035,6 +1035,13 @@ export default function AvatarStudioScreen() {
         // Round 11 — optional BGM mood. null → omitted by axios → backend
         // skips amix step entirely.
         ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
+        // Phase-1 — Cinematic preset (server overrides voice + bgm).
+        ...(presetId ? { preset_id: presetId } : {}),
+        // Session 33 r4 — Dual cartoon now uses the LOCAL procedural
+        // mouth animator (core/dual_mouth_animator.py). Skips the
+        // ~600-credit MagicHour v1.lip_sync round-trip AND avoids the
+        // photoreal-feature injection that disfigures cartoon faces.
+        use_procedural_lipsync: true,
       };
       const r = await axios.post(`${API}/avatar/dual-lipsync`, body, { timeout: 30000 });
       const pid = r.data?.project_id;

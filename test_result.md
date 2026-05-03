@@ -673,12 +673,68 @@ metadata:
   run_ui: true
 
 test_plan:
-  current_focus: []
-  stuck_tasks: []
+  current_focus:
+    - "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
+  stuck_tasks:
+    - "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
   test_all: false
   test_priority: "high_first"
 
-agent_communication_session_33_phase1:
+agent_communication_session_33_r4:
+  - agent: "testing"
+    message: |
+      Session 33 r4 verification — PROCEDURAL CORE WORKS, 2 BUGS BLOCK
+      THE END-TO-END CONTRACT.
+
+      ✅ TEST D regressions all pass (cinematic-presets=6, avatar/styles
+         11+12, cartoonize text-only 200).
+      ✅ TEST A: dual procedural ran correctly. EXACT log lines:
+           "core.dual_mouth_animator: dual_anim: OK
+              dual_e438fb26_proc.mp4 (frames=234 dur=9.36s WxH=1080x960)"
+           "avatar: dual: procedural lipsync OK →
+              dual_e438fb26_proc.mp4 (saved ~600 credits)"
+         NO 'upload_to_magic_hour' / 'mh_create_lipsync' for the
+         project. result_url=/api/serve-file/dual_e438fb26_proc.mp4
+         (NOT _ls.mp4). MP4 verified video/mp4 231 KB h264 1080x960
+         aac duration=9.36s.
+      ✅ TEST B: free user got 200 not 402 — feature gate bypass works.
+         Procedural mp4 produced.
+      ✅ TEST C: MH path engaged when use_procedural_lipsync=False
+         (MH upload OK logged within 60s of POST).
+
+      ❌ BUG #1 — UnboundLocalError causes status='failed' to be
+         written EVEN WHEN PROCEDURAL SUCCEEDED.
+         routes/avatar.py:1431 cleanup loop references split_img,
+         still_v, list_txt — these are only defined in the MH branch.
+         When procedural succeeds, throws UnboundLocalError → caught
+         by outer except → flips status from 'completed' to 'failed'.
+         The MP4 file IS correctly saved, but DB record shows failed.
+         FIX: initialise split_img=still_v=list_txt=None before the
+         branch, OR move cleanup inside `if not use_procedural`.
+
+      ❌ BUG #2 — DB mismatch: GET /api/project/{id} returns 404
+         for every avatar.py-created project.
+         routes/avatar.py imports `from core.config import DB_NAME`
+         which under ENV=BETA returns 'magicai_beta' (dict-lookup
+         path). routes/projects.py imports `from core.db import db`
+         whose _resolve_db_name honors explicit DB_NAME='videoai_
+         database' env-var FIRST and returns videoai_database.
+         Inserts go to magicai_beta.video_projects, reads come from
+         videoai_database.video_projects → 404 every time.
+         Verified directly in MongoDB: e438fb26 found in
+         magicai_beta.video_projects, missing in videoai_database.
+         routes/talking.py uses core.db.db so it's unaffected.
+         FIX: change avatar.py to use `from core.db import db`
+         (one-line swap), OR resolve the config.py vs db.py
+         inconsistency at the source (make both honor the same
+         env-var precedence).
+
+      Test credentials side-note: demo_creator (3000-cr per
+      test_credentials.md) had 0 credits at start; phase1test free
+      had 100. Topped both up via direct Mongo write to run the
+      tests. Main agent should consider periodic credit reset.
+
+      Test artefact: /app/backend_test_session33r4.py (re-runnable).
   - agent: "testing"
     message: |
       Phase-1 Cinematic Preset verification — 12/13 PASS, 1 CRITICAL
@@ -733,6 +789,167 @@ agent_communication_session_33_phase1:
          contract AND the free-user free-preset flow.
 
 session_33_procedural_lipsync:
+  - task: "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
+    implemented: true
+    working: false
+    file: "backend/core/dual_mouth_animator.py, backend/routes/avatar.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Session 33 r4 verification — PROCEDURAL CORE WORKS but TWO
+          high-priority surrounding bugs prevent end-to-end success
+          on the documented contract. Test artefact: /app/backend_test_session33r4.py.
+
+          --- TEST A (creator + procedural=True) ---
+            ✅ POST /api/avatar/dual-lipsync → 200 with project_id
+               e438fb26-bffb-49b1-b5a2-cfbfaa5920cb, status=processing,
+               credits_charged=200.
+            ✅ Procedural pipeline ran and produced the correct file.
+               EXACT log strings observed in backend.err.log:
+                 "core.dual_mouth_animator - INFO - dual_anim: OK
+                   dual_e438fb26_proc.mp4 (frames=234 dur=9.36s WxH=1080x960)"
+                 "avatar - INFO - dual: procedural lipsync OK →
+                   dual_e438fb26_proc.mp4 (saved ~600 credits)"
+            ✅ NO MagicHour calls for this project — log scan for
+               'upload_to_magic_hour' AND 'mh_create_lipsync' returned
+               0 matches in the project window.
+            ✅ result_url = /api/serve-file/dual_e438fb26_proc.mp4 (the
+               PROCEDURAL filename — NOT _ls.mp4).
+            ✅ Direct GET <result_url> → 200, Content-Type=video/mp4,
+               size=231467 B (>>50 KB).
+            ✅ ffprobe: video=h264 1080x960, audio=aac, duration=9.36s
+               (≥ script audio duration). EXACTLY matches review spec.
+
+          ❌ BUG #1 — UnboundLocalError flips status to "failed".
+             Direct DB read shows the project is recorded as:
+               status='failed', progress=100,
+               result_url='/api/serve-file/dual_e438fb26_proc.mp4',
+               error="cannot access local variable 'split_img' where it
+                      is not associated with a value"
+             ROOT CAUSE: routes/avatar.py:1431 cleanup loop references
+               `seg_paths + [list_txt, split_img, still_v, combined]`
+             but split_img / still_v / list_txt are ONLY defined inside
+             the `if not use_procedural:` block (lines 1364-1388). When
+             procedural succeeds, those locals are unbound → throws
+             UnboundLocalError → caught by the outer except at line
+             1436 → flips status from "completed" (set at 1418) to
+             "failed". The actual MP4 is correctly produced, but the
+             user sees status=failed.
+             FIX (small): only reference those vars inside the MH
+             branch, OR initialise them to None before the branch, OR
+             move the cleanup block inside `if not use_procedural`.
+
+          ❌ BUG #2 — DB mismatch: GET /api/project/{id} 404 for
+             every dual-lipsync project.
+             routes/avatar.py uses `core.config.DB_NAME` which under
+             ENV=BETA resolves to magicai_beta (since core/config.py
+             dict-lookup goes through ENV='BETA' branch). routes/
+             projects.py uses `core.db.db` whose _resolve_db_name
+             honors the explicit DB_NAME='videoai_database' env var
+             (still set in backend/.env) and returns videoai_database.
+             So avatar inserts into magicai_beta.video_projects but
+             GET reads from videoai_database.video_projects → 404.
+             Verified directly:
+               magicai_beta.video_projects has e438fb26 ✓
+               videoai_database.video_projects → not present ✗
+             This breaks frontend polling on EVERY avatar.py-created
+             project (dual_talking_avatar). routes/talking.py is
+             unaffected because it imports `from core.db import db`
+             directly, so solo cartoon mode keeps working.
+             FIX (small): change `from core.config import DB_NAME` →
+             `from core.db import db` in routes/avatar.py (one import
+             swap + remove the AsyncIOMotorClient init). Or, fix the
+             config.py / db.py mismatch by making BOTH honor the same
+             env-var resolution order.
+
+          --- TEST B (free + procedural=True) ---
+            ✅ Free user (phase1test@example.com, tier=free, topped
+               up to 2000 credits since the previous test consumed
+               them) → POST 200, NOT 402. The lip_sync_dual feature
+               gate is correctly bypassed when use_procedural=True
+               (avatar.py:1170 passes feature=None) — review spec met.
+            ✅ Procedural file produced: dual_aaf126f9_proc.mp4
+               (278556 B, 1080x960 h264+aac).
+            ❌ Same two bugs as Test A apply (status=failed in DB,
+               GET /api/project/{id} 404).
+
+          --- TEST C (regression, procedural=False, MH path) ---
+            ✅ POST 200 with project_id 35cb2c22-c365-4962-815b-
+               f5165d815811.
+            ✅ Within 60s, the MH path was clearly taken: backend
+               log shows "MH upload OK: type=video ... 17:20:36" and
+               "MH upload OK: type=audio ... 17:20:36" right after
+               the POST. project status=processing progress=65 after
+               60s polling.
+            ✅ NO 'DualAvatar failed' log line for project 35cb2c22.
+            ❌ GET /api/project/{id} → 404 (same DB mismatch bug
+               as A/B). Frontend cannot poll completion.
+
+          --- TEST D (regressions) — ALL PASS ---
+            ✅ GET /api/cinematic-presets → 200 with 6 presets.
+            ✅ GET /api/avatar/styles → 200 (11 styles, 12 emotions).
+            ✅ POST /api/avatar/cartoonize with prompt-only (no
+               image_b64) → 200 with job_id (text-only Nano Banana
+               fallback verified).
+
+          --- HIDDEN PRE-EXISTING ISSUE ---
+          Both demo_creator (3000-cr-spec'd) and phase1test (300-cr-
+          spec'd in test_credentials.md) had 0 / 100 credits at start
+          of test (consumed by earlier sessions). I had to top up via
+          direct DB write. Main agent should consider a credit-reset
+          script for periodic test runs, OR raise dual-lipsync cost
+          ceiling so it doesn't auto-drain demo accounts.
+
+          --- NET STATUS ---
+          The PROCEDURAL CORE (core/dual_mouth_animator.py + the
+          procedural branch in routes/avatar.py:1300-1357) WORKS
+          PERFECTLY. The output MP4 is byte-correct, the credit
+          savings happen, and MH is genuinely skipped. But the two
+          surrounding bugs (cleanup loop + DB mismatch) make every
+          status check 404 and every project record show status=
+          failed. Until those are fixed, the contract Test A/B
+          requested ("status=completed when polled") cannot pass.
+      - working: true
+        agent: "main"
+        comment: |
+          Session 33 r4 — Killed the ~600-credit MagicHour cost on
+          dual-mode cartoon avatars by building a fully-local
+          OpenCV+ffmpeg side-by-side mouth animator.
+
+          New core/dual_mouth_animator.py reuses the proven helpers
+          from solo (mouth_animator) and adds:
+            - per-speaker envelope construction (only the active
+              speaker's amplitude is non-zero per segment; the
+              other speaker's mouth stays closed)
+            - hstack composite via numpy (half_a + half_b → 1080x960)
+            - master audio = either pre-built (BGM-mixed) combined.mp3
+              OR concat the segment mp3s on-the-fly with pre_pause
+              silences
+
+          Wired into POST /api/avatar/dual-lipsync via the existing
+          `use_procedural_lipsync` field added to DualLipsyncRequest.
+          On procedural failure, transparently falls back to MH so
+          the endpoint never breaks.
+
+          Local smoke verified:
+            - 39s split-screen MP4 in 9s wall-clock (was 60-120s on MH)
+            - 1080x960 H.264+AAC, 1.27 MB
+            - Gemini Vision: cartoon faces preserved on both sides ✓,
+              mouth-takes-turns logic correct ✓, 6/10 polish (same
+              tier as solo procedural).
+
+          Side effect: dual lip_sync_dual feature gate now bypassed
+          when use_procedural=True (free users can use dual cartoon
+          mode without the Pro upsell — premium upsell happens via
+          presets + watermark + 480p cap instead).
+
+          Frontend dual-mode body now sends use_procedural_lipsync:
+          true so cartoon dual avatars never call MagicHour.
+
   - task: "Session 33 r3 — Voice preview cutoff PERMANENT fix + Solo gender + Voice→Gender derivation + Full-body prompt"
     implemented: true
     working: "NA"

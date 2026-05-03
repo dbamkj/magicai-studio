@@ -1102,6 +1102,14 @@ class DualLipsyncRequest(BaseModel):
     # Round 11 — optional BGM layer (cinematic_epic | devotional |
     # playful | motivational). Mixed under the combined A/B audio at -15dB.
     bgm_style: Optional[str] = None
+    # Session 33 r4 — Procedural cartoon dual lipsync. When true, the
+    # backend skips MagicHour's v1.lip_sync (which costs ~600 credits
+    # per generation AND injects photoreal features onto cartoon
+    # faces) and runs core.dual_mouth_animator locally. Saves credits
+    # and preserves the cartoon look on both speakers.
+    use_procedural_lipsync: Optional[bool] = False
+    # Phase-1 cinematic preset — same semantics as the solo endpoint.
+    preset_id: Optional[str] = None
 
 
 @router.post("/dual-lipsync")
@@ -1152,7 +1160,15 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
         except Exception:
             pass
 
-    user, cost = await preflight_and_reserve(request, job_type='lipsync', feature='lip_sync_dual')
+    # Session 33 r4 — Procedural dual lipsync runs entirely locally
+    # with no MagicHour cost, so it shouldn't trigger the
+    # `lip_sync_dual` premium feature gate. This is also our cartoon
+    # default flow — gating it would block the main UX.
+    is_procedural = bool(getattr(req, 'use_procedural_lipsync', False))
+    user, cost = await preflight_and_reserve(
+        request, job_type='lipsync',
+        feature=None if is_procedural else 'lip_sync_dual',
+    )
 
     p = VideoProject(
         name=f"DualAvatar_{datetime.now(timezone.utc).strftime('%H%M%S')}",
@@ -1280,57 +1296,123 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
 
             # 4) Build the split-screen A|B PNG and loop it for duration.
             await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 55}})
-            split_img = UPLOAD_DIR / f"dual_{p.id[:8]}_split.png"
-            # Each half = 540x960 portrait → side by side = 1080x960 (16:9 range).
-            subprocess.run([
-                "/usr/bin/ffmpeg", "-y",
-                "-i", str(img_a), "-i", str(img_b),
-                "-filter_complex",
-                "[0:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960[a];"
-                "[1:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960[b];"
-                "[a][b]hstack=inputs=2",
-                "-frames:v", "1", str(split_img),
-            ], capture_output=True, timeout=40)
-            if not split_img.exists():
-                raise Exception("Split-screen image creation failed")
 
-            still_v = UPLOAD_DIR / f"dual_{p.id[:8]}_still.mp4"
-            subprocess.run([
-                "/usr/bin/ffmpeg", "-y", "-loop", "1", "-i", str(split_img),
-                "-c:v", "libx264", "-t", str(audio_dur + 1),
-                "-pix_fmt", "yuv420p", "-r", "25",
-                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                str(still_v),
-            ], capture_output=True, timeout=90)
-            if not still_v.exists():
-                raise Exception("Still video creation failed")
+            # Session 33 r4 — PROCEDURAL DUAL LIPSYNC PATH.
+            # When use_procedural_lipsync=True (default for dual cartoon
+            # mode in avatar-studio), skip MagicHour's v1.lip_sync
+            # (~600 credits + uncanny photoreal injection on cartoons)
+            # and run our local OpenCV+ffmpeg dual mouth animator.
+            use_procedural = bool(getattr(req, "use_procedural_lipsync", False))
+            if use_procedural:
+                try:
+                    from core.dual_mouth_animator import animate_dual_cartoon
+                    # Build the segments list expected by the animator.
+                    # Audio paths are the per-turn TTS we already
+                    # generated above (seg_paths order = [silence?,
+                    # tts0, silence?, tts1, ...]). We need the
+                    # per-segment metadata keyed by speaker, so
+                    # rebuild from `segments` + the corresponding
+                    # tts file name pattern.
+                    procedural_segs = []
+                    tts_index = 0
+                    for spk, txt, pre_pause in segments:
+                        out_mp3 = UPLOAD_DIR / f"dual_{p.id[:8]}_{tts_index}_{spk}.mp3"
+                        if not out_mp3.exists():
+                            log.warning("dual: missing tts segment %s", out_mp3)
+                            tts_index += 1
+                            continue
+                        # Probe duration so the animator can place the
+                        # speaker's envelope at the right offset.
+                        dr = subprocess.run([
+                            "/usr/bin/ffprobe", "-v", "error",
+                            "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1", str(out_mp3),
+                        ], capture_output=True, timeout=15)
+                        seg_dur = float((dr.stdout.decode() or "0").strip() or "0.0")
+                        procedural_segs.append({
+                            "speaker": spk,
+                            "audio_path": str(out_mp3),
+                            "duration": seg_dur,
+                            "pre_pause": pre_pause,
+                        })
+                        tts_index += 1
 
-            # 5) Submit to MH lipsync (single call on combined image + combined audio)
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 65}})
-            mh = MagicHourClient(token=MAGIC_HOUR_API_KEY)
-            mh_video = upload_to_magic_hour(mh, str(still_v), "video")
-            mh_audio = upload_to_magic_hour(mh, str(combined), "audio")
-            ls = await mh_create_lipsync_with_retry(
-                mh,
-                f"DualAvatar_{p.id[:8]}",
-                {"video_source": "file", "video_file_path": mh_video, "audio_file_path": mh_audio},
-                0.0, audio_dur,
-            )
-            ls_url = await mh_poll_video(
-                mh, ls.id, max_wait=600,
-                on_progress=lambda pr: db.video_projects.update_one(
-                    {"id": p.id}, {"$set": {"progress": 65 + int(pr / 100 * 30)}}
-                ),
-            )
-            if not ls_url:
-                raise Exception("Dual lipsync timed out")
+                    proc_out = UPLOAD_DIR / f"dual_{p.id[:8]}_proc.mp4"
+                    import asyncio as _asyncio
+                    ok = await _asyncio.to_thread(
+                        animate_dual_cartoon,
+                        img_a, img_b, procedural_segs, proc_out,
+                        25,                # fps
+                        (540, 960),        # half-frame size
+                        combined,          # bgm-mixed master audio (already padded + with BGM)
+                        90.0,              # max_duration safety
+                    )
+                    if ok and proc_out.exists() and proc_out.stat().st_size > 4096:
+                        log.info("dual: procedural lipsync OK → %s (saved ~600 credits)",
+                                 proc_out.name)
+                        ls_local = proc_out
+                        await db.video_projects.update_one(
+                            {"id": p.id}, {"$set": {"progress": 92}}
+                        )
+                    else:
+                        log.warning("dual: procedural lipsync failed — falling back to MagicHour")
+                        use_procedural = False
+                except Exception as _proc_err:
+                    log.warning("dual: procedural exception — falling back to MH: %s", _proc_err)
+                    use_procedural = False
 
-            # 6) Download result
-            ls_local = UPLOAD_DIR / f"dual_{p.id[:8]}_ls.mp4"
-            import httpx
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), follow_redirects=True) as c:
-                resp = await c.get(ls_url)
-                with open(ls_local, "wb") as f: f.write(resp.content)
+            if not use_procedural:
+                split_img = UPLOAD_DIR / f"dual_{p.id[:8]}_split.png"
+                # Each half = 540x960 portrait → side by side = 1080x960 (16:9 range).
+                subprocess.run([
+                    "/usr/bin/ffmpeg", "-y",
+                    "-i", str(img_a), "-i", str(img_b),
+                    "-filter_complex",
+                    "[0:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960[a];"
+                    "[1:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960[b];"
+                    "[a][b]hstack=inputs=2",
+                    "-frames:v", "1", str(split_img),
+                ], capture_output=True, timeout=40)
+                if not split_img.exists():
+                    raise Exception("Split-screen image creation failed")
+
+                still_v = UPLOAD_DIR / f"dual_{p.id[:8]}_still.mp4"
+                subprocess.run([
+                    "/usr/bin/ffmpeg", "-y", "-loop", "1", "-i", str(split_img),
+                    "-c:v", "libx264", "-t", str(audio_dur + 1),
+                    "-pix_fmt", "yuv420p", "-r", "25",
+                    "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                    str(still_v),
+                ], capture_output=True, timeout=90)
+                if not still_v.exists():
+                    raise Exception("Still video creation failed")
+
+                # 5) Submit to MH lipsync (single call on combined image + combined audio)
+                await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 65}})
+                mh = MagicHourClient(token=MAGIC_HOUR_API_KEY)
+                mh_video = upload_to_magic_hour(mh, str(still_v), "video")
+                mh_audio = upload_to_magic_hour(mh, str(combined), "audio")
+                ls = await mh_create_lipsync_with_retry(
+                    mh,
+                    f"DualAvatar_{p.id[:8]}",
+                    {"video_source": "file", "video_file_path": mh_video, "audio_file_path": mh_audio},
+                    0.0, audio_dur,
+                )
+                ls_url = await mh_poll_video(
+                    mh, ls.id, max_wait=600,
+                    on_progress=lambda pr: db.video_projects.update_one(
+                        {"id": p.id}, {"$set": {"progress": 65 + int(pr / 100 * 30)}}
+                    ),
+                )
+                if not ls_url:
+                    raise Exception("Dual lipsync timed out")
+
+                # 6) Download result
+                ls_local = UPLOAD_DIR / f"dual_{p.id[:8]}_ls.mp4"
+                import httpx
+                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), follow_redirects=True) as c:
+                    resp = await c.get(ls_url)
+                    with open(ls_local, "wb") as f: f.write(resp.content)
 
             result_url = f"/api/serve-file/{ls_local.name}"
             await db.video_projects.update_one({"id": p.id}, {"$set": {
