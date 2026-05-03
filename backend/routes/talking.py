@@ -220,9 +220,19 @@ async def create_talking_avatar(
         detected_intensity = float(emo_res.get("intensity") or 0.0)
         if detected_emotion != "neutral" and detected_intensity > 0.0:
             vp = _emo_voice(detected_emotion, detected_intensity)
-            if req.voice_rate is None or req.voice_rate == 0.0:
+            # Treat 0 / "0.0" / "+0%" / empty as "no override" so the
+            # detected emotion fills the slot. Anything else the user
+            # explicitly sent (e.g. "+15%") wins.
+            def _is_blank_rate(v):
+                if v is None or v == "" or v == 0 or v == 0.0:
+                    return True
+                s = str(v).strip().lower().rstrip("%")
+                if s in ("", "+0", "0", "0.0"):
+                    return True
+                return False
+            if _is_blank_rate(req.voice_rate):
                 req.voice_rate = vp["voice_rate"]
-            if not req.voice_pitch:
+            if not req.voice_pitch or str(req.voice_pitch).strip() in ("", "+0Hz", "+0hz", "0Hz"):
                 req.voice_pitch = vp["voice_pitch"]
             log.info(
                 "talking: emotion=%s intensity=%.2f source=%s -> rate=%s pitch=%s",

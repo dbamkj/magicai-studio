@@ -249,38 +249,45 @@ async def detect_emotion(text: str, language: Optional[str] = None) -> Dict[str,
 
 # ───────── Emotion → Voice rate/pitch (used by talking + dual TTS) ─────────
 
-# Each entry is (rate_delta, pitch_token). rate_delta is added to the
-# user's existing rate (or applied as-is if none was set). pitch_token
-# is an Edge-TTS rate-shift like "+10Hz" / "-15Hz" — we only set it
-# when there's a clear semantic reason to.
+# Each entry is (rate_pct, pitch_token). rate_pct is an integer
+# percentage (e.g. -10 = 10% slower) at full intensity 1.0; we scale
+# linearly by intensity and emit the edge-tts string format
+# ("+N%" / "-N%"). pitch_token is an Edge-TTS pitch shift like
+# "+10Hz" / "-15Hz" — we only set it when there's a clear semantic reason.
 _VOICE_PARAMS = {
-    "happy":         (0.06,  "+5Hz"),
-    "sad":           (-0.12, "-5Hz"),
-    "calm":          (-0.08, "+0Hz"),
-    "playful":       (0.05,  "+10Hz"),
-    "confident":     (0.02,  "+0Hz"),
-    "excited":       (0.10,  "+10Hz"),
-    "motivational":  (0.04,  "+5Hz"),
-    "fierce":        (0.06,  "-5Hz"),  # faster + slightly lower
-    "devotional":    (-0.05, "+0Hz"),  # slower, reverent
-    "neutral":       (0.00,  "+0Hz"),
+    "happy":         (6,   "+5Hz"),
+    "sad":           (-12, "-5Hz"),
+    "calm":          (-8,  "+0Hz"),
+    "playful":       (5,   "+10Hz"),
+    "confident":     (2,   "+0Hz"),
+    "excited":       (10,  "+10Hz"),
+    "motivational":  (4,   "+5Hz"),
+    "fierce":        (6,   "-5Hz"),  # faster + slightly lower
+    "devotional":    (-5,  "+0Hz"),  # slower, reverent
+    "neutral":       (0,   "+0Hz"),
 }
 
 
 def emotion_to_voice_params(emotion: str, intensity: float = 1.0) -> Dict[str, Any]:
     """Translate an emotion + intensity into edge-tts rate/pitch tweaks.
 
-    intensity ∈ [0,1] scales the magnitude — at 0.5 we apply half the
-    delta, at 1.0 the full delta. Returns dict with keys
-    {voice_rate, voice_pitch} that can be passed straight into
-    generate_tts_audio() in server.py.
+    Returns dict with keys {voice_rate, voice_pitch} where voice_rate
+    is an edge-tts percent string (e.g. "+6%" / "-12%") and
+    voice_pitch is a Hz shift string. These slot directly into
+    server.generate_tts_audio() which expects strings.
+
+    intensity ∈ [0,1] scales the magnitude — at 0.5 we emit half the
+    delta, at 1.0 the full delta.
     """
     if emotion not in _VOICE_PARAMS:
         emotion = "neutral"
-    rate_delta, pitch = _VOICE_PARAMS[emotion]
+    rate_pct, pitch = _VOICE_PARAMS[emotion]
     intensity = max(0.0, min(1.0, float(intensity or 1.0)))
-    rate_delta = round(rate_delta * intensity, 3)
-    return {"voice_rate": rate_delta, "voice_pitch": pitch}
+    # Round to nearest int for clean strings; edge-tts accepts decimals
+    # but ints look cleaner in logs.
+    scaled = int(round(rate_pct * intensity))
+    rate_str = f"{scaled:+d}%"  # always signed: "+6%" / "-5%" / "+0%"
+    return {"voice_rate": rate_str, "voice_pitch": pitch}
 
 
 # ───────── Emotion → Face tint (used by mouth_animator overlays) ─────────

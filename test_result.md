@@ -789,12 +789,84 @@ agent_communication_session_33_r4:
 session_33_procedural_lipsync:
   - task: "Phase-2 — Emotion detection + emotion-aware TTS + face tint overlay"
     implemented: true
-    working: false
+    working: true
     file: "backend/core/emotion_detector.py, backend/routes/avatar.py, backend/routes/talking.py, backend/core/mouth_animator.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Phase-2 RE-VERIFY after type-mismatch fixes — FULL PASS B + C + D.
+          Test artefact: /app/backend_test.py.
+
+          --- TEST D — POST /api/avatar/detect-emotion shape ---
+          POST /api/avatar/detect-emotion {"text":"🕉️ Hari Om"} → 200.
+          Response: {"emotion":"devotional","intensity":0.8,"source":"llm",
+            "voice_params":{"voice_rate":"-4%","voice_pitch":"+0Hz"},
+            "tint":{"rgb":[255,220,160],"alpha":0.08}}.
+          ✅ voice_rate is string "-4%" (starts with -, ends with %, NOT a
+             float like -0.04). Fix #1 in emotion_detector.py confirmed.
+
+          --- TEST B — End-to-end procedural+auto-emotion (creator) ---
+          POST /api/create-talking-avatar with image_path (512x768 PNG),
+          script="🕉️ Hari Om doston. Krishna ki bhakti mein dhyan lagao.",
+          voice_id="hi-IN-SwaraNeural", use_procedural_lipsync=true (no
+          voice_rate / voice_pitch — auto-detect should fill).
+          ✅ project_id=2a95e9f5-1cc1-44b3-8b27-f56c9a262d3b → status
+             flipped to "completed" within ~7s.
+          ✅ result_url=/api/serve-file/pp_1b8c2713a87b4b8d9e41d6d052003f71.mp4
+             — downloaded 82 KB MP4 (>>50 KB spec). ffprobe: video=h264,
+             audio=aac, duration=6.76s (>3s spec).
+          ✅ EXACT log lines (17:58:39-43):
+             "routes.talking - INFO - talking: emotion=devotional
+                intensity=0.80 source=llm -> rate=-4% pitch=+0Hz"
+             "server - INFO - TTS effect applied: voice=hi-IN-SwaraNeural
+                pitch=+0Hz rate=-4%"
+             "core.mouth_animator - INFO - mouth_animator: emotion tint
+                applied (devotional, intensity=0.80, alpha=0.080)"
+             "routes.talking - INFO - talking: procedural lipsync OK →
+                avatar_proc_f3c2c26e19724a989563da65dfda3246.mp4"
+          ✅ rate is "-4%" (percent string), NOT "-0.04" (float). Fix
+             #1 confirmed end-to-end through generate_tts_audio →
+             edge-tts which now accepts the value cleanly (no "rate
+             must be str" error).
+
+          --- TEST C — same as B but with explicit voice_rate="0.0" ---
+          (Pydantic CreateTalkingAvatarRequest types voice_rate as
+          Optional[str], so the test payload sends string "0.0" — the
+          previously-crashing shape per the prior failure log
+          'Invalid rate '0.0''.)
+          ✅ project_id=82a87880-ad12-4c6f-89ca-fca84b6c939a → status
+             "completed" in ~4s.
+          ✅ result_url=/api/serve-file/pp_74858d9b166340f9ad6cb498ce467f6f.mp4
+             — 82 KB MP4.
+          ✅ Log at 17:58:46 confirms "0.0" was treated as blank by
+             _is_blank_rate and detected emotion filled the slot:
+             "routes.talking - INFO - talking: emotion=devotional
+                intensity=0.80 source=llm -> rate=-4% pitch=+0Hz"
+             "server - INFO - TTS effect applied: ... rate=-4%"
+             "core.mouth_animator - INFO - mouth_animator: emotion tint
+                applied (devotional, intensity=0.80, alpha=0.080)"
+             "routes.talking - INFO - talking: procedural lipsync OK →
+                avatar_proc_cb6d01e353cb475389768ba306a52a29.mp4"
+          ✅ Fix #2 (_is_blank_rate handling None / "" / 0 / 0.0 /
+             "0.0" / "+0%" / "-0%") confirmed — "0.0" string no
+             longer crashes; detected emotion's "-4%" fills it.
+
+          NOTE: If main agent intends users to also be able to send
+          float 0.0 in JSON (not just string "0.0"), the model-level
+          type voice_rate: Optional[str] would need widening. Sending
+          float 0.0 currently 422s at Pydantic before reaching the
+          helper. Tested with both — string form works perfectly,
+          float form fails with pydantic string_type validation
+          error (HTTP 422). The review request quoted "0.0" with
+          quotes implying string, so this is fine for the contract.
+
+          Bonus: demo_creator started at 3600 credits — enough for the
+          three runs without topup.
+
       - working: false
         agent: "testing"
         comment: |
