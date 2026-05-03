@@ -1,317 +1,301 @@
-"""Session 25 — Phase-B project CRUD refactor + b3 batch char-gen + dual-lipsync validation."""
-import os, sys, time, json, hashlib, base64
-import requests
-from pathlib import Path
+#!/usr/bin/env python3
+"""Session 33 backend tests."""
+import asyncio
+import base64
+import io
+import time
+import subprocess
 
-BASE = "https://creative-plan-engine.preview.emergentagent.com"
-API = BASE + "/api"
-CREDS = {"email": "demo_creator@test.com", "password": "Test@123"}
-IMG_1X1 = "/app/backend/uploads/img_b7289365-32de-44ae-9499-c7d8f3caf62e.png"
-EXISTING_PROJECT_ID = "df6a5d11-0c3b-4406-8316-0eaae7f04c81"
+import httpx
+from PIL import Image, ImageDraw
 
-PASS=[]; FAIL=[]
+BASE = "https://creative-plan-engine.preview.emergentagent.com/api"
+EMAIL = "demo_creator@test.com"
+PASSWORD = "Test@123"
 
-def ok(name, detail=""):
-    PASS.append(name); print(f"✅ {name}  {detail}")
 
-def bad(name, detail=""):
-    FAIL.append(name); print(f"❌ {name}  {detail}")
+def log(msg):
+    print(msg, flush=True)
 
-def login():
-    r = requests.post(f"{API}/auth/login", json=CREDS, timeout=20)
-    assert r.status_code == 200, f"login failed: {r.status_code} {r.text[:200]}"
-    j = r.json()
-    tok = j.get("token") or j.get("access_token") or j.get("session_token")
-    assert tok, f"no token in login response: {j}"
-    return tok, j
 
-def hdr(tok):
-    return {"Authorization": f"Bearer {tok}"}
+def make_png_bytes(w=512, h=768):
+    img = Image.new("RGB", (w, h), (240, 220, 200))
+    d = ImageDraw.Draw(img)
+    d.ellipse((w*0.20, h*0.18, w*0.80, h*0.65), fill=(245, 215, 180), outline=(80, 60, 50), width=4)
+    d.ellipse((w*0.34, h*0.34, w*0.42, h*0.40), fill=(40, 40, 40))
+    d.ellipse((w*0.58, h*0.34, w*0.66, h*0.40), fill=(40, 40, 40))
+    d.rectangle((w*0.40, h*0.50, w*0.60, h*0.54), fill=(160, 60, 60))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
 
-# ===================== A. Phase-B Projects CRUD =====================
-def test_a_projects():
-    tok, _ = login()
-    H = hdr(tok)
 
-    # A1 GET project valid
-    r = requests.get(f"{API}/project/{EXISTING_PROJECT_ID}", headers=H, timeout=15)
-    if r.status_code == 200 and r.json().get("id") == EXISTING_PROJECT_ID:
-        ok("A1 GET /api/project/{valid}", f"status={r.json().get('status')}")
-    else:
-        bad("A1 GET /api/project/{valid}", f"{r.status_code} {r.text[:200]}")
+def make_jpg_b64(size=384):
+    img = Image.new("RGB", (size, size))
+    for y in range(size):
+        c = (int(40 + y * 0.5), int(80 + y * 0.3), max(0, int(180 - y * 0.3)))
+        for x in range(size):
+            img.putpixel((x, y), c)
+    d = ImageDraw.Draw(img)
+    d.ellipse((size*0.20, size*0.20, size*0.80, size*0.85), fill=(245, 215, 180))
+    d.ellipse((size*0.32, size*0.40, size*0.42, size*0.48), fill=(20, 20, 20))
+    d.ellipse((size*0.58, size*0.40, size*0.68, size*0.48), fill=(20, 20, 20))
+    d.rectangle((size*0.40, size*0.62, size*0.60, size*0.68), fill=(150, 60, 60))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
-    # A2 GET bogus
-    r = requests.get(f"{API}/project/bogus-id-zzz-does-not-exist", headers=H, timeout=15)
-    if r.status_code == 404:
-        ok("A2 GET /api/project/{bogus}→404")
-    else:
-        bad("A2 GET /api/project/{bogus}", f"expected 404 got {r.status_code}")
 
-    # A3 GET versions
-    r = requests.get(f"{API}/project/{EXISTING_PROJECT_ID}/versions", headers=H, timeout=15)
-    if r.status_code == 200:
-        j = r.json()
-        keys = set(j.keys())
-        required = {"parent_id","count","versions"}
-        if required.issubset(keys) and isinstance(j["versions"], list):
-            ok("A3 GET versions", f"parent_id={j['parent_id']} count={j['count']} len={len(j['versions'])}")
-        else:
-            bad("A3 GET versions shape", f"keys={keys}")
-    else:
-        bad("A3 GET versions", f"{r.status_code} {r.text[:200]}")
+async def login(client):
+    r = await client.post(f"{BASE}/auth/login", json={"email": EMAIL, "password": PASSWORD})
+    r.raise_for_status()
+    return r.json()["token"]
 
-    # A4 GET /api/projects (auth)
-    r = requests.get(f"{API}/projects", headers=H, timeout=20)
-    if r.status_code == 200 and isinstance(r.json(), list):
-        ok("A4 GET /api/projects", f"n={len(r.json())}")
-    else:
-        bad("A4 GET /api/projects", f"{r.status_code} {r.text[:200]}")
 
-    # A5 Create then delete
-    # Use upload-image to create a project-less upload — but DELETE requires a project doc.
-    # We'll insert a project by calling create-talking-avatar with bogus input OR use cartoonize which creates a project? 
-    # Simpler: POST /api/avatar/dual-lipsync returns 400 before db insert. Use lipsync w/ dialogues.
-    # Actually use something that creates a project doc quickly:
-    # POST /api/create-image-to-video with uploaded PNG requires upload first.
-    # Let's use upload + create-talking-avatar since we know it works + inserts a project.
-    # Upload a valid image first
-    try:
-        # Use the existing 1x1 PNG — talking-avatar has own dimension guard maybe; easier: upload a bigger image
-        # We can programmatically create a 128x128 PNG via Pillow
+async def upload_image(client, token):
+    png_bytes = make_png_bytes(512, 768)
+    files = {"file": ("avatar.png", png_bytes, "image/png")}
+    r = await client.post(f"{BASE}/upload-image", files=files,
+                          headers={"Authorization": f"Bearer {token}"})
+    r.raise_for_status()
+    return r.json()
+
+
+async def test_a_procedural(client, token):
+    log("\n=== A) create-talking-avatar use_procedural_lipsync=true ===")
+    up = await upload_image(client, token)
+    img_path = up.get("file_path") or up.get("path")
+    log(f"  uploaded: {img_path}")
+    body = {
+        "image_path": img_path,
+        "script": "Namaste doston, aaj ham ek nayi kahani sunne wale hain. Yeh bahut interesting hai.",
+        "voice_id": "hi-IN-SwaraNeural",
+        "aspect_ratio": "9:16",
+        "resolution": "480p",
+        "use_procedural_lipsync": True,
+    }
+    t0 = time.time()
+    r = await client.post(f"{BASE}/create-talking-avatar", json=body,
+                          headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    log(f"  POST status={r.status_code} latency={time.time()-t0:.2f}s")
+    if r.status_code != 200:
+        log(f"  FAIL body: {r.text[:400]}")
+        return False
+    data = r.json()
+    log(f"  resp project_id={data.get('project_id')} status={data.get('status')} credits={data.get('credits_charged')}")
+    pid = data.get("project_id")
+    if not pid or data.get("status") != "processing":
+        return False
+
+    poll_start = time.time()
+    final = None
+    while time.time() - poll_start < 120:
+        await asyncio.sleep(5)
+        rp = await client.get(f"{BASE}/project/{pid}", headers={"Authorization": f"Bearer {token}"})
+        if rp.status_code == 200:
+            pj = rp.json()
+            log(f"  poll t={int(time.time()-poll_start)}s status={pj.get('status')} progress={pj.get('progress')}")
+            if pj.get("status") in ("completed", "failed"):
+                final = pj
+                break
+    if not final or final.get("status") != "completed":
+        log(f"  FAIL: did not complete; final={final}")
+        return False
+    log(f"  COMPLETED in {time.time()-poll_start:.1f}s")
+    result_url = final.get("result_url")
+    log(f"  result_url={result_url}")
+    if not result_url or ".mp4" not in result_url:
+        return False
+
+    full_url = result_url if result_url.startswith("http") else f"https://creative-plan-engine.preview.emergentagent.com{result_url}"
+    rd = await client.get(full_url, timeout=60)
+    log(f"  download status={rd.status_code} ct={rd.headers.get('content-type')} size={len(rd.content)}")
+    if rd.status_code != 200 or len(rd.content) < 10240:
+        return False
+
+    # Logs
+    for f in ("/var/log/supervisor/backend.err.log", "/var/log/supervisor/backend.out.log"):
         try:
-            from PIL import Image
-            import io
-            buf = io.BytesIO()
-            Image.new("RGB", (128, 128), (200, 180, 150)).save(buf, "PNG")
-            buf.seek(0)
-            files = {"file": ("t.png", buf.getvalue(), "image/png")}
-            ur = requests.post(f"{API}/upload-image", headers=H, files=files, timeout=30)
-            up_path = ur.json().get("file_path") if ur.status_code == 200 else None
-        except Exception as _e:
-            up_path = None
+            g = subprocess.run(["grep", "-c", "talking: procedural lipsync OK", f], capture_output=True, text=True)
+            log(f"  log {f}: 'procedural lipsync OK' count={g.stdout.strip()}")
+        except Exception:
+            pass
+    return True
 
-        if up_path:
-            cr = requests.post(f"{API}/create-talking-avatar", headers=H, timeout=30,
-                               json={"image_path": up_path, "script": "Test delete flow", "voice_id": "hi-IN-SwaraNeural"})
-            pid = cr.json().get("project_id") if cr.status_code == 200 else None
-            if pid:
-                dr = requests.delete(f"{API}/project/{pid}", headers=H, timeout=15)
-                if dr.status_code == 200:
-                    ok("A5 DELETE /api/project/{id}", f"created+deleted {pid[:8]}...")
-                else:
-                    bad("A5 DELETE", f"{dr.status_code} {dr.text[:200]}")
-            else:
-                bad("A5 create-talking-avatar", f"{cr.status_code} {cr.text[:200]}")
-        else:
-            bad("A5 upload-image", f"status={ur.status_code}")
-    except Exception as e:
-        bad("A5 create+delete flow", f"{e}")
 
-    # Test DELETE of bogus id → 404
-    dr = requests.delete(f"{API}/project/bogus-xxxxxxxxxxxxxxx", headers=H, timeout=15)
-    if dr.status_code == 404:
-        ok("A5b DELETE bogus→404")
-    else:
-        bad("A5b DELETE bogus", f"expected 404 got {dr.status_code}")
-
-    # A6 download-video with fake url
-    r = requests.get(f"{API}/download-video", params={"url":"https://example.com/test.mp4"}, timeout=30)
-    if r.status_code in (502, 400, 404) and r.status_code != 500:
-        ok("A6 /api/download-video fake url", f"status={r.status_code} (not 500)")
-    else:
-        bad("A6 /api/download-video", f"got {r.status_code}")
-
-# ===================== B. b3 Hybrid batch char-gen =====================
-def test_b_batch_chars():
-    body_ok = {
-        "style_id": "mythological",
-        "slots": [
-            {"role": "A", "gender": "male"},
-            {"role": "A", "gender": "female"},
-            {"role": "B", "gender": "male"},
-            {"role": "B", "gender": "female"},
-        ],
+async def test_a_reg(client, token):
+    log("\n=== A-reg) create-talking-avatar use_procedural_lipsync=false ===")
+    up = await upload_image(client, token)
+    img_path = up.get("file_path") or up.get("path")
+    body = {
+        "image_path": img_path,
+        "script": "Hello, this is a quick MagicHour regression test for talking avatar.",
+        "voice_id": "en-US-JennyNeural",
+        "aspect_ratio": "9:16",
+        "resolution": "480p",
+        "use_procedural_lipsync": False,
     }
-    r = requests.post(f"{API}/avatar/generate-characters-batch", json=body_ok, timeout=30)
-    jobs = None
-    if r.status_code == 200:
-        j = r.json()
-        jobs = j.get("jobs") or []
-        if len(jobs) == 4 and all("job_id" in x and "role" in x and "gender" in x for x in jobs):
-            ok("B1 batch 4 slots → 200 jobs[4]", f"style={j.get('style')} count={j.get('count')}")
-        else:
-            bad("B1 batch shape", f"jobs={jobs}")
-    else:
-        bad("B1 batch 200", f"{r.status_code} {r.text[:200]}")
+    t0 = time.time()
+    r = await client.post(f"{BASE}/create-talking-avatar", json=body,
+                          headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    log(f"  POST status={r.status_code} latency={time.time()-t0:.2f}s")
+    if r.status_code != 200:
+        log(f"  FAIL: {r.text[:300]}")
+        return False
+    d = r.json()
+    log(f"  resp project_id={d.get('project_id')} status={d.get('status')} credits={d.get('credits_charged')}")
+    if d.get("status") != "processing":
+        return False
+    # Wait for MH upload step in background
+    pid = d.get("project_id")
+    await asyncio.sleep(15)
+    rp = await client.get(f"{BASE}/project/{pid}", headers={"Authorization": f"Bearer {token}"})
+    if rp.status_code == 200:
+        pj = rp.json()
+        log(f"  after 15s: status={pj.get('status')} progress={pj.get('progress')}")
+    return True
 
-    # Unknown style
-    r = requests.post(f"{API}/avatar/generate-characters-batch",
-                      json={"style_id":"xyzunknown","slots":[{"role":"A","gender":"male"}]}, timeout=20)
-    if r.status_code == 400:
-        ok("B2 unknown style→400")
-    else:
-        bad("B2 unknown style", f"got {r.status_code}: {r.text[:150]}")
 
-    # Empty slots
-    r = requests.post(f"{API}/avatar/generate-characters-batch",
-                      json={"style_id":"mythological","slots":[]}, timeout=20)
-    if r.status_code == 400:
-        ok("B3 empty slots→400")
-    else:
-        bad("B3 empty slots", f"got {r.status_code}: {r.text[:150]}")
+async def test_b_cartoonize(client, token):
+    log("\n=== B) cartoonize 5x concurrent ===")
+    img_b64 = make_jpg_b64(384)
+    emotions = ["happy", "excited", "confident", "playful", "peaceful"]
 
-    # 7 slots
-    r = requests.post(f"{API}/avatar/generate-characters-batch",
-                      json={"style_id":"mythological","slots":[{"role":"A","gender":"male"}]*7}, timeout=20)
-    if r.status_code == 400:
-        ok("B4 7 slots over limit→400")
-    else:
-        bad("B4 7 slots", f"got {r.status_code}: {r.text[:150]}")
-
-    # Poll first job
-    if jobs:
-        jid = jobs[0]["job_id"]
-        r = requests.get(f"{API}/avatar/jobs/{jid}", timeout=15)
-        if r.status_code == 200:
-            st = r.json().get("status")
-            if st in ("queued","processing","completed","failed"):
-                ok("B5a initial poll", f"job={jid} status={st}")
-            else:
-                bad("B5a poll status", f"status={st}")
-
-            # Wait for completion up to ~90s
-            deadline = time.time() + 120
-            final = None
-            while time.time() < deadline:
-                r2 = requests.get(f"{API}/avatar/jobs/{jid}", timeout=15)
-                if r2.status_code != 200:
-                    break
-                st2 = r2.json().get("status")
-                if st2 in ("completed","failed"):
-                    final = r2.json()
-                    break
-                time.sleep(4)
-            if final and final.get("status") == "completed" and final.get("image_url"):
-                ok("B5b poll → completed", f"image_url={final['image_url']}")
-            elif final and final.get("status") == "failed":
-                bad("B5b job failed", f"err={final.get('error','?')}")
-            else:
-                bad("B5b poll timeout", f"last={final}")
-        else:
-            bad("B5a poll", f"{r.status_code} {r.text[:200]}")
-
-# ===================== C. Dual-lipsync validation =====================
-def test_c_dual_lipsync():
-    tok, _ = login()
-    H = hdr(tok)
-    # Must have image_b_path too → use same 1x1 PNG (it exists, small)
-    base = {
-        "image_a_path": IMG_1X1,
-        "image_b_path": IMG_1X1,
-        "script": "A: hello\nB: hi there",
-        "voice_a_id": "en-US-JennyNeural",
-        "voice_b_id": "en-US-GuyNeural",
-    }
-
-    # C1 Empty script → "Script is required"
-    body = dict(base); body["script"] = ""
-    r = requests.post(f"{API}/avatar/dual-lipsync", json=body, headers=H, timeout=15)
-    if r.status_code == 400 and "script" in (r.text or "").lower():
-        ok("C1 empty script→400", r.text[:120])
-    elif r.status_code == 422:
-        # pydantic min_length=6 catches this first → 422. Acceptable but flag
-        ok("C1 empty script→422 (pydantic min_length)", r.text[:140])
-    else:
-        bad("C1 empty script", f"{r.status_code} {r.text[:200]}")
-
-    # C2 Non-existent image_a
-    body = dict(base); body["image_a_path"] = "/app/backend/uploads/does_not_exist_xyz.png"
-    r = requests.post(f"{API}/avatar/dual-lipsync", json=body, headers=H, timeout=15)
-    if r.status_code == 400 and "image a not found" in (r.text or "").lower():
-        ok("C2 non-existent image_a→400 'Image A not found'")
-    else:
-        bad("C2 non-existent image_a", f"{r.status_code} {r.text[:200]}")
-
-    # C3 1x1 PNG → dimension guard "too small"
-    body = dict(base)  # both images are 1x1
-    r = requests.post(f"{API}/avatar/dual-lipsync", json=body, headers=H, timeout=20)
-    if r.status_code == 400 and "too small" in (r.text or "").lower():
-        ok("C3 1x1 PNG dimension guard→400 'too small'", r.text[:140])
-    else:
-        bad("C3 1x1 PNG dimension guard", f"{r.status_code} {r.text[:200]}")
-
-# ===================== Optional smoke tests =====================
-def test_d_optional_smoke():
-    # D1+D2 avatar/dialogues solo mode cache-busting nonce
-    body1 = {"style_id":"mythological","idea":"Diwali greeting","mode":"solo","nonce":"ROUND9a","count":3,"language":"english"}
-    r1 = requests.post(f"{API}/avatar/dialogues", json=body1, timeout=40)
-    body2 = {**body1, "nonce":"ROUND9b"}
-    r2 = requests.post(f"{API}/avatar/dialogues", json=body2, timeout=40)
-    if r1.status_code == 200 and r2.status_code == 200:
-        # Check monologue format: should be dialogues list
-        d1 = r1.json(); d2 = r2.json()
-        diff = json.dumps(d1.get("dialogues") or d1.get("suggestions") or d1) != json.dumps(d2.get("dialogues") or d2.get("suggestions") or d2)
-        if diff:
-            ok("D1/D2 dialogues solo ROUND9a vs ROUND9b differ", f"src1={d1.get('source')} src2={d2.get('source')}")
-        else:
-            bad("D1/D2 nonce cache-bust", "outputs identical")
-    else:
-        bad("D1/D2 dialogues", f"s1={r1.status_code} s2={r2.status_code}")
-
-    # D3 preview-audio different voices
-    def get_audio(voice_id):
-        r = requests.post(f"{API}/generate-prompts/preview-audio",
-                          json={"text":"Namaste testing", "voice_id": voice_id, "language":"english"}, timeout=30)
-        if r.status_code == 200:
-            return r.content
+    async def fire(i, emo):
+        try:
+            r = await client.post(f"{BASE}/avatar/cartoonize",
+                                  json={"image_b64": img_b64, "style": "pixar", "emotion": emo},
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=30)
+            log(f"  [{i}] emo={emo} -> {r.status_code}")
+            if r.status_code == 200:
+                return r.json().get("job_id")
+        except Exception as e:
+            log(f"  [{i}] exc: {e}")
         return None
-    a1 = get_audio("en-US-AriaNeural")
-    a2 = get_audio("hi-IN-MadhurNeural")
-    if a1 and a2:
-        md1 = hashlib.md5(a1).hexdigest()
-        md2 = hashlib.md5(a2).hexdigest()
-        if md1 != md2:
-            ok("D3 preview-audio voice switch differs", f"aria_md5={md1[:10]} madhur_md5={md2[:10]}")
-        else:
-            bad("D3 preview-audio same md5", f"{md1}")
-    else:
-        bad("D3 preview-audio", f"a1={bool(a1)} a2={bool(a2)}")
 
-    # D4 avatar/suggestions Hindi in Devanagari not Marathi
-    r = requests.post(f"{API}/avatar/suggestions",
-                      json={"style_id":"mythological","emotion":"devotional","language":"hindi"}, timeout=30)
+    job_ids = await asyncio.gather(*[fire(i, e) for i, e in enumerate(emotions)])
+    job_ids = [j for j in job_ids if j]
+    log(f"  jobs: {len(job_ids)}/5: {job_ids}")
+    if len(job_ids) != 5:
+        return False
+
+    final = {}
+    poll_start = time.time()
+    while time.time() - poll_start < 150 and len(final) < 5:
+        await asyncio.sleep(3)
+        for jid in job_ids:
+            if jid in final:
+                continue
+            try:
+                r = await client.get(f"{BASE}/avatar/jobs/{jid}", timeout=20)
+                if r.status_code == 200:
+                    st = r.json().get("status")
+                    if st in ("completed", "failed"):
+                        final[jid] = st
+                        log(f"  {jid}={st} t={int(time.time()-poll_start)}s")
+            except Exception:
+                pass
+
+    completed = sum(1 for v in final.values() if v == "completed")
+    failed = sum(1 for v in final.values() if v == "failed")
+    pending = 5 - len(final)
+    log(f"  Final: completed={completed} failed={failed} pending={pending}")
+
+    # log markers
+    for f in ("/var/log/supervisor/backend.err.log",):
+        try:
+            g1 = subprocess.run(["grep", "-c", "nano banana OK on attempt", f], capture_output=True, text=True)
+            g2 = subprocess.run(["grep", "-c", "nano banana attempt", f], capture_output=True, text=True)
+            g3 = subprocess.run(["grep", "-c", "nano banana ALL", f], capture_output=True, text=True)
+            log(f"  log: OK_on_attempt={g1.stdout.strip()} attempt_warn={g2.stdout.strip()} ALL_failed={g3.stdout.strip()}")
+        except Exception:
+            pass
+
+    return completed >= 4
+
+
+async def test_c_preview(client):
+    log("\n=== C) generate-prompts/preview-audio ===")
+    cases = [
+        {"text": "Namaste, aaj ka din bahut shubh hai. Hari Om.", "voice_id": "hi-IN-SwaraNeural", "language": "hindi"},
+        {"text": "Hello world, welcome to MagiCAi Studio.", "voice_id": "en-US-JennyNeural", "language": "english"},
+    ]
+    ok = True
+    for case in cases:
+        t0 = time.time()
+        try:
+            r = await client.post(f"{BASE}/generate-prompts/preview-audio", json=case, timeout=60)
+            ct = (r.headers.get("content-type") or "").lower()
+            log(f"  voice={case['voice_id']} status={r.status_code} ct={ct} size={len(r.content)} latency={time.time()-t0:.2f}s")
+            if r.status_code != 200 or "audio/mpeg" not in ct or len(r.content) < 10240:
+                log(f"    FAIL")
+                ok = False
+        except Exception as e:
+            log(f"    EXC: {e}"); ok = False
+    return ok
+
+
+async def test_d_reg(client, token):
+    log("\n=== D) Regression sweep ===")
+    ok = True
+
+    r = await client.get(f"{BASE}/")
+    j = r.json() if r.status_code == 200 else {}
+    ver = j.get("version", "")
+    log(f"  /api/ -> {r.status_code} version={ver}")
+    if r.status_code != 200 or not ver.startswith("7."):
+        ok = False
+
+    r = await client.get(f"{BASE}/avatar/styles")
     if r.status_code == 200:
-        sug = r.json().get("suggestions") or []
-        # Check Devanagari presence + not Marathi-only markers (e.g., "आहे")
-        has_dev = any(any("\u0900" <= c <= "\u097F" for c in s) for s in sug)
-        marathi_markers = ("आहे", "मी", "तुम्ही", "होतो", "करतो")
-        has_marathi = any(any(m in s for m in marathi_markers) for s in sug)
-        if has_dev and not has_marathi:
-            ok("D4 Hindi suggestions Devanagari not Marathi", f"samples={sug[:2]}")
-        elif has_dev and has_marathi:
-            bad("D4 Hindi suggestions look Marathi", f"samples={sug}")
-        else:
-            bad("D4 Hindi suggestions no Devanagari", f"samples={sug}")
+        emos = r.json().get("emotions", [])
+        log(f"  /avatar/styles -> 200 emotions_len={len(emos)}")
+        if len(emos) < 12:
+            ok = False
     else:
-        bad("D4 avatar/suggestions hindi", f"{r.status_code}")
+        log(f"  /avatar/styles -> {r.status_code}"); ok = False
+
+    r = await client.get(f"{BASE}/marketplace/templates?limit=3")
+    log(f"  /marketplace/templates?limit=3 -> {r.status_code}")
+    if r.status_code != 200:
+        ok = False
+
+    r = await client.post(f"{BASE}/auth/login", json={"email": EMAIL, "password": PASSWORD})
+    has_t = "token" in (r.json() if r.status_code == 200 else {})
+    log(f"  /auth/login -> {r.status_code} has_token={has_t}")
+    if r.status_code != 200 or not has_t:
+        ok = False
+
+    r = await client.get(f"{BASE}/mode")
+    if r.status_code == 200:
+        env = r.json().get("env")
+        log(f"  /mode -> 200 env={env}")
+        if env != "BETA":
+            ok = False
+    else:
+        log(f"  /mode -> {r.status_code}"); ok = False
+
+    return ok
+
+
+async def main():
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        token = await login(client)
+        log(f"Logged in, token len={len(token)}")
+
+        d_ok = await test_d_reg(client, token)
+        c_ok = await test_c_preview(client)
+        b_ok = await test_b_cartoonize(client, token)
+        a_ok = await test_a_procedural(client, token)
+        a_reg_ok = await test_a_reg(client, token)
+
+    log("\n========== SUMMARY ==========")
+    log(f"  A) procedural lipsync: {'PASS' if a_ok else 'FAIL'}")
+    log(f"  A-reg) MH path request: {'PASS' if a_reg_ok else 'FAIL'}")
+    log(f"  B) cartoonize 5x: {'PASS' if b_ok else 'FAIL'}")
+    log(f"  C) preview-audio: {'PASS' if c_ok else 'FAIL'}")
+    log(f"  D) regression: {'PASS' if d_ok else 'FAIL'}")
 
 
 if __name__ == "__main__":
-    print(f"\n=== Base: {BASE} ===\n")
-    print("\n--- A. Projects CRUD ---")
-    try: test_a_projects()
-    except Exception as e: bad("A exception", str(e))
-    print("\n--- B. b3 Hybrid batch char-gen ---")
-    try: test_b_batch_chars()
-    except Exception as e: bad("B exception", str(e))
-    print("\n--- C. Dual-lipsync validation ---")
-    try: test_c_dual_lipsync()
-    except Exception as e: bad("C exception", str(e))
-    print("\n--- D. Optional smoke ---")
-    try: test_d_optional_smoke()
-    except Exception as e: bad("D exception", str(e))
-    print(f"\n=== RESULT: PASS={len(PASS)}  FAIL={len(FAIL)} ===")
-    if FAIL:
-        print("\nFAIL cases:")
-        for f in FAIL: print("  -", f)
-    sys.exit(0 if not FAIL else 1)
+    asyncio.run(main())

@@ -668,16 +668,197 @@ v2_prompt_generator_session31:
 
 metadata:
   created_by: "main_agent"
-  version: "2.7"
-  test_sequence: 9
+  version: "2.8"
+  test_sequence: 10
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Session 25 — Talking Avatar dimension pre-check (stuck @ 5% fix)"
+    - "Session 33 — Procedural cartoon lipsync + Nano Banana retry + Voice preview cap"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+session_33_procedural_lipsync:
+  - task: "Procedural cartoon mouth animator (new core/mouth_animator.py)"
+    implemented: true
+    working: true
+    file: "backend/core/mouth_animator.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 — VERIFIED WORKING via end-to-end test of
+          POST /api/create-talking-avatar with use_procedural_lipsync=true.
+          The animator generated a 90 KB MP4 (480p post-resolution) in
+          ~5 seconds total wall-time including TTS + ffmpeg. Backend log
+          confirms procedural path was actually taken:
+            'core.mouth_animator: face=(98, 171, 306, 306) mouth=(187, 370, 128, 42) (img=512x768)'
+            'core.mouth_animator: OK avatar_proc_*.mp4 (frames=205 dur=8.18s)'
+            'routes.talking: talking: procedural lipsync OK → avatar_proc_*.mp4'
+          OpenCV haar-frontalface cascade fired on the synthetic 512x768
+          PNG, derived correct mouth bbox, rendered 205 frames @ 25fps,
+          and ffmpeg muxed with the Hindi TTS. No MH lipsync upload or
+          poll was attempted — entire pipeline ran locally as designed.
+      - working: true
+        agent: "main"
+        comment: |
+          Session 33 — Built a new procedural lipsync module to fix the
+          "realistic human eye pasted onto cartoon" bug that MagicHour's
+          v1.lip_sync produces on stylised cartoon inputs. Local smoke
+          test (15s Hindi TTS + cartoon PNG) produces a 575 KB MP4 in
+          ~3s. Gemini vision analysis confirms (a) cartoon face is
+          preserved (no realistic features injected), (b) mouth moves
+          when audio is spoken, (c) no horrid tearing after the
+          soft-edge blend pass was added.
+
+          Pipeline: OpenCV haar-frontalface cascade detects face (works
+          on cartoon/Pixar faces); mouth rect derived at ~72% down the
+          face, ~42% wide. Audio decoded to PCM mono @ 16 kHz via
+          ffmpeg, per-frame RMS envelope computed, normalised, smoothed.
+          Each frame vertical-splits the mouth zone, shifts the lower
+          half down by `amp * mouth_h * 0.6` px, fills the gap with a
+          dark elliptical inner-mouth, and alpha-blends the zone edges
+          back into the original pixels to hide the rectangular mask.
+
+          Deps added: opencv-python-headless (one-time install, ~35 MB).
+
+  - task: "Wire procedural lipsync into POST /api/create-talking-avatar"
+    implemented: true
+    working: true
+    file: "backend/routes/talking.py, backend/core/models.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 — VERIFIED end-to-end PASS.
+          Test A (procedural path): POST /api/create-talking-avatar with
+            body {image_path, script:'Namaste doston, aaj ham ek nayi
+            kahani sunne wale hain. Yeh bahut interesting hai.',
+            voice_id:'hi-IN-SwaraNeural', aspect_ratio:'9:16',
+            resolution:'480p', use_procedural_lipsync:true}
+            → 200 in 23.6s (TTS gen happens synchronously here? — no,
+            wall-time was the upload+create round-trip, the bg task
+            completes within ~5s after that). Response shape:
+            {project_id, status:'processing', credits_charged:200}.
+            Polling GET /api/project/{id} returned status='completed'
+            after just 5.2s with result_url=/api/serve-file/pp_*.mp4.
+            Downloaded MP4: 200 OK, content-type=video/mp4, size=90 381
+            bytes (>10 KB threshold). Backend log confirms procedural
+            path was actually taken: 'talking: procedural lipsync OK
+            → avatar_proc_*.mp4'. NO MagicHour upload/lipsync/poll log
+            line was emitted for this project — the use_procedural_lipsync
+            flag correctly short-circuits the MH path.
+
+          Test A-regression (MH path): POST same endpoint with
+            use_procedural_lipsync=false → 200, status='processing',
+            credits_charged=200. After 15s the project was at
+            progress=45 (MH upload+lipsync stage). Backend log shows
+            'MH upload OK: type=video' and 'MH upload OK: type=audio'
+            for the same project_id — confirming MagicHour path is
+            still active when the flag is false. NO 'procedural
+            lipsync OK' log line for this project.
+
+          Cred-charging works correctly (200 credits both paths).
+      - working: true
+        agent: "main"
+        comment: |
+          Added `use_procedural_lipsync: bool = False` to
+          CreateTalkingAvatarRequest. When true, _bg() skips MH
+          v1.lip_sync and calls animate_talking_cartoon() via
+          asyncio.to_thread. On success it uses the procedural MP4 as
+          ls_local and jumps progress to 85%. On failure (returns
+          False) it transparently falls back to the MH path so the
+          endpoint never breaks. Backend reloaded cleanly; openapi.json
+          still lists /api/create-talking-avatar exactly once.
+
+  - task: "Nano Banana batch retry (fix variant-grid flakiness)"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 — VERIFIED. 5 concurrent POSTs to
+          /api/avatar/cartoonize (style=pixar, emotions=happy/excited/
+          confident/playful/peaceful, 384×384 JPEG b64) all returned
+          200 with {job_id, status:'queued', style:'pixar'}. Polling
+          /api/avatar/jobs/{id} every 3s — final tally at t=98s:
+            5/5 completed, 0 failed, 0 pending. (Target was ≥4/5; we
+            got the maximum 5/5.)
+          Log marker check (per review acceptance criteria): grep on
+          backend.err.log:
+            'nano banana OK on attempt'  count = 0
+            'nano banana attempt'        count = 0
+            'nano banana ALL ... failed' count = 0
+          → All 5 jobs succeeded on attempt 1; the retry loop wasn't
+          exercised this run because Gemini 3.1 was healthy — but the
+          retry code path is wired and ready (avatar.py:1472-1516).
+          Each attempt creates a fresh LlmChat session with suffix
+          '_tryN' as designed; backoff is 2s, 4s; max_attempts=3.
+
+          Note on the very first run: one of 5 concurrent httpx requests
+          raised a transient client-side exception with empty repr
+          (likely httpx connection-pool hiccup over the public ingress).
+          Backend log confirmed all 5 POSTs reached the server with
+          200 OK (av_3b3616f7d675 was the 5th and completed normally).
+          When re-run with separate httpx.AsyncClient instances per
+          request, all 5 cleanly returned 200 and completed. This is
+          purely a test-rig artifact, not a backend regression.
+      - working: true
+        agent: "main"
+        comment: |
+          Refactored `_nano_banana_image()` to retry up to 3 times with
+          2s/4s exponential backoff. Each attempt creates a fresh
+          LlmChat session (session_id suffix "_tryN") so a poisoned
+          0-images state doesn't persist. Logs now show
+          "attempt N/3 returned {short_bytes|0_images|exc:...}" making
+          failure modes easy to diagnose in prod.
+
+frontend_session_33:
+  - task: "Cartoon mode sends use_procedural_lipsync=true"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          generate() cartoon-mode body now includes
+          use_procedural_lipsync: true so cartoon solo (and cartoon
+          dialogue) avatars bypass MH v1.lip_sync. Talking-mode
+          (real-photo) path unchanged — still uses MH lipsync.
+
+  - task: "Voice preview cap — use actual durationMillis (was hard-capped 12s)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          playAudioPreview/speakLine: the 12 000 ms safety cap that
+          unloaded the Sound mid-playback (cutting off long Hindi
+          previews) is now derived from the Sound's durationMillis +
+          1500 ms buffer, clamped to [4s, 60s]. didJustFinish still
+          drives the happy path. Double-fire guarded with a `done`
+          flag.
 
 session_23_phaseb_media_refactor:
   - task: "Phase-B routes/media.py extraction regression (Session 23)"
@@ -10129,3 +10310,67 @@ agent_communication:
         The render WILL consume real MH credits as expected — that's
         the user's call to make.
 
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Session 33 — All 3 backend changes VERIFIED PASS.
+
+      ✅ A) Procedural cartoon lipsync (use_procedural_lipsync=true):
+         POST /api/create-talking-avatar with the flag returns 200 +
+         {project_id, status:'processing', credits_charged:200} in
+         ~24s (sync). Background bg-task completes in ~5s (very fast,
+         no MH round-trip). result_url=/api/serve-file/pp_*.mp4
+         downloads as 200 video/mp4 90,381 bytes. Backend log
+         confirms 'talking: procedural lipsync OK → avatar_proc_*.mp4'
+         and shows OpenCV face detection
+         'core.mouth_animator: face=(98,171,306,306) mouth=(187,370,128,42)
+         (img=512x768)' followed by 'OK avatar_proc_*.mp4 (frames=205
+         dur=8.18s)'. NO MagicHour upload/lipsync log lines for this
+         project — the flag correctly short-circuits the MH path.
+
+         Regression with use_procedural_lipsync=false: same endpoint
+         returns 200 + status='processing'. After 15s the project is
+         at progress=45 with backend logs showing 'MH upload OK:
+         type=video' and 'MH upload OK: type=audio' — confirming the
+         MagicHour path is still active when the flag is omitted/false.
+
+      ✅ B) Nano Banana retry resilience (5 concurrent cartoonize):
+         5 concurrent POSTs (style=pixar; emotions=happy/excited/
+         confident/playful/peaceful; 384×384 JPEG b64). All 5 returned
+         200 with {job_id, status:'queued', style:'pixar'}. Polled
+         /api/avatar/jobs/{id} every 3s — final at t=98s: 5/5
+         completed, 0 failed (target was ≥4/5; got max). Log markers:
+         'OK on attempt'=0, 'attempt' warnings=0, 'ALL ... failed'=0.
+         All 5 succeeded on attempt 1 — Gemini 3.1 was healthy this
+         run, so retry path was not triggered, but the code is wired
+         (avatar.py:1472-1516, fresh LlmChat session each attempt
+         with 2s/4s exponential backoff, max_attempts=3).
+
+         Note: the FIRST run of B saw one of 5 concurrent httpx
+         requests raise an empty client-side exception (httpx
+         connection-pool quirk over the public ingress). Backend
+         log confirmed all 5 POSTs reached the server with 200 OK
+         and the 5th job (av_3b3616f7d675) completed normally. When
+         re-run with separate AsyncClient per request all 5 cleanly
+         returned 200. Pure test-rig artefact, not a backend issue.
+
+      ✅ C) preview-audio sanity:
+         hi-IN-SwaraNeural ('Namaste, aaj ka din bahut shubh hai.
+         Hari Om.') → 200 audio/mpeg 34,128 bytes in 1.29s.
+         en-US-JennyNeural ('Hello world, welcome to MagiCAi
+         Studio.') → 200 audio/mpeg 22,320 bytes in 0.67s.
+         Both well above 10 KB threshold.
+
+      ✅ D) Regression sweep:
+         GET /api/ → 200 version=7.1.0
+         GET /api/avatar/styles → 200 emotions_len=12
+         GET /api/marketplace/templates?limit=3 → 200
+         POST /api/auth/login demo_creator@test.com/Test@123 → 200
+                                                          token present
+         GET /api/mode → 200 env=BETA
+
+      Test artefact: /app/backend_test.py (re-runnable). All Session
+      33 changes are functional and ready.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.

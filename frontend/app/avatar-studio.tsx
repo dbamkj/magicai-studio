@@ -378,16 +378,27 @@ export default function AvatarStudioScreen() {
         const b64 = arrayBufferToBase64(r.data);
         const uri = `data:audio/mpeg;base64,${b64}`;
         const sound = new Audio.Sound();
-        await sound.loadAsync({ uri });
+        const loadStatus: any = await sound.loadAsync({ uri });
         audioRef.current = sound;
+        // Session 33 — compute the actual cap from durationMillis (+1.5s
+        // buffer) so long Hindi previews don't get cut off by the
+        // previous hard-coded 12s timeout.
+        const loadedMs = Number(loadStatus?.durationMillis) || 0;
+        const dynamicCapMs = loadedMs > 0
+          ? Math.min(Math.max(loadedMs + 1500, 4000), 60000)
+          : 60000;  // generous 60s fallback if duration unknown
         await sound.playAsync();
         // Wait for playback to finish before moving on (dual-mode chains A→B).
         await new Promise<void>((resolve) => {
-          const sub = sound.setOnPlaybackStatusUpdate((status: any) => {
-            if (status?.didJustFinish) resolve();
+          let done = false;
+          sound.setOnPlaybackStatusUpdate((status: any) => {
+            if (done) return;
+            if (status?.didJustFinish || status?.isLoaded === false) {
+              done = true;
+              resolve();
+            }
           });
-          // Hard safety cap in case status never fires
-          setTimeout(() => { try { sub && (sub as any)?.remove?.(); } catch {} resolve(); }, 12000);
+          setTimeout(() => { if (!done) { done = true; resolve(); } }, dynamicCapMs);
         });
         try { await sound.unloadAsync(); } catch {}
       };
@@ -877,6 +888,11 @@ export default function AvatarStudioScreen() {
         resolution: userIsPro ? '720p' : '480p',
         // Round 11 — optional BGM mood for solo cartoon avatars.
         ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
+        // Session 33 — Procedural cartoon lipsync. Cartoon mode MUST
+        // skip MagicHour's v1.lip_sync (it injects photoreal features
+        // onto cartoons, producing an uncanny realistic eye/mouth
+        // artifact). Backend runs OpenCV+ffmpeg mouth animator instead.
+        use_procedural_lipsync: true,
       } : {
         image_path: cartoonPath,
         script,

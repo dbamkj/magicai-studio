@@ -146,6 +146,13 @@ class CreateTalkingAvatarRequest(BaseModel):
     # core.bgm_catalog and mixes it under the voice at -15dB before
     # sending to MH lipsync. None / empty = no BGM (legacy behavior).
     bgm_style: Optional[str] = None
+    # Session 33 — Procedural cartoon lipsync. When true, the backend skips
+    # MagicHour's v1.lip_sync (which is trained on real photos and
+    # injects photoreal eyes/mouths onto cartoons, producing uncanny
+    # results) and instead runs an OpenCV + ffmpeg procedural mouth
+    # animator. Cartoon Solo mode sends this flag so the cartoon
+    # character's stylised face stays intact.
+    use_procedural_lipsync: Optional[bool] = False
 
 
 # ========== Sprint 6 — Content Intelligence: Templates ==========

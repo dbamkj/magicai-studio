@@ -239,35 +239,71 @@ async def create_talking_avatar(
 
             # 4) Upload to MH + lip-sync
             await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 45}})
-            mh_video = upload_to_magic_hour(mh, str(still_v), "video")
-            mh_audio = upload_to_magic_hour(mh, str(tts_path), "audio")
-            ls = await mh_create_lipsync_with_retry(
-                mh,
-                f"TalkingAvatar_{p.id[:8]}",
-                {"video_source": "file", "video_file_path": mh_video, "audio_file_path": mh_audio},
-                0.0,
-                audio_dur,
-            )
-            ls_url = await mh_poll_video(
-                mh,
-                ls.id,
-                max_wait=600,
-                on_progress=lambda pr: db.video_projects.update_one(
-                    {"id": p.id}, {"$set": {"progress": 45 + int(pr / 100 * 40)}}
-                ),
-            )
-            if not ls_url:
-                raise Exception("Lip-sync timed out")
 
-            # 5) Download MH lip-sync result
-            await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 88}})
-            ls_local = UPLOAD_DIR / f"avatar_ls_{uuid.uuid4().hex}.mp4"
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0), follow_redirects=True,
-            ) as c:
-                resp = await c.get(ls_url)
-                with open(ls_local, "wb") as f:
-                    f.write(resp.content)
+            # Session 33 — PROCEDURAL CARTOON LIPSYNC PATH.
+            # When use_procedural_lipsync=True (set by Cartoon Solo mode
+            # in avatar-studio), skip MagicHour's v1.lip_sync (which
+            # injects photoreal features onto cartoons) and run our
+            # OpenCV+ffmpeg procedural animator instead. This preserves
+            # the cartoon face byte-for-byte except for the animated
+            # mouth region.
+            use_procedural = bool(getattr(req, "use_procedural_lipsync", False))
+            if use_procedural:
+                try:
+                    from core.mouth_animator import animate_talking_cartoon
+                    proc_out = UPLOAD_DIR / f"avatar_proc_{uuid.uuid4().hex}.mp4"
+                    ok = await asyncio.to_thread(
+                        animate_talking_cartoon,
+                        img_abs,
+                        tts_path,
+                        proc_out,
+                        25,  # fps
+                    )
+                    if ok and proc_out.exists() and proc_out.stat().st_size > 2048:
+                        log.info("talking: procedural lipsync OK → %s", proc_out.name)
+                        ls_local = proc_out
+                        # Skip MH upload + poll entirely
+                        await db.video_projects.update_one(
+                            {"id": p.id}, {"$set": {"progress": 85}}
+                        )
+                    else:
+                        log.warning("talking: procedural lipsync failed, falling back to MagicHour")
+                        use_procedural = False
+                except Exception as _proc_err:
+                    log.warning("talking: procedural lipsync exception: %s — falling back to MH",
+                                _proc_err)
+                    use_procedural = False
+
+            if not use_procedural:
+                mh_video = upload_to_magic_hour(mh, str(still_v), "video")
+                mh_audio = upload_to_magic_hour(mh, str(tts_path), "audio")
+                ls = await mh_create_lipsync_with_retry(
+                    mh,
+                    f"TalkingAvatar_{p.id[:8]}",
+                    {"video_source": "file", "video_file_path": mh_video, "audio_file_path": mh_audio},
+                    0.0,
+                    audio_dur,
+                )
+                ls_url = await mh_poll_video(
+                    mh,
+                    ls.id,
+                    max_wait=600,
+                    on_progress=lambda pr: db.video_projects.update_one(
+                        {"id": p.id}, {"$set": {"progress": 45 + int(pr / 100 * 40)}}
+                    ),
+                )
+                if not ls_url:
+                    raise Exception("Lip-sync timed out")
+
+                # 5) Download MH lip-sync result
+                await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 88}})
+                ls_local = UPLOAD_DIR / f"avatar_ls_{uuid.uuid4().hex}.mp4"
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(120.0), follow_redirects=True,
+                ) as c:
+                    resp = await c.get(ls_url)
+                    with open(ls_local, "wb") as f:
+                        f.write(resp.content)
 
             # 6) Optionally apply motion (zoompan) on top of the talking video
             final = ls_local

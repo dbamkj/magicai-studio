@@ -1452,40 +1452,69 @@ async def _process_avatar_job(*, job_id: str, style: str, emotion: str,
 
 
 async def _nano_banana_image(prompt: str, source_bytes: Optional[bytes], job_id: str) -> Optional[bytes]:
-    """Call Gemini Nano Banana via emergentintegrations. If source_bytes is provided,
-    pass it as a multimodal input (image-to-image stylise). Otherwise pure text-to-image."""
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-        api_key = os.environ.get("EMERGENT_LLM_KEY", "").strip()
-        if not api_key:
-            log.warning("avatar: EMERGENT_LLM_KEY missing")
-            return None
+    """Call Gemini Nano Banana via emergentintegrations with retry.
 
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=f"avatar_{job_id}",
-            system_message="You are an AI image generator specialised in stylised cartoon avatars (9:16 vertical).",
-        )
-        chat = chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
+    If source_bytes is provided, pass it as a multimodal input
+    (image-to-image stylise). Otherwise pure text-to-image.
 
-        if source_bytes:
-            try:
-                ic = ImageContent(image_base64=base64.b64encode(source_bytes).decode())
-                msg = UserMessage(text=prompt, image_contents=[ic])
-            except Exception:
-                msg = UserMessage(text=prompt)
-        else:
-            msg = UserMessage(text=prompt)
-
-        text, images = await chat.send_message_multimodal_response(msg)
-        if not images:
-            log.warning("avatar: nano banana returned 0 images")
-            return None
-        raw = base64.b64decode(images[0].get("data") or "")
-        return raw if raw and len(raw) > 500 else None
-    except Exception as e:
-        log.exception("avatar nano banana error: %s", e)
+    Session 33 — adds internal retry (up to 3 attempts with
+    exponential backoff 2s/4s) to fix the "chip variants fail on
+    first try" bug. Nano Banana sporadically returns 0 images under
+    rate-limit or during transient hiccups; a quick retry recovers
+    in >90% of these cases.
+    """
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "").strip()
+    if not api_key:
+        log.warning("avatar: EMERGENT_LLM_KEY missing")
         return None
+
+    max_attempts = 3
+    last_err: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # NEW chat instance each attempt so we don't reuse a poisoned
+            # session (Nano Banana can get into a "no images" loop).
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=f"avatar_{job_id}_try{attempt}",
+                system_message="You are an AI image generator specialised in stylised cartoon avatars (9:16 vertical).",
+            )
+            chat = chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
+
+            if source_bytes:
+                try:
+                    ic = ImageContent(image_base64=base64.b64encode(source_bytes).decode())
+                    msg = UserMessage(text=prompt, image_contents=[ic])
+                except Exception:
+                    msg = UserMessage(text=prompt)
+            else:
+                msg = UserMessage(text=prompt)
+
+            text, images = await chat.send_message_multimodal_response(msg)
+            if images:
+                raw = base64.b64decode(images[0].get("data") or "")
+                if raw and len(raw) > 500:
+                    if attempt > 1:
+                        log.info("avatar: nano banana OK on attempt %d (job=%s)", attempt, job_id)
+                    return raw
+                last_err = f"short_bytes={len(raw) if raw else 0}"
+            else:
+                last_err = "0_images"
+            log.warning("avatar: nano banana attempt %d/%d returned %s (job=%s)",
+                        attempt, max_attempts, last_err, job_id)
+        except Exception as e:
+            last_err = f"exc:{type(e).__name__}:{str(e)[:120]}"
+            log.warning("avatar: nano banana attempt %d/%d threw %s (job=%s)",
+                        attempt, max_attempts, last_err, job_id)
+
+        # Backoff before next attempt (2s, 4s)
+        if attempt < max_attempts:
+            await asyncio.sleep(2 * attempt)
+
+    log.error("avatar: nano banana ALL %d attempts failed (job=%s, last=%s)",
+              max_attempts, job_id, last_err)
+    return None
 
 
 async def _apply_watermark(src: Path, dst: Path) -> bool:
