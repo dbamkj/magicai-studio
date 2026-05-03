@@ -219,6 +219,21 @@ export default function AvatarStudioScreen() {
   const [variantErr, setVariantErr] = useState<string | null>(null);
   const [pickedVariantA, setPickedVariantA] = useState<string | null>(null);
   const [pickedVariantB, setPickedVariantB] = useState<string | null>(null);
+
+  // Round 11 — optional BGM style. null = no BGM (legacy default).
+  // Maps directly to the backend bgm_style field on talking-avatar +
+  // dual-lipsync request bodies. Catalog moods: cinematic_epic |
+  // devotional | playful | motivational.
+  const [bgmStyle, setBgmStyle] = useState<
+    null | 'cinematic_epic' | 'devotional' | 'playful' | 'motivational'
+  >(null);
+  const BGM_OPTIONS: { id: typeof bgmStyle; label: string; icon: any }[] = [
+    { id: null,                 label: 'No BGM',        icon: 'volume-mute-outline' },
+    { id: 'cinematic_epic',     label: 'Cinematic',     icon: 'film-outline' },
+    { id: 'devotional',         label: 'Devotional',    icon: 'leaf-outline' },
+    { id: 'playful',            label: 'Playful',       icon: 'happy-outline' },
+    { id: 'motivational',       label: 'Motivational',  icon: 'flash-outline' },
+  ];
   const [inferBusy, setInferBusy] = useState(false);
   const [genStage, setGenStage] = useState<string>('');
   const [genProgress, setGenProgress] = useState(0);
@@ -717,6 +732,9 @@ export default function AvatarStudioScreen() {
         aspect_ratio: '16:9',
         resolution: userIsPro ? '720p' : '480p',
         style_hint: activeStyle?.id,
+        // Round 11 — optional BGM mood. null → omitted by axios → backend
+        // skips amix step entirely.
+        ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
       };
       const r = await axios.post(`${API}/avatar/dual-lipsync`, body, { timeout: 30000 });
       const pid = r.data?.project_id;
@@ -857,6 +875,8 @@ export default function AvatarStudioScreen() {
         motion: 'ken_burns',
         aspect_ratio: '9:16',
         resolution: userIsPro ? '720p' : '480p',
+        // Round 11 — optional BGM mood for solo cartoon avatars.
+        ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
       } : {
         image_path: cartoonPath,
         script,
@@ -867,6 +887,7 @@ export default function AvatarStudioScreen() {
         motion: tkMotion || 'none',
         aspect_ratio: tkAspect || '9:16',
         resolution: userIsPro ? tkRes : '480p',
+        ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
       };
       const r = await axios.post(`${API}/create-talking-avatar`, body, { timeout: 30000 });
       const pid = r.data?.project_id;
@@ -1442,6 +1463,24 @@ export default function AvatarStudioScreen() {
                     </View>
 
                     <View style={{ height: 16 }} />
+                    {/* Round 11 — BGM chip row (dual mode) */}
+                    <FieldLabel>Background music (optional)</FieldLabel>
+                    <View style={s.bgmRow}>
+                      {BGM_OPTIONS.map((opt) => (
+                        <Pressable
+                          key={String(opt.id)}
+                          onPress={() => setBgmStyle(opt.id as any)}
+                          style={[s.bgmChip, bgmStyle === opt.id && s.bgmChipActive]}
+                        >
+                          <Ionicons name={opt.icon} size={13} color={bgmStyle === opt.id ? '#fff' : '#A855F7'} />
+                          <Text style={[s.bgmChipText, bgmStyle === opt.id && { color: '#fff' }]}>
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={{ height: 12 }} />
+
                     <GradientButton
                       label={generating ? 'Generating split-screen…' : 'Generate Dual Avatar Video'}
                       icon="people"
@@ -1608,6 +1647,24 @@ export default function AvatarStudioScreen() {
 
 
                 <View style={{ height: 20 }} />
+
+                {/* Round 11 — BGM chip row (solo mode) */}
+                <FieldLabel>Background music (optional)</FieldLabel>
+                <View style={s.bgmRow}>
+                  {BGM_OPTIONS.map((opt) => (
+                    <Pressable
+                      key={String(opt.id)}
+                      onPress={() => setBgmStyle(opt.id as any)}
+                      style={[s.bgmChip, bgmStyle === opt.id && s.bgmChipActive]}
+                    >
+                      <Ionicons name={opt.icon} size={13} color={bgmStyle === opt.id ? '#fff' : '#A855F7'} />
+                      <Text style={[s.bgmChipText, bgmStyle === opt.id && { color: '#fff' }]}>
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={{ height: 14 }} />
 
                 {/* Generate CTA */}
                 <GradientButton
@@ -2245,4 +2302,33 @@ const s = StyleSheet.create({
   },
   orLine: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.12)' },
   orText: { color: '#94A3B8', fontSize: 11, fontWeight: '700', letterSpacing: 1 },
+
+  /* Round 11 — BGM chip row */
+  bgmRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  bgmChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(168,85,247,0.4)',
+    backgroundColor: 'rgba(168,85,247,0.08)',
+  },
+  bgmChipActive: {
+    backgroundColor: '#A855F7',
+    borderColor: '#A855F7',
+  },
+  bgmChipText: {
+    color: '#A855F7',
+    fontSize: 11,
+    fontWeight: '700',
+  },
 });

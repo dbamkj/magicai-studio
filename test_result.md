@@ -10073,3 +10073,59 @@ agent_communication:
       lift. Marked for a dedicated refactor session rather than
       mixing with feature work.
 
+
+# ===================================================================
+# SESSION 25 — Round 12: Frontend BGM chip row
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Wired the BGM chip row UI on Avatar Studio Step 5 — appears in
+      BOTH solo cartoon flow AND dual split-screen flow. ~30 LOC of
+      surgical additions to /app/frontend/app/avatar-studio.tsx.
+
+      ✅ State + options
+        • bgmStyle: null | 'cinematic_epic' | 'devotional' | 'playful'
+                    | 'motivational' (default null = no BGM)
+        • BGM_OPTIONS array drives both chip rows; each option has
+          { id, label, icon } so dual + solo render the same UI from
+          one source.
+
+      ✅ Request body integration
+        Both bodies use `...(bgmStyle ? { bgm_style: bgmStyle } : {})`:
+        • dual-lipsync POST body — line ~735
+        • create-talking-avatar POST body — line ~875 (cartoon mode AND
+          talking mode, since legacy talking flow also benefits)
+        Field is OMITTED entirely when null so legacy backend handlers
+        without the field treat it as default behavior.
+
+      ✅ UI placement
+        Both Generate buttons (dual + solo) now have a "Background music
+        (optional)" FieldLabel + horizontal chip row directly above
+        them. Chip styling matches existing app aesthetic:
+        purple-translucent default, solid #A855F7 when active. Each
+        chip carries a relevant Ionicons glyph (mute, film, leaf, happy,
+        flash) so the choice is glance-readable.
+
+      ✅ Verified
+        Web bundle: '200 OK', 'λ Bundled 32ms' / 'Web Bundled 809ms'
+        — fast hot-reload, zero syntax errors. Backend already verified
+        end-to-end in Round 11 (procedural BGMs generated; ffmpeg amix
+        chain mixes voice + BGM with correct duration).
+
+      ⚠️ (b) Real MagicHour render with BGM — DEFERRED to user testing
+        I have NOT triggered a live MagicHour render this session
+        because it costs ~450 MH credits per test and the testing
+        protocol prohibits agents from spending live credits without
+        explicit user opt-in. The flow is now ready for user
+        verification:
+          1. Cartoon → pick a style → enter idea → Solo or Dual
+          2. Pick dialogue, voices, (optional Hindi/English voice
+             filtering visible)
+          3. Step 5 — see "Background music (optional)" with 5 chips
+          4. Tap "Cinematic" or another mood
+          5. Tap Generate Avatar Video / Generate Dual Avatar Video
+          6. Listen for the BGM at -15dB under the voice
+        The render WILL consume real MH credits as expected — that's
+        the user's call to make.
+
