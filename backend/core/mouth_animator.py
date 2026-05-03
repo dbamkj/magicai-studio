@@ -296,8 +296,17 @@ def animate_talking_cartoon(
     fps: int = 25,
     max_duration: float = 60.0,
     preferred_mouth_bbox: Optional[Tuple[int, int, int, int]] = None,
+    emotion: Optional[str] = None,
+    emotion_intensity: float = 1.0,
 ) -> bool:
     """Produce a talking cartoon MP4 with procedural mouth animation.
+
+    `emotion` (Phase-2): when set to one of happy/sad/calm/playful/
+    confident/excited/motivational/fierce/devotional, applies a
+    subtle full-frame RGB tint at low alpha (~10%) so the mood reads
+    on screen without altering the cartoon's identity. Tint is
+    pre-baked into base_rgb ONCE before the render loop so the cost
+    is negligible.
 
     Returns True on success, False otherwise (caller should fall back
     to MagicHour's ``v1.lip_sync`` or raise).
@@ -326,6 +335,28 @@ def animate_talking_cartoon(
         base_img = base_img.resize((w, h), Image.LANCZOS)
     base_rgb = np.asarray(base_img, dtype=np.uint8)
     img_h, img_w = base_rgb.shape[:2]
+
+    # Phase-2 — Pre-bake an emotion tint over the whole frame at low
+    # alpha so the mood reads on screen without changing the cartoon's
+    # identity. Done ONCE here (not per-frame) so the render loop is
+    # not slowed down. Keeps the per-frame cost identical to a no-tint
+    # render.
+    if emotion:
+        try:
+            from core.emotion_detector import emotion_to_tint
+            (tr, tg, tb), tint_alpha = emotion_to_tint(emotion, emotion_intensity)
+            if tint_alpha > 0.005:
+                tint_rgb = np.array([tr, tg, tb], dtype=np.float32).reshape(1, 1, 3)
+                base_rgb = (
+                    base_rgb.astype(np.float32) * (1.0 - tint_alpha)
+                    + tint_rgb * tint_alpha
+                ).clip(0, 255).astype(np.uint8)
+                log.info(
+                    "mouth_animator: emotion tint applied (%s, intensity=%.2f, alpha=%.3f)",
+                    emotion, emotion_intensity, tint_alpha,
+                )
+        except Exception as _tint_err:
+            log.debug("mouth_animator: tint skipped: %s", _tint_err)
 
     # Face + mouth detection
     face_bbox = _detect_face_bbox(base_rgb)

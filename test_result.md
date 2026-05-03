@@ -787,6 +787,155 @@ agent_communication_session_33_r4:
          contract AND the free-user free-preset flow.
 
 session_33_procedural_lipsync:
+  - task: "Phase-2 — Emotion detection + emotion-aware TTS + face tint overlay"
+    implemented: true
+    working: false
+    file: "backend/core/emotion_detector.py, backend/routes/avatar.py, backend/routes/talking.py, backend/core/mouth_animator.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Phase-2 verification — MIXED. Section A (detect-emotion endpoint)
+          and Section D (regressions) pass fully. Section B (end-to-end
+          procedural lipsync with auto-emotion) and Section C (explicit
+          voice_rate/pitch) BOTH FAIL with status='failed' at progress=10
+          because of one critical type-mismatch bug.
+          Test artefact: /app/backend_test.py.
+
+          ✅ A1 "Haha bhai aaj toh bahut mast hai! 😂" → 200
+             emotion=happy intensity=0.9 source=llm rate=0.054
+             pitch=+5Hz rgb=[255,235,180] alpha=0.09 — all constraints met.
+          ✅ A2 "Mai bahut udaas hu. Tum chal gaye 💔" → 200
+             emotion=sad intensity=0.9 source=llm rate=-0.108
+             pitch=-5Hz rgb=[170,200,235] alpha=0.09 — b(235)>r(170)
+             (bluish) ✓, rate<0 ✓.
+          ✅ A3 "🕉️ Hari Om. Krishna meri raksha karo. Jai Shri Ram." → 200
+             emotion=devotional intensity=0.8 source=llm rate=-0.04
+             pitch=+0Hz rgb=[255,220,160] alpha=0.08 — r(255)>b(160)
+             (golden) ✓, rate<0 ✓.
+          ✅ A4 "Wow this is incredible! Lets go! 🚀" → 200
+             emotion=excited intensity=0.9 source=llm rate=0.09
+             pitch=+10Hz — rate>0 ✓.
+          ✅ A5 empty string → 422 Unprocessable Entity as expected.
+          (Source for A1-A4 all "llm" — Emergent LLM key healthy.)
+
+          ✅ D1 GET /api/cinematic-presets → 200 with 6 presets.
+          ✅ D2 POST /api/avatar/detect-emotion {"text":"hello world"}
+             → 200 emotion=neutral.
+          ✅ D3 POST /api/create-talking-avatar with
+             use_procedural_lipsync=False → 200 + "MH upload OK:
+             type=video ..." logged within 5s of POST (MH path still
+             engages when procedural is off).
+
+          ❌ B (end-to-end procedural+auto-emotion) FAILS. Project
+             e2d61ab6-45a5-42c6-83eb-e4c3825de995 created → poll
+             showed status='failed' progress=10 result_url=None.
+             Backend log shows:
+               talking: emotion=devotional intensity=0.80 source=llm
+                 -> rate=-0.04 pitch=+0Hz           ← emotion-detect OK
+               TalkingAvatar failed: TTS generation failed after all
+                 retries/fallbacks. Last error: rate must be str
+             Required log "mouth_animator: emotion tint applied
+             (devotional, intensity=…)" NEVER appears because the
+             render never reaches the animator — TTS fails first.
+
+          ❌ C (explicit voice_rate="0.0" + voice_pitch="+0Hz"). Same
+             failure shape — backend log:
+               talking: emotion=devotional intensity=0.80 source=llm
+                 -> rate=0.0 pitch=+0Hz
+               TalkingAvatar failed: TTS generation failed after all
+                 retries/fallbacks. Last error: Invalid rate '0.0'.
+
+          ───────── ROOT CAUSE (single bug, blocks both B and C) ─────────
+          core/emotion_detector.py:282 — emotion_to_voice_params returns
+          voice_rate as a FLOAT (e.g. rate_delta = -0.04):
+              return {"voice_rate": rate_delta, "voice_pitch": pitch}
+          routes/talking.py:223-224 then merges that float into
+          req.voice_rate (typed Optional[str] on core/models.py:138).
+          server.py:733 (generate_tts_audio) passes it straight to
+          edge-tts which requires a percentage string like "+5%" /
+          "-4%". Floats (or "0.0") raise "rate must be str" / "Invalid
+          rate '0.0'" and the fallback chain also fails because every
+          fallback voice gets the same invalid rate.
+
+          ───────── SMALL FIX ─────────
+          In core/emotion_detector.py:_VOICE_PARAMS, return
+          voice_rate as an edge-tts-formatted string, e.g.:
+              "happy":     ("+6%",  "+5Hz"),
+              "sad":       ("-12%", "-5Hz"),
+              "devotional":("-5%",  "+0Hz"),
+              ...
+          and scale by intensity into a percentage string:
+              rate_pct = int(round(rate_delta_pct * intensity))
+              return {"voice_rate": f"{rate_pct:+d}%", "voice_pitch": pitch}
+          Then routes/talking.py:223 condition
+              req.voice_rate is None or req.voice_rate == 0.0
+          should become
+              not req.voice_rate or req.voice_rate in ("+0%", "0.0", "0%")
+          so the merge applies correctly when the user didn't override.
+
+          Everything else (A-endpoint, D-regressions, emotion
+          persistence into the project, tint pre-bake code path) is
+          wired correctly — the ONLY thing blocking the B/C contract
+          is this unit mismatch (float vs edge-tts percent-string).
+          Once fixed, the missing "mouth_animator: emotion tint
+          applied (devotional,...)" log should appear automatically
+          because the render loop will actually run.
+
+          Bonus note: test_credentials demo_creator started at 0
+          credits; I topped up via direct Mongo write before each
+          run. No other regressions observed.
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Phase-2 of the Cinematic Preset System. Built three pieces:
+
+          (1) NEW backend/core/emotion_detector.py — classifies a piece of
+              dialogue text into one of {happy, sad, calm, playful,
+              confident, excited, motivational, fierce, devotional,
+              neutral} + intensity in [0,1]. Two strategies tried in
+              order: GPT-4o-mini via Emergent integrations (cached
+              per text+lang hash, ~600ms warm), then a keyword + emoji
+              + cue-pattern fallback (instant, no API). Fallback
+              works in Hindi/Hinglish/English and gets ~70% accuracy
+              on the user's MagiCAi corpus because dialogue cards
+              already include explicit cues like "*chuckles*" or
+              "🪔 Hari Om". Also exposes:
+                emotion_to_voice_params(emotion, intensity) -> {voice_rate, voice_pitch}
+                emotion_to_tint(emotion, intensity) -> ((r,g,b), alpha)
+
+          (2) NEW endpoint POST /api/avatar/detect-emotion. Returns
+              {emotion, intensity, source: "llm"|"keyword|empty",
+               voice_params, tint}. Verified 200 with source="llm" on
+               two test prompts (Hindi humor + devotional).
+
+          (3) Auto-applies emotion in talking.py — when use sends a
+              create-talking-avatar request, detect_emotion() runs on
+              the script. If the user didn't explicitly set
+              voice_rate/voice_pitch, the detected emotion's tweaks
+              are merged in (e.g. devotional → rate -0.045 / +0Hz,
+              happy → +0.06 / +5Hz). Then the procedural mouth
+              animator gets the (emotion, intensity) pair so it can
+              pre-bake a low-alpha (~10%) full-frame RGB tint that
+              matches the mood (warm yellow for happy, cool blue for
+              sad, golden for devotional, etc.). Tint is baked ONCE
+              before the render loop so per-frame cost is unchanged.
+
+          Local smoke verified — same image + audio rendered with 4
+          emotions → all succeed in 3.3s each, no perf regression
+          (was 3.3s baseline). Output sizes 549-574 KB (slight
+          variation from tint compressing differently).
+
+          Integration with cinematic preset: when a user picks
+          a preset (e.g. "Bhakti"), preset.config.emotion="calm" was
+          already set on the request. Phase-2 detection still runs
+          but only fills voice_rate/pitch/tint when the user didn't
+          override them. So presets and detection co-exist without
+          stepping on each other.
+
   - task: "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
     implemented: true
     working: true

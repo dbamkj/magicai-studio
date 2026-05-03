@@ -888,6 +888,45 @@ class InferGendersRequest(BaseModel):
     dialogue_text: str = Field(..., min_length=4, max_length=4000)
 
 
+# ── Phase 2 — Emotion detection endpoint ──────────────────────────────
+
+class DetectEmotionRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+    language: Optional[str] = None
+
+
+@router.post("/detect-emotion")
+async def post_detect_emotion(req: DetectEmotionRequest):
+    """Classify the dominant emotion + intensity for a piece of dialogue.
+
+    Tries GPT-4o-mini first (cached), falls back to a keyword + emoji
+    heuristic on LLM failure. Returns also the derived `voice_params`
+    (rate / pitch tweak) and `tint` (rgb + alpha) so the frontend can
+    render an emotion chip and the procedural lipsync can apply a
+    subtle face overlay.
+
+    Response:
+      {"emotion": "happy", "intensity": 0.7, "source": "llm",
+       "voice_params": {"voice_rate": 0.04, "voice_pitch": "+5Hz"},
+       "tint": {"rgb": [255,235,180], "alpha": 0.07}}
+    """
+    from core.emotion_detector import (
+        detect_emotion, emotion_to_voice_params, emotion_to_tint,
+    )
+    res = await detect_emotion(req.text, req.language)
+    em = res.get("emotion") or "neutral"
+    intensity = float(res.get("intensity") or 0.0)
+    vp = emotion_to_voice_params(em, intensity)
+    rgb, alpha = emotion_to_tint(em, intensity)
+    return {
+        "emotion": em,
+        "intensity": intensity,
+        "source": res.get("source") or "keyword",
+        "voice_params": vp,
+        "tint": {"rgb": list(rgb), "alpha": alpha},
+    }
+
+
 @router.post("/infer-genders")
 async def post_infer_genders(req: InferGendersRequest):
     """Cheap LLM call that guesses the gender of Person A and Person B

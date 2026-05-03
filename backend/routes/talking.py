@@ -202,6 +202,36 @@ async def create_talking_avatar(
                 applied.get("_preset_id"), req.voice_style, req.motion, req.bgm_style,
             )
 
+    # Phase-2 — Emotion-aware TTS. Detect the dominant emotion from the
+    # script (LLM with keyword fallback) and merge its rate/pitch
+    # tweaks into the request UNLESS the user already set explicit
+    # voice_rate / voice_pitch values. Also persist the detected
+    # emotion on the project so the procedural mouth animator can
+    # apply a matching subtle face tint later.
+    detected_emotion = "neutral"
+    detected_intensity = 0.0
+    try:
+        from core.emotion_detector import (
+            detect_emotion as _detect_emotion,
+            emotion_to_voice_params as _emo_voice,
+        )
+        emo_res = await _detect_emotion(req.script, language=None)
+        detected_emotion = emo_res.get("emotion") or "neutral"
+        detected_intensity = float(emo_res.get("intensity") or 0.0)
+        if detected_emotion != "neutral" and detected_intensity > 0.0:
+            vp = _emo_voice(detected_emotion, detected_intensity)
+            if req.voice_rate is None or req.voice_rate == 0.0:
+                req.voice_rate = vp["voice_rate"]
+            if not req.voice_pitch:
+                req.voice_pitch = vp["voice_pitch"]
+            log.info(
+                "talking: emotion=%s intensity=%.2f source=%s -> rate=%s pitch=%s",
+                detected_emotion, detected_intensity, emo_res.get("source"),
+                req.voice_rate, req.voice_pitch,
+            )
+    except Exception as _emo_err:
+        log.debug("talking: emotion detect skipped: %s", _emo_err)
+
     p = VideoProject(
         name=f"TalkingAvatar_{datetime.now(timezone.utc).strftime('%H%M%S')}",
         type="talking_avatar",
@@ -356,7 +386,11 @@ async def create_talking_avatar(
                         img_abs,
                         tts_path,
                         proc_out,
-                        25,  # fps
+                        25,                     # fps
+                        60.0,                   # max_duration
+                        None,                   # preferred_mouth_bbox
+                        detected_emotion,       # Phase-2: tint
+                        detected_intensity,
                     )
                     if ok and proc_out.exists() and proc_out.stat().st_size > 2048:
                         log.info("talking: procedural lipsync OK → %s", proc_out.name)
