@@ -1211,6 +1211,41 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
         feature=None if is_procedural else 'lip_sync_dual',
     )
 
+    # Phase-3 — Apply cinematic preset overrides (motion + voice + bgm)
+    # the same way the solo route does, so dual-lipsync's camera+effects
+    # pass picks up the right motion. Was previously only pulling
+    # effects[] from the preset and leaving req.motion="none" alone.
+    if req.preset_id:
+        from core.cinematic_presets import apply_preset_to_request as _apply_preset_dual
+        applied = _apply_preset_dual(
+            req.preset_id,
+            user.get("subscription_tier"),
+            voice_style=None,
+            motion=req.motion if (req.motion and req.motion.lower() != "none") else None,
+            bgm_style=req.bgm_style,
+        )
+        if applied.get("_error") == "locked":
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "code": "preset_locked",
+                    "preset_id": applied.get("_preset_id"),
+                    "message": "This cinematic preset requires a paid plan.",
+                    "cta": "Unlock Cinematic Mode",
+                },
+            )
+        if applied.get("_error") == "unknown_preset":
+            raise HTTPException(status_code=400, detail=f"Unknown preset_id: {req.preset_id}")
+        if applied:
+            if applied.get("motion"):
+                req.motion = applied["motion"]
+            if applied.get("bgm_style"):
+                req.bgm_style = applied["bgm_style"]
+            log.info(
+                "dual: preset '%s' applied (motion=%s bgm=%s)",
+                applied.get("_preset_id"), req.motion, req.bgm_style,
+            )
+
     p = VideoProject(
         name=f"DualAvatar_{datetime.now(timezone.utc).strftime('%H%M%S')}",
         type="dual_talking_avatar",

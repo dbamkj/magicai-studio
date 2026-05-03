@@ -402,6 +402,11 @@ async def create_talking_avatar(
             # the cartoon face byte-for-byte except for the animated
             # mouth region.
             use_procedural = bool(getattr(req, "use_procedural_lipsync", False))
+            fx_applied = False  # Set True once camera_effects has produced
+                                # the final styled mp4 — used below to skip
+                                # the legacy apply_motion_to_video_clip pass
+                                # so we don't double-zoompan or clobber the
+                                # _fx_ filename.
             if use_procedural:
                 try:
                     from core.mouth_animator import animate_talking_cartoon
@@ -444,6 +449,7 @@ async def create_talking_avatar(
                                         fx_out.name, wanted_motion, wanted_effects,
                                     )
                                     ls_local = fx_out
+                                    fx_applied = True
                                 else:
                                     log.info("talking: camera+effects skipped/failed — using base proc output")
                         except Exception as _fx_err:
@@ -492,9 +498,12 @@ async def create_talking_avatar(
                     with open(ls_local, "wb") as f:
                         f.write(resp.content)
 
-            # 6) Optionally apply motion (zoompan) on top of the talking video
+            # 6) Optionally apply motion (zoompan) on top of the talking video.
+            #    Phase-3 — Skip when fx_applied (camera_effects already
+            #    rendered the styled mp4) so we don't double-zoompan
+            #    or overwrite the _fx_ filename with avatar_motion_*.
             final = ls_local
-            if req.motion and req.motion != "none":
+            if not fx_applied and req.motion and req.motion != "none":
                 motioned = apply_motion_to_video_clip(ls_local, req.motion)
                 if motioned and motioned.exists():
                     final = motioned
