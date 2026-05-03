@@ -111,6 +111,191 @@ const EMOTION_CHIPS: { id: string; label: string; icon: string }[] = [
   { id: 'fierce',     label: 'Fierce',     icon: '🔥' },
 ];
 
+// ────────────────────────── Cinematic Preset Picker (Phase 1) ────────────────
+// One-tap chip row that bundles emotion + voice_style + motion + bgm + future
+// effects. Free presets are always tappable; pro presets show 🔒 + a soft
+// blur overlay and route taps to a paywall modal handled by the parent.
+
+type _Preset = {
+  id: string; label: string; emoji: string; tagline: string;
+  plan_tier: 'free' | 'pro'; locked: boolean;
+  config: { emotion: string; motion: string; bgm: string; voice_style: string; effects: string[] };
+};
+
+function PresetPicker(props: {
+  presets: _Preset[];
+  busy: boolean;
+  selectedId: string | null;
+  isPro: boolean;
+  onSelect: (p: _Preset) => void;
+  onClear: () => void;
+}) {
+  const { presets, busy, selectedId, isPro, onSelect, onClear } = props;
+  if (!presets || presets.length === 0) {
+    if (busy) return null;  // first paint — don't flash empty
+    return null;
+  }
+  return (
+    <View>
+      <FieldLabel>🎬 Cinematic preset (one-tap)</FieldLabel>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={presetStyles.row}
+      >
+        {/* "None" chip — clears the preset. */}
+        <Pressable
+          onPress={onClear}
+          style={[
+            presetStyles.chip,
+            !selectedId && presetStyles.chipActive,
+          ]}
+        >
+          <Text style={presetStyles.chipEmoji}>✖️</Text>
+          <Text style={[presetStyles.chipLabel, !selectedId && presetStyles.chipLabelActive]}>None</Text>
+        </Pressable>
+        {presets.map((p) => {
+          const isSelected = selectedId === p.id;
+          const showLock = p.locked && !isPro;
+          return (
+            <Pressable
+              key={p.id}
+              onPress={() => onSelect(p)}
+              style={[
+                presetStyles.chip,
+                isSelected && presetStyles.chipActive,
+                showLock && presetStyles.chipLocked,
+              ]}
+            >
+              <Text style={presetStyles.chipEmoji}>{p.emoji}</Text>
+              <Text style={[presetStyles.chipLabel, isSelected && presetStyles.chipLabelActive]}>
+                {p.label}
+              </Text>
+              {showLock ? (
+                <View style={presetStyles.proBadge}>
+                  <Ionicons name="lock-closed" size={10} color="#FCD34D" />
+                  <Text style={presetStyles.proBadgeText}>PRO</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      {selectedId ? (
+        <Text style={presetStyles.metaLine}>
+          Applied: {(presets.find(p => p.id === selectedId) || {}).tagline || ''}
+        </Text>
+      ) : (
+        <Text style={presetStyles.metaLine}>
+          Pick a vibe to instantly tune voice, motion, and music together.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+const presetStyles = StyleSheet.create({
+  row: { gap: 10, paddingVertical: 8, paddingRight: 12 },
+  chip: {
+    minWidth: 92,
+    paddingVertical: 12, paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.35)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    alignItems: 'center', justifyContent: 'center',
+    position: 'relative',
+  },
+  chipActive: {
+    borderColor: '#A855F7',
+    backgroundColor: 'rgba(168,85,247,0.22)',
+  },
+  chipLocked: { opacity: 0.62 },
+  chipEmoji: { fontSize: 22, marginBottom: 4 },
+  chipLabel: { color: '#E9D5FF', fontWeight: '700', fontSize: 13 },
+  chipLabelActive: { color: '#fff' },
+  proBadge: {
+    position: 'absolute', top: 6, right: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    paddingHorizontal: 5, paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(252,211,77,0.18)',
+    borderWidth: 1, borderColor: 'rgba(252,211,77,0.55)',
+  },
+  proBadgeText: { color: '#FCD34D', fontWeight: '800', fontSize: 9, letterSpacing: 0.5 },
+  metaLine: { color: '#C4B5FD', fontSize: 12, marginTop: 2, lineHeight: 17 },
+});
+
+// Paywall modal — shown when a free user taps a 🔒 preset chip.
+function PresetPaywallModal(props: {
+  preset: _Preset | null;
+  onClose: () => void;
+  onUpgrade: () => void;
+}) {
+  const { preset, onClose, onUpgrade } = props;
+  if (!preset) return null;
+  return (
+    <View style={paywallStyles.overlay}>
+      <Pressable style={paywallStyles.backdrop} onPress={onClose} />
+      <View style={paywallStyles.card}>
+        <Text style={paywallStyles.emoji}>{preset.emoji}</Text>
+        <Text style={paywallStyles.title}>Unlock {preset.label} mode ✨</Text>
+        <Text style={paywallStyles.tagline}>{preset.tagline}</Text>
+        <View style={paywallStyles.rowList}>
+          <Text style={paywallStyles.bullet}>• HD render (720p / 1080p)</Text>
+          <Text style={paywallStyles.bullet}>• No watermark</Text>
+          <Text style={paywallStyles.bullet}>• All cinematic presets unlocked</Text>
+          <Text style={paywallStyles.bullet}>• Faster generation queue</Text>
+        </View>
+        <Pressable style={paywallStyles.cta} onPress={onUpgrade}>
+          <LinearGradient
+            colors={['#A855F7', '#EC4899']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={paywallStyles.ctaGrad}
+          >
+            <Ionicons name="sparkles" size={16} color="#fff" />
+            <Text style={paywallStyles.ctaText}>Unlock Cinematic Mode</Text>
+          </LinearGradient>
+        </Pressable>
+        <Pressable onPress={onClose} style={paywallStyles.dismiss}>
+          <Text style={paywallStyles.dismissText}>Maybe later</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const paywallStyles = StyleSheet.create({
+  overlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center', alignItems: 'center',
+    zIndex: 999,
+  },
+  backdrop: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(8,4,16,0.72)',
+  },
+  card: {
+    width: '88%', maxWidth: 420,
+    padding: 22, borderRadius: 24,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.35)',
+    backgroundColor: '#1A0F2E',
+    alignItems: 'center',
+  },
+  emoji: { fontSize: 44, marginBottom: 8 },
+  title: { color: '#fff', fontSize: 20, fontWeight: '800', textAlign: 'center', marginBottom: 6 },
+  tagline: { color: '#C4B5FD', fontSize: 13, textAlign: 'center', marginBottom: 14 },
+  rowList: { width: '100%', marginBottom: 18, gap: 4 },
+  bullet: { color: '#E9D5FF', fontSize: 13 },
+  cta: { width: '100%', borderRadius: 14, overflow: 'hidden' },
+  ctaGrad: {
+    paddingVertical: 14,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  ctaText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  dismiss: { marginTop: 12, padding: 8 },
+  dismissText: { color: '#9CA3AF', fontSize: 13 },
+});
+
 // ────────────────────────── Screen ──────────────────────────
 export default function AvatarStudioScreen() {
   const router = useRouter();
@@ -234,6 +419,36 @@ export default function AvatarStudioScreen() {
     { id: 'playful',            label: 'Playful',       icon: 'happy-outline' },
     { id: 'motivational',       label: 'Motivational',  icon: 'flash-outline' },
   ];
+
+  // Phase-1 — Cinematic Presets. One-tap bundle that overrides
+  // voice_style + motion + bgm_style on the server. Fetched once on
+  // mount; re-fetched if user upgrades subscription mid-session.
+  type Preset = {
+    id: string; label: string; emoji: string; tagline: string;
+    plan_tier: 'free' | 'pro'; locked: boolean;
+    config: { emotion: string; motion: string; bgm: string; voice_style: string; effects: string[] };
+  };
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [presetId, setPresetId] = useState<string | null>(null);
+  const [presetsBusy, setPresetsBusy] = useState(false);
+  const [showPaywall, setShowPaywall] = useState<{ preset: Preset } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setPresetsBusy(true);
+      try {
+        const headers = user?.token ? { Authorization: `Bearer ${user.token}` } : {};
+        const r = await axios.get(`${API}/cinematic-presets`, { headers, timeout: 10000 });
+        if (!cancelled) setPresets(r.data?.presets || []);
+      } catch {
+        if (!cancelled) setPresets([]);
+      } finally {
+        if (!cancelled) setPresetsBusy(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.token, user?.subscription_tier]);
+
   const [inferBusy, setInferBusy] = useState(false);
   const [genStage, setGenStage] = useState<string>('');
   const [genProgress, setGenProgress] = useState(0);
@@ -902,6 +1117,10 @@ export default function AvatarStudioScreen() {
         resolution: userIsPro ? '720p' : '480p',
         // Round 11 — optional BGM mood for solo cartoon avatars.
         ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
+        // Phase-1 — Cinematic preset (server overrides voice_style /
+        // motion / bgm_style with the preset's bundle). Free presets
+        // work for everyone; pro presets 402 with paywall payload.
+        ...(presetId ? { preset_id: presetId } : {}),
         // Session 33 — Procedural cartoon lipsync. Cartoon mode MUST
         // skip MagicHour's v1.lip_sync (it injects photoreal features
         // onto cartoons, producing an uncanny realistic eye/mouth
@@ -918,8 +1137,25 @@ export default function AvatarStudioScreen() {
         aspect_ratio: tkAspect || '9:16',
         resolution: userIsPro ? tkRes : '480p',
         ...(bgmStyle ? { bgm_style: bgmStyle } : {}),
+        ...(presetId ? { preset_id: presetId } : {}),
       };
-      const r = await axios.post(`${API}/create-talking-avatar`, body, { timeout: 30000 });
+      let r;
+      try {
+        r = await axios.post(`${API}/create-talking-avatar`, body, { timeout: 30000 });
+      } catch (postErr: any) {
+        // Phase-1 — paywall handling. Server returns 402 with detail
+        // {code: "preset_locked", preset_id, message, cta} when a free
+        // user tries to use a pro preset.
+        const status = postErr?.response?.status;
+        const detail = postErr?.response?.data?.detail;
+        if (status === 402 && detail?.code === 'preset_locked') {
+          setGenerating(false);
+          const lockedPreset = presets.find(p => p.id === detail.preset_id);
+          if (lockedPreset) setShowPaywall({ preset: lockedPreset });
+          return;
+        }
+        throw postErr;
+      }
       const pid = r.data?.project_id;
       if (!pid) throw new Error('No project id returned');
 
@@ -993,6 +1229,8 @@ export default function AvatarStudioScreen() {
     cartoonVoiceId, cartoonVoiceStyle, emotion,
     tkVoiceId, tkVoiceStyle, tkVoiceRate, tkVoicePitch,
     tkMotion, tkAspect, tkRes,
+    // Phase-1 — Cinematic preset state.
+    presetId, presets,
   ]);
 
   // ────────────────────────── Step navigation ──────────────────────────
@@ -1690,6 +1928,36 @@ export default function AvatarStudioScreen() {
 
                 <View style={{ height: 20 }} />
 
+                {/* Phase-1 — Cinematic Preset picker. One-tap bundle of
+                    voice_style + motion + bgm + future emotion/effects.
+                    Free presets are unlocked for everyone; pro presets
+                    show 🔒 + paywall modal on tap. */}
+                <PresetPicker
+                  presets={presets}
+                  busy={presetsBusy}
+                  selectedId={presetId}
+                  isPro={userIsPro}
+                  onSelect={(p) => {
+                    if (p.locked) {
+                      setShowPaywall({ preset: p });
+                      return;
+                    }
+                    setPresetId(p.id);
+                    // Mirror the preset's BGM into the BGM chip so users
+                    // can SEE what was applied (and tweak if they want).
+                    const moodMap: Record<string, any> = {
+                      cinematic_epic: 'cinematic_epic', devotional: 'devotional',
+                      playful: 'playful', motivational: 'motivational',
+                      ambient_calm: 'devotional',
+                    };
+                    const bgm = (p.config?.bgm || '').toLowerCase();
+                    if (moodMap[bgm]) setBgmStyle(moodMap[bgm]);
+                  }}
+                  onClear={() => setPresetId(null)}
+                />
+
+                <View style={{ height: 14 }} />
+
                 {/* Round 11 — BGM chip row (solo mode) */}
                 <FieldLabel>Background music (optional)</FieldLabel>
                 <View style={s.bgmRow}>
@@ -1867,6 +2135,30 @@ export default function AvatarStudioScreen() {
                 <FieldLabel style={{ marginTop: 16 }}>Resolution</FieldLabel>
                 <ResolutionPicker selectedId={tkRes} onSelect={setTkRes} />
 
+                {/* Phase-1 — Cinematic Preset picker (talking mode). */}
+                <View style={{ height: 18 }} />
+                <PresetPicker
+                  presets={presets}
+                  busy={presetsBusy}
+                  selectedId={presetId}
+                  isPro={userIsPro}
+                  onSelect={(p) => {
+                    if (p.locked) {
+                      setShowPaywall({ preset: p });
+                      return;
+                    }
+                    setPresetId(p.id);
+                    const moodMap: Record<string, any> = {
+                      cinematic_epic: 'cinematic_epic', devotional: 'devotional',
+                      playful: 'playful', motivational: 'motivational',
+                      ambient_calm: 'devotional',
+                    };
+                    const bgm = (p.config?.bgm || '').toLowerCase();
+                    if (moodMap[bgm]) setBgmStyle(moodMap[bgm]);
+                  }}
+                  onClear={() => setPresetId(null)}
+                />
+
                 {/* Optional: which emotion strip is currently active */}
                 <Text style={[s.voiceMeta, { marginTop: 10 }]}>
                   Emotion: {EMOTION_CHIPS.find(e => e.id === emotion)?.icon} {emotion}
@@ -1972,6 +2264,16 @@ export default function AvatarStudioScreen() {
           onClose={() => setShowAuthGate(false)}
           reason="AI Avatar Studio"
           nextRoute="/avatar-studio"
+        />
+
+        {/* Phase-1 — Cinematic preset paywall (free user → pro preset). */}
+        <PresetPaywallModal
+          preset={showPaywall?.preset || null}
+          onClose={() => setShowPaywall(null)}
+          onUpgrade={() => {
+            setShowPaywall(null);
+            router.push('/subscription');
+          }}
         />
       </SafeAreaView>
     </AuroraBackground>

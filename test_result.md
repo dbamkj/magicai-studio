@@ -674,12 +674,177 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Session 33 — Procedural cartoon lipsync + Nano Banana retry + Voice preview cap"
-  stuck_tasks: []
+    - "Phase-1 Cinematic Preset System (backend)"
+  stuck_tasks:
+    - "Phase-1 Cinematic Preset System (backend)"
   test_all: false
   test_priority: "high_first"
 
+agent_communication_session_33_phase1:
+  - agent: "testing"
+    message: |
+      Phase-1 Cinematic Preset verification — 12/13 PASS, 1 CRITICAL
+      blocker on B3 paywall contract. Test artefact: /app/backend_test.py.
+
+      ALL PASS:
+        A1 anonymous catalog (6 presets, locks correct, all required
+          top + config keys present)
+        A2 demo_creator (paid) — all 6 unlocked
+        A3 free user (phase1test@example.com) — funny+emotional
+          unlocked, 4 pro presets locked
+        B1 funny preset on paid user — completed; EXACT log lines:
+          "talking: preset 'funny' applied (voice_style=playful
+            motion=ken_burns bgm=playful)"
+          "talking: BGM mixed (playful_pulse) under voice"
+        B2 cinematic preset on paid user — completed; EXACT log lines:
+          "talking: preset 'cinematic' applied (voice_style=confident
+            motion=ken_burns bgm=cinematic_epic)"
+          "talking: BGM mixed (cinematic_score) under voice"
+        B4 unknown preset_id → 400 mentions 'Unknown preset_id'
+        B5 no preset_id (regression) → 200 + completes
+        C1 GET /api/ → 200 version=7.1.0
+        C2 login demo_creator → 200 token
+        C3 GET /api/avatar/styles → 200 emotions=12
+        C4 POST /api/avatar/cartoonize → 200 with job_id (Nano Banana
+          path still healthy)
+
+      ❌ B3 FAILS — pro preset on free user does NOT return
+         {code:'preset_locked'} 402. Returns 402 with detail STRING
+         'Lip Sync requires Starter plan or higher.' instead.
+
+         ROOT CAUSE: routes/talking.py:152 calls
+           user, cost = await preflight_and_reserve(
+               request, job_type='lipsync', feature='lip_sync')
+         BEFORE the preset paywall check at line 159. The
+         feature='lip_sync' gate hard-blocks every free user from
+         reaching the preset code path, so the preset_locked contract
+         is unreachable.
+
+         BIGGER SIDE-EFFECT: free users CANNOT use FREE presets
+         either. Verified by direct probe — phase1test@example.com
+         (free, 300 cr) with preset_id='funny' → 402 'Lip Sync
+         requires Starter plan or higher.' This contradicts the
+         Phase-1 PRD where free presets (funny, emotional) must work
+         for free users.
+
+         FIX (small, in routes/talking.py): swap the order so preset
+         resolution + paywall check happens BEFORE
+         preflight_and_reserve. Or, when use_procedural_lipsync=true
+         (no MagicHour billing impact), bypass the lip_sync feature
+         gate. Either change is small and unblocks both the B3
+         contract AND the free-user free-preset flow.
+
 session_33_procedural_lipsync:
+  - task: "Phase-1 Cinematic Preset System (backend)"
+    implemented: true
+    working: false
+    file: "backend/core/cinematic_presets.py, backend/routes/talking.py, backend/core/models.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Phase-1 verification — 12/13 PASS, 1 CRITICAL BUG found that
+          breaks the entire B3 paywall contract AND blocks free users
+          from using free presets too.
+
+          ✅ A1 anonymous: GET /api/cinematic-presets → 200 with exactly
+             6 presets, correct ids, plan_tiers, and locked flags.
+             Anonymous: funny+emotional unlocked, bhakti/motivation/
+             influencer/cinematic locked. All required top-level keys
+             {id,label,emoji,tagline,plan_tier,locked,config} present
+             and every config has all 10 required keys
+             {emotion,intensity,voice_style,voice_rate,voice_pitch,
+             motion,camera,lighting,effects,bgm}; effects is a list.
+          ✅ A2 demo_creator (paid creator tier): all 6 presets
+             unlocked.
+          ✅ A3 free user (phase1test@example.com, just registered with
+             plan='free' → subscription_tier='free' credits=300):
+             funny+emotional unlocked, the 4 pro presets locked.
+
+          ✅ B1 funny preset (free preset, demo_creator paid user):
+             POST /api/create-talking-avatar with preset_id='funny',
+             use_procedural_lipsync=true → 200 project_id=
+             c27da9df-…, status=processing. Polling completed within
+             ~6s. EXACT log line observed:
+                routes.talking - INFO - talking: preset 'funny' applied
+                  (voice_style=playful motion=ken_burns bgm=playful)
+                routes.talking - INFO - talking: BGM mixed
+                  (playful_pulse) under voice
+          ✅ B2 cinematic preset (pro, demo_creator paid):
+             project=aed53bf8-… completed. EXACT log lines:
+                routes.talking - INFO - talking: preset 'cinematic'
+                  applied (voice_style=confident motion=ken_burns
+                  bgm=cinematic_epic)
+                routes.talking - INFO - talking: BGM mixed
+                  (cinematic_score) under voice
+          ✅ B4 unknown preset_id='nonexistent_preset_xyz' → 400 with
+             detail mentioning 'Unknown preset_id'.
+          ✅ B5 no preset_id (regression) → 200, project completed
+             without preset overrides. Legacy behaviour intact.
+
+          ❌ B3 CRITICAL — pro preset on free user does NOT return
+             {code:'preset_locked'} 402. Instead it returns 402 with
+             detail string 'Lip Sync requires Starter plan or higher.'
+             ROOT CAUSE: in routes/talking.py:152 the call
+                user, cost = await preflight_and_reserve(
+                    request, job_type='lipsync', feature='lip_sync')
+             runs BEFORE the preset paywall check at line 159. The
+             feature='lip_sync' gate hard-blocks ANY free user from
+             reaching the preset code path, so the preset_locked
+             contract is unreachable.
+
+             Side-effect: this also blocks free users from using FREE
+             presets (funny, emotional). I verified directly: same
+             free user with preset_id='funny' returns
+             402 'Lip Sync requires Starter plan or higher.' — i.e.
+             the free user CANNOT use /api/create-talking-avatar at
+             all, regardless of preset.
+
+             FIX (main agent): swap the order in routes/talking.py so
+             the preset resolution + paywall check happens BEFORE
+             preflight_and_reserve. Or, when use_procedural_lipsync=
+             true (no MagicHour billing impact), relax the lip_sync
+             feature gate. Either change is small but the PRD-stated
+             B3 contract cannot pass without it.
+
+          ✅ C1 GET /api/ → 200 version=7.1.0
+          ✅ C2 POST /api/auth/login demo_creator@test.com/Test@123
+             → 200 token returned
+          ✅ C3 GET /api/avatar/styles → 200 emotions=12 (≥12 required)
+          ✅ C4 POST /api/avatar/cartoonize {style:pixar,
+             emotion:happy, image_base64:<b64 PNG>} with creator
+             Bearer → 200 with job_id (Nano Banana retry path still
+             healthy, no regression from Session 33).
+
+          Test artefact: /app/backend_test.py (re-runnable).
+      - working: true
+        agent: "main"
+        comment: |
+          Phase-1 of the Cinematic Preset System. Built:
+          (1) New core/cinematic_presets.py module with 6 presets
+              (2 free: funny, emotional; 4 pro: bhakti, motivation,
+              influencer, cinematic). Each preset bundles emotion,
+              voice_style, voice_rate, voice_pitch, motion, camera,
+              lighting, effects[], bgm.
+          (2) New endpoint GET /api/cinematic-presets — returns the
+              full catalog with `locked` per-user (free users see pro
+              presets locked, paid users unlocked). Anonymous OK.
+          (3) Updated POST /api/create-talking-avatar to accept
+              optional preset_id. Server-side `apply_preset_to_request`
+              merges preset config with explicit fields (explicit
+              fields win). Pro preset on free user → 402 with
+              {code: "preset_locked", preset_id, message, cta} so the
+              frontend can show a paywall modal.
+          (4) Free presets always render with watermark (existing
+              behavior); pro presets unlock HD + no-watermark.
+
+          Verified GET /api/cinematic-presets returns 6 presets with
+          correct lock flags. Anonymous user sees: funny=unlocked,
+          emotional=unlocked, bhakti/motivation/influencer/cinematic=locked.
+
   - task: "BGM mood matching — cinematic_epic fell back to random (Session 33 r2)"
     implemented: true
     working: true

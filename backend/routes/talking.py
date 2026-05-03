@@ -38,6 +38,54 @@ log = logging.getLogger("routes.talking")
 router = APIRouter(prefix="/api", tags=["talking-avatar"])
 
 
+# ──────────────────────── Cinematic Presets (Phase 1) ────────────────────────
+
+@router.get("/cinematic-presets")
+async def list_cinematic_presets(request: Request = None):
+    """Return all cinematic presets. The `locked` flag is computed
+    against the calling user's `subscription_tier` when authenticated;
+    anonymous callers see free presets unlocked + pro presets locked.
+
+    Response shape:
+        {
+          "presets": [
+            {
+              "id": "funny", "label": "Funny", "emoji": "😂",
+              "tagline": "...", "plan_tier": "free", "locked": false,
+              "config": { "emotion": "playful", "motion": "ken_burns",
+                          "bgm": "playful", "voice_style": "playful",
+                          "effects": [...], ... }
+            }, ...
+          ]
+        }
+    """
+    from core.cinematic_presets import list_presets
+
+    # Optional auth — we don't 401 here because the picker is shown
+    # before login on some flows.
+    user_tier: str | None = None
+    try:
+        from core.auth import get_current_user_optional
+        u = await get_current_user_optional(request)
+        if u:
+            user_tier = u.get("subscription_tier")
+    except Exception:
+        # Some installs don't expose get_current_user_optional — fall
+        # back to anonymous (everything-locked-pro behavior).
+        try:
+            auth = (request.headers.get("authorization") or "").strip() if request else ""
+            if auth.lower().startswith("bearer "):
+                # If a token was sent, try to decode via the standard helper.
+                from core.auth import get_current_user  # type: ignore
+                u = await get_current_user(request)
+                if u:
+                    user_tier = u.get("subscription_tier")
+        except Exception:
+            pass
+
+    return {"presets": list_presets(user_tier)}
+
+
 @router.post("/create-talking-avatar")
 async def create_talking_avatar(
     req: CreateTalkingAvatarRequest,
@@ -102,6 +150,46 @@ async def create_talking_avatar(
         log.warning("talking: ffprobe failed on %s: %s", img_abs, _probe_err)
 
     user, cost = await preflight_and_reserve(request, job_type='lipsync', feature='lip_sync')
+
+    # Phase-1 — Cinematic preset resolution. If client sent preset_id,
+    # apply its config bundle (voice_style / motion / bgm_style) BEFORE
+    # we persist the project so the recorded payload reflects what
+    # actually rendered. Free presets work for everyone; pro presets
+    # require a paid tier or we 402.
+    if req.preset_id:
+        from core.cinematic_presets import apply_preset_to_request
+        applied = apply_preset_to_request(
+            req.preset_id,
+            user.get("subscription_tier"),
+            voice_style=req.voice_style,
+            motion=req.motion,
+            bgm_style=req.bgm_style,
+        )
+        if applied.get("_error") == "locked":
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "code": "preset_locked",
+                    "preset_id": applied.get("_preset_id"),
+                    "message": "This cinematic preset requires a paid plan.",
+                    "cta": "Unlock Cinematic Mode",
+                },
+            )
+        if applied.get("_error") == "unknown_preset":
+            raise HTTPException(status_code=400, detail=f"Unknown preset_id: {req.preset_id}")
+        if applied:
+            # Mutate the request in-place so the rest of _bg() picks up
+            # the merged values without further refactor.
+            if applied.get("voice_style"):
+                req.voice_style = applied["voice_style"]
+            if applied.get("motion"):
+                req.motion = applied["motion"]
+            if applied.get("bgm_style"):
+                req.bgm_style = applied["bgm_style"]
+            log.info(
+                "talking: preset '%s' applied (voice_style=%s motion=%s bgm=%s)",
+                applied.get("_preset_id"), req.voice_style, req.motion, req.bgm_style,
+            )
 
     p = VideoProject(
         name=f"TalkingAvatar_{datetime.now(timezone.utc).strftime('%H%M%S')}",

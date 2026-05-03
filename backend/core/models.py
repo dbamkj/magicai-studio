@@ -153,6 +153,11 @@ class CreateTalkingAvatarRequest(BaseModel):
     # animator. Cartoon Solo mode sends this flag so the cartoon
     # character's stylised face stays intact.
     use_procedural_lipsync: Optional[bool] = False
+    # Phase-1 cinematic preset — when set, server-side resolves the
+    # preset and overrides `voice_style` / `motion` / `bgm_style` with
+    # the preset's bundle. Free presets work for any user; pro
+    # presets require a paid subscription_tier (returns 402 otherwise).
+    preset_id: Optional[str] = None
 
 
 # ========== Sprint 6 — Content Intelligence: Templates ==========
