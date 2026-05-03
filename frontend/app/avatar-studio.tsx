@@ -410,11 +410,13 @@ export default function AvatarStudioScreen() {
         if (aLine) await speakLine(aLine, voiceAId, activeStyle.personality.voice_style);
         if (bLine) await speakLine(bLine, voiceBId, activeStyle.personality.voice_style);
       } else {
-        // Solo — first non-empty line after stripping cues.
-        const cleaned = stripDialogueCues(pickedDialogue.text);
-        const firstLine = cleaned.split(/[.!?।]/)[0].trim() || cleaned.slice(0, 180);
+        // Solo — play the ENTIRE dialogue (all lines), not just the first
+        // sentence. Previous version split on [.!?।] and took [0], which
+        // made Hindi 4-line dialogues play only the first short clause.
+        const cleaned = stripDialogueCues(pickedDialogue.text).replace(/\s+/g, ' ').trim();
+        const fullText = cleaned.slice(0, 500) || cleaned;
         const voice = cartoonVoiceId || activeStyle.personality.voice_id;
-        await speakLine(firstLine, voice, cartoonVoiceStyle || activeStyle.personality.voice_style);
+        await speakLine(fullText, voice, cartoonVoiceStyle || activeStyle.personality.voice_style);
       }
     } catch (e: any) {
       Alert.alert('Voice preview unavailable', 'You can still generate the video in the next step.');
@@ -471,18 +473,30 @@ export default function AvatarStudioScreen() {
       }));
       setVariants(initial);
 
-      // Kick off all 5 cartoonize jobs in parallel.
-      const startResults = await Promise.allSettled(
-        variantEmotions.map(em =>
-          axios.post(`${API}/avatar/cartoonize`, {
-            image_b64: b64,
-            style: activeStyle.id,
-            emotion: em,
-          }, { timeout: 30000 }),
-        ),
-      );
+      // Kick off all 5 cartoonize jobs — staggered by 400ms so the
+      // Nano Banana endpoint doesn't hit a rate-limit burst on the
+      // first cold-start call (was the root cause of "first time all
+      // fail, retry works" bug reported in Session 33 round 2).
+      const startResults: PromiseSettledResult<any>[] = [];
+      for (let i = 0; i < variantEmotions.length; i++) {
+        const em = variantEmotions[i];
+        // Fire this one (don't await yet — we'll collect results below).
+        const pending = axios.post(`${API}/avatar/cartoonize`, {
+          image_b64: b64,
+          style: activeStyle.id,
+          emotion: em,
+        }, { timeout: 30000 }).then(
+          (v) => ({ status: 'fulfilled', value: v } as const),
+          (r) => ({ status: 'rejected', reason: r } as const),
+        );
+        startResults.push(pending as any);
+        if (i < variantEmotions.length - 1) {
+          await new Promise(r => setTimeout(r, 400));
+        }
+      }
+      const resolved = await Promise.all(startResults as any);
 
-      const withJobIds: Variant[] = startResults.map((r, i) => {
+      const withJobIds: Variant[] = resolved.map((r: any, i: number) => {
         if (r.status === 'fulfilled' && r.value?.data?.job_id) {
           return { ...initial[i], jobId: r.value.data.job_id };
         }
@@ -967,7 +981,19 @@ export default function AvatarStudioScreen() {
       setResultError(e?.response?.data?.detail || e?.message || 'Generation failed');
       setGenerating(false);
     }
-  }, [imagePath, imageUri, pickedDialogue, manualScript, activeStyle, userIsPro, user, mode]);
+  }, [
+    imagePath, imageUri, pickedDialogue, manualScript, activeStyle,
+    userIsPro, user, mode,
+    // Session 33 round 2 — these were MISSING, causing stale closures.
+    // When the user picked a variant / BGM / voice, generate() still
+    // saw them as null and either (a) re-cartoonized instead of using
+    // the picked variant, (b) skipped BGM entirely, (c) used the
+    // wrong voice.
+    pickedVariantPath, bgmStyle,
+    cartoonVoiceId, cartoonVoiceStyle, emotion,
+    tkVoiceId, tkVoiceStyle, tkVoiceRate, tkVoicePitch,
+    tkMotion, tkAspect, tkRes,
+  ]);
 
   // ────────────────────────── Step navigation ──────────────────────────
   const next = () => setStep(s => Math.min(s + 1, 5));

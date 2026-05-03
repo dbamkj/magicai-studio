@@ -37,7 +37,13 @@ interface Project {
 const IMAGE_TYPES = ['headswap', 'bodyswap', 'imagegen', 'faceswap_img', 'multi_bodyswap', 'multi_headswap'];
 const isImageType = (type: string) => IMAGE_TYPES.includes(type);
 const typeLabel = (t: string) => {
-  const map: Record<string, string> = { lipsync: 'Lip Sync', faceswap: 'Face Swap', faceswap_img: 'Face Swap (Image)', headswap: 'Head Swap', bodyswap: 'Body Swap', imagegen: 'AI Image', videogen: 'AI Video', redub: 'Re-dub', multi_bodyswap: 'Multi Body Swap', multi_headswap: 'Multi Head Swap' };
+  const map: Record<string, string> = {
+    lipsync: 'Lip Sync', faceswap: 'Face Swap', faceswap_img: 'Face Swap (Image)',
+    headswap: 'Head Swap', bodyswap: 'Body Swap', imagegen: 'AI Image',
+    videogen: 'AI Video', redub: 'Re-dub', multi_bodyswap: 'Multi Body Swap',
+    multi_headswap: 'Multi Head Swap', cartoon_avatar: 'Cartoon Avatar',
+    talking_avatar: 'AI Avatar',
+  };
   return map[t] || t;
 };
 
@@ -320,7 +326,7 @@ export default function ProjectsScreen() {
     if (filter === 'all') return projects;
     if (filter === 'video') return projects.filter(p => !isImageType(p.type) && !['cartoon_avatar','headswap'].includes(p.type));
     if (filter === 'image') return projects.filter(p => isImageType(p.type));
-    if (filter === 'avatar') return projects.filter(p => ['cartoon_avatar','headswap','faceswap_img'].includes(p.type));
+    if (filter === 'avatar') return projects.filter(p => ['cartoon_avatar','talking_avatar','headswap','faceswap_img'].includes(p.type));
     return projects;
   }, [projects, filter]);
 

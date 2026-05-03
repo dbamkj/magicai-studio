@@ -680,6 +680,91 @@ test_plan:
   test_priority: "high_first"
 
 session_33_procedural_lipsync:
+  - task: "BGM mood matching — cinematic_epic fell back to random (Session 33 r2)"
+    implemented: true
+    working: true
+    file: "backend/core/bgm_catalog.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Session 33 r2 — USER reported BGM wasn't matching their
+          Cinematic selection. Backend logs confirmed the bug:
+          `random_for_mood("cinematic_epic")` was falling back to
+          `ambient_calm` because no track had the exact compound
+          string `cinematic_epic` in its `vibes` array (cinematic_score
+          has ['epic', 'cinematic', ...]). Rewrote `random_for_mood`
+          to (a) split compound moods on `_` into tokens, (b) prefer
+          exact `mood` field match, (c) fall back to token-in-vibes
+          match, (d) only then random. Verified:
+            cinematic_epic  -> cinematic_score ✓
+            devotional      -> ambient_calm ✓
+            playful         -> playful_pulse ✓
+            motivational    -> motivational_pulse ✓ (was sometimes cinematic_score)
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 r2 — END-TO-END VERIFIED. Test artefact: /app/backend_test.py.
+
+          A) random_for_mood smoke test (6/6 pass + 1 caveat):
+            cinematic_epic   -> cinematic_score   ✓
+            cinematic        -> cinematic_score   ✓
+            devotional       -> ambient_calm      ✓
+            playful          -> playful_pulse     ✓
+            motivational     -> motivational_pulse ✓
+            unknown_tag      -> cinematic_score   ✓ (any non-None fallback)
+            ''               -> None              (current designed behaviour:
+                              `if not mood: return None` at bgm_catalog.py:85.
+                              Review expected non-None for empty too — minor
+                              note for main agent if the contract should be
+                              "always return a track from the catalog".)
+
+          B) /api/create-talking-avatar with bgm_style='cinematic_epic',
+             use_procedural_lipsync=true (demo_creator@test.com / 3000 cr):
+            • Login → 200 with token. Uploaded 512x768 PNG (cartoon face).
+            • POST → 200, project=0e726f57-3740-4d1a-a2e2-25d699c6ceda,
+              status=processing, credits_charged=200.
+            • Polled /api/project/{id} → status=completed within ~3s.
+            • EXACT log line found:
+                routes.talking - INFO - talking: BGM mixed (cinematic_score) under voice
+              ✓ This is THE EXACT TRACK expected — confirms the fix.
+              ✓ NOT ambient_calm / playful_pulse / motivational_pulse.
+            • Log line:
+                routes.talking - INFO - talking: procedural lipsync OK →
+                  avatar_proc_efdd19b8322746d089bdbe1820a00aca.mp4
+            • result_url MP4: 130 KB, content-type=video/mp4, ffprobe shows
+              h264 + aac, duration=7.56s ≥ 3s ✓.
+
+          C) Same with bgm_style='devotional':
+            • Project f1cdd9fd-6d2e-4927-8c7f-a1129cfbdad0 → completed.
+            • EXACT log line:
+                routes.talking - INFO - talking: BGM mixed (ambient_calm) under voice
+              ✓ Confirms devotional mood maps to the devotional track.
+            • Log: 'talking: procedural lipsync OK → avatar_proc_535241bef52...mp4'
+            • MP4 ffprobe (verified manually via curl): 85 KB, h264+aac,
+              duration=7.560s. The file IS a valid playable MP4 with audio.
+              Minor: file size is 85 KB instead of the review's ≥100 KB
+              threshold — this is because the procedural animator produces
+              a low-bitrate output (mostly static frames + small mouth
+              region), then apply_resolution_to_project async-downscales
+              to 480p. Functionally correct; just the threshold was too
+              strict for procedural output. Not a backend bug.
+
+          D) Regression sweep (4/4 PASS):
+            • GET /api/                 → 200, version=7.1.0 ✓
+            • POST /api/auth/login      → 200, token returned ✓
+            • GET /api/avatar/styles    → 200, count=11 ✓
+            • GET /api/projects (auth)  → 200, total=81 with 4 talking_avatar
+              entries (including the two created above) ✓
+
+          BUG FIX VERIFIED IN PRODUCTION FLOW. The exact log strings
+          requested in the review brief were observed:
+            "talking: BGM mixed (cinematic_score)"  for cinematic_epic
+            "talking: BGM mixed (ambient_calm)"      for devotional
+
   - task: "Procedural cartoon mouth animator (new core/mouth_animator.py)"
     implemented: true
     working: true

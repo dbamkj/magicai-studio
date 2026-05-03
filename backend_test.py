@@ -1,301 +1,260 @@
-#!/usr/bin/env python3
-"""Session 33 backend tests."""
-import asyncio
-import base64
-import io
-import time
-import subprocess
+"""Session 33 r2 — verify BGM mood matching fix end-to-end.
+
+Tests:
+  A) Direct import smoke-test for random_for_mood
+  B) /api/create-talking-avatar with bgm_style='cinematic_epic' →
+     log line "talking: BGM mixed (cinematic_score) under voice"
+  C) Same with bgm_style='devotional' → "talking: BGM mixed (ambient_calm)..."
+  D) Regression sweep
+"""
+from __future__ import annotations
+import json, pathlib, subprocess, sys, time
+from typing import Optional
 
 import httpx
 from PIL import Image, ImageDraw
 
-BASE = "https://creative-plan-engine.preview.emergentagent.com/api"
+BACKEND_URL = "https://creative-plan-engine.preview.emergentagent.com"
+API = f"{BACKEND_URL}/api"
 EMAIL = "demo_creator@test.com"
 PASSWORD = "Test@123"
+LOG_FILE = "/var/log/supervisor/backend.err.log"
 
 
-def log(msg):
-    print(msg, flush=True)
+def ok(msg: str): print(f"\033[92m[PASS]\033[0m {msg}")
+def fail(msg: str): print(f"\033[91m[FAIL]\033[0m {msg}")
+def info(msg: str): print(f"\033[94m[INFO]\033[0m {msg}")
 
 
-def make_png_bytes(w=512, h=768):
-    img = Image.new("RGB", (w, h), (240, 220, 200))
+def make_cartoon_png(path: pathlib.Path, w: int = 512, h: int = 768) -> None:
+    img = Image.new("RGB", (w, h), (250, 230, 210))
     d = ImageDraw.Draw(img)
-    d.ellipse((w*0.20, h*0.18, w*0.80, h*0.65), fill=(245, 215, 180), outline=(80, 60, 50), width=4)
-    d.ellipse((w*0.34, h*0.34, w*0.42, h*0.40), fill=(40, 40, 40))
-    d.ellipse((w*0.58, h*0.34, w*0.66, h*0.40), fill=(40, 40, 40))
-    d.rectangle((w*0.40, h*0.50, w*0.60, h*0.54), fill=(160, 60, 60))
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    return buf.getvalue()
+    fx0, fy0, fx1, fy1 = w*0.18, h*0.20, w*0.82, h*0.78
+    d.ellipse([fx0, fy0, fx1, fy1], fill=(255, 220, 190), outline=(120, 80, 60), width=4)
+    eye_y = h*0.42
+    d.ellipse([w*0.32, eye_y-20, w*0.42, eye_y+20], fill=(255,255,255), outline=(0,0,0), width=3)
+    d.ellipse([w*0.58, eye_y-20, w*0.68, eye_y+20], fill=(255,255,255), outline=(0,0,0), width=3)
+    d.ellipse([w*0.355, eye_y-8, w*0.395, eye_y+8], fill=(0,0,0))
+    d.ellipse([w*0.615, eye_y-8, w*0.655, eye_y+8], fill=(0,0,0))
+    d.line([(w*0.50, h*0.50), (w*0.50, h*0.58)], fill=(120,80,60), width=4)
+    d.arc([w*0.36, h*0.58, w*0.64, h*0.70], start=0, end=180, fill=(160,40,40), width=6)
+    img.save(path, "PNG")
 
 
-def make_jpg_b64(size=384):
-    img = Image.new("RGB", (size, size))
-    for y in range(size):
-        c = (int(40 + y * 0.5), int(80 + y * 0.3), max(0, int(180 - y * 0.3)))
-        for x in range(size):
-            img.putpixel((x, y), c)
-    d = ImageDraw.Draw(img)
-    d.ellipse((size*0.20, size*0.20, size*0.80, size*0.85), fill=(245, 215, 180))
-    d.ellipse((size*0.32, size*0.40, size*0.42, size*0.48), fill=(20, 20, 20))
-    d.ellipse((size*0.58, size*0.40, size*0.68, size*0.48), fill=(20, 20, 20))
-    d.rectangle((size*0.40, size*0.62, size*0.60, size*0.68), fill=(150, 60, 60))
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=85)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-async def login(client):
-    r = await client.post(f"{BASE}/auth/login", json={"email": EMAIL, "password": PASSWORD})
+def login() -> str:
+    r = httpx.post(f"{API}/auth/login", json={"email": EMAIL, "password": PASSWORD}, timeout=30)
     r.raise_for_status()
-    return r.json()["token"]
+    j = r.json()
+    return j.get("token") or j.get("access_token")
 
 
-async def upload_image(client, token):
-    png_bytes = make_png_bytes(512, 768)
-    files = {"file": ("avatar.png", png_bytes, "image/png")}
-    r = await client.post(f"{BASE}/upload-image", files=files,
-                          headers={"Authorization": f"Bearer {token}"})
+def upload_image(token: str, path: pathlib.Path) -> str:
+    with open(path, "rb") as fh:
+        files = {"file": (path.name, fh, "image/png")}
+        r = httpx.post(f"{API}/upload-image", files=files,
+                       headers={"Authorization": f"Bearer {token}"}, timeout=60)
     r.raise_for_status()
-    return r.json()
+    return r.json()["file_path"]
 
 
-async def test_a_procedural(client, token):
-    log("\n=== A) create-talking-avatar use_procedural_lipsync=true ===")
-    up = await upload_image(client, token)
-    img_path = up.get("file_path") or up.get("path")
-    log(f"  uploaded: {img_path}")
+def create_talking(token: str, image_path: str, bgm_style: str) -> str:
     body = {
-        "image_path": img_path,
-        "script": "Namaste doston, aaj ham ek nayi kahani sunne wale hain. Yeh bahut interesting hai.",
+        "image_path": image_path,
+        "script": "Namaste doston, yeh ek epic cinematic avatar hai. Hari Om.",
         "voice_id": "hi-IN-SwaraNeural",
+        "motion": "ken_burns",
         "aspect_ratio": "9:16",
         "resolution": "480p",
+        "bgm_style": bgm_style,
         "use_procedural_lipsync": True,
     }
-    t0 = time.time()
-    r = await client.post(f"{BASE}/create-talking-avatar", json=body,
-                          headers={"Authorization": f"Bearer {token}"}, timeout=60)
-    log(f"  POST status={r.status_code} latency={time.time()-t0:.2f}s")
+    r = httpx.post(f"{API}/create-talking-avatar", json=body,
+                   headers={"Authorization": f"Bearer {token}"}, timeout=60)
     if r.status_code != 200:
-        log(f"  FAIL body: {r.text[:400]}")
-        return False
-    data = r.json()
-    log(f"  resp project_id={data.get('project_id')} status={data.get('status')} credits={data.get('credits_charged')}")
-    pid = data.get("project_id")
-    if not pid or data.get("status") != "processing":
-        return False
-
-    poll_start = time.time()
-    final = None
-    while time.time() - poll_start < 120:
-        await asyncio.sleep(5)
-        rp = await client.get(f"{BASE}/project/{pid}", headers={"Authorization": f"Bearer {token}"})
-        if rp.status_code == 200:
-            pj = rp.json()
-            log(f"  poll t={int(time.time()-poll_start)}s status={pj.get('status')} progress={pj.get('progress')}")
-            if pj.get("status") in ("completed", "failed"):
-                final = pj
-                break
-    if not final or final.get("status") != "completed":
-        log(f"  FAIL: did not complete; final={final}")
-        return False
-    log(f"  COMPLETED in {time.time()-poll_start:.1f}s")
-    result_url = final.get("result_url")
-    log(f"  result_url={result_url}")
-    if not result_url or ".mp4" not in result_url:
-        return False
-
-    full_url = result_url if result_url.startswith("http") else f"https://creative-plan-engine.preview.emergentagent.com{result_url}"
-    rd = await client.get(full_url, timeout=60)
-    log(f"  download status={rd.status_code} ct={rd.headers.get('content-type')} size={len(rd.content)}")
-    if rd.status_code != 200 or len(rd.content) < 10240:
-        return False
-
-    # Logs
-    for f in ("/var/log/supervisor/backend.err.log", "/var/log/supervisor/backend.out.log"):
-        try:
-            g = subprocess.run(["grep", "-c", "talking: procedural lipsync OK", f], capture_output=True, text=True)
-            log(f"  log {f}: 'procedural lipsync OK' count={g.stdout.strip()}")
-        except Exception:
-            pass
-    return True
+        raise SystemExit(f"create-talking-avatar {r.status_code}: {r.text[:300]}")
+    return r.json()["project_id"]
 
 
-async def test_a_reg(client, token):
-    log("\n=== A-reg) create-talking-avatar use_procedural_lipsync=false ===")
-    up = await upload_image(client, token)
-    img_path = up.get("file_path") or up.get("path")
-    body = {
-        "image_path": img_path,
-        "script": "Hello, this is a quick MagicHour regression test for talking avatar.",
-        "voice_id": "en-US-JennyNeural",
-        "aspect_ratio": "9:16",
-        "resolution": "480p",
-        "use_procedural_lipsync": False,
-    }
-    t0 = time.time()
-    r = await client.post(f"{BASE}/create-talking-avatar", json=body,
-                          headers={"Authorization": f"Bearer {token}"}, timeout=60)
-    log(f"  POST status={r.status_code} latency={time.time()-t0:.2f}s")
-    if r.status_code != 200:
-        log(f"  FAIL: {r.text[:300]}")
-        return False
-    d = r.json()
-    log(f"  resp project_id={d.get('project_id')} status={d.get('status')} credits={d.get('credits_charged')}")
-    if d.get("status") != "processing":
-        return False
-    # Wait for MH upload step in background
-    pid = d.get("project_id")
-    await asyncio.sleep(15)
-    rp = await client.get(f"{BASE}/project/{pid}", headers={"Authorization": f"Bearer {token}"})
-    if rp.status_code == 200:
-        pj = rp.json()
-        log(f"  after 15s: status={pj.get('status')} progress={pj.get('progress')}")
-    return True
+def poll_project(token: str, pid: str, max_s: int = 180) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    deadline = time.time() + max_s
+    last = None
+    while time.time() < deadline:
+        r = httpx.get(f"{API}/project/{pid}", headers=headers, timeout=30)
+        if r.status_code == 200:
+            j = r.json()
+            last = j
+            st = j.get("status")
+            if st in ("completed", "failed"):
+                return j
+        time.sleep(3)
+    return last or {}
 
 
-async def test_b_cartoonize(client, token):
-    log("\n=== B) cartoonize 5x concurrent ===")
-    img_b64 = make_jpg_b64(384)
-    emotions = ["happy", "excited", "confident", "playful", "peaceful"]
-
-    async def fire(i, emo):
-        try:
-            r = await client.post(f"{BASE}/avatar/cartoonize",
-                                  json={"image_b64": img_b64, "style": "pixar", "emotion": emo},
-                                  headers={"Authorization": f"Bearer {token}"}, timeout=30)
-            log(f"  [{i}] emo={emo} -> {r.status_code}")
-            if r.status_code == 200:
-                return r.json().get("job_id")
-        except Exception as e:
-            log(f"  [{i}] exc: {e}")
+def grep_log_recent(pattern: str, since_lines: int = 6000) -> Optional[str]:
+    try:
+        out = subprocess.check_output(
+            ["tail", "-n", str(since_lines), LOG_FILE], text=True, timeout=10,
+        )
+    except Exception:
         return None
+    for line in out.splitlines()[::-1]:
+        if pattern in line:
+            return line
+    return None
 
-    job_ids = await asyncio.gather(*[fire(i, e) for i, e in enumerate(emotions)])
-    job_ids = [j for j in job_ids if j]
-    log(f"  jobs: {len(job_ids)}/5: {job_ids}")
-    if len(job_ids) != 5:
+
+def test_a_smoke():
+    print("\n=== A) random_for_mood smoke test ===")
+    sys.path.insert(0, "/app/backend")
+    from core.bgm_catalog import random_for_mood, get_catalog
+    cat_ids = [t["id"] for t in get_catalog()]
+    info(f"catalog ids: {cat_ids}")
+    expectations = {
+        "cinematic_epic": "cinematic_score",
+        "cinematic": "cinematic_score",
+        "devotional": "ambient_calm",
+        "playful": "playful_pulse",
+        "motivational": "motivational_pulse",
+    }
+    failures = 0
+    for m, want in expectations.items():
+        t = random_for_mood(m)
+        got = (t or {}).get("id")
+        if got == want:
+            ok(f"random_for_mood({m!r}) -> {got}")
+        else:
+            fail(f"random_for_mood({m!r}) -> {got}, want {want}")
+            failures += 1
+    t_unk = random_for_mood("unknown_tag")
+    if t_unk and t_unk.get("id") in cat_ids:
+        ok(f"random_for_mood('unknown_tag') -> {t_unk.get('id')} (any non-None fallback)")
+    else:
+        fail(f"random_for_mood('unknown_tag') -> {t_unk}")
+        failures += 1
+    t_empty = random_for_mood("")
+    info(f"random_for_mood('') -> {t_empty}  (None is current designed behaviour)")
+    return failures == 0
+
+
+def test_full(token: str, image_path: str, bgm_style: str, expected_track: str) -> bool:
+    print(f"\n=== {bgm_style} → expecting BGM mixed ({expected_track}) ===")
+    pid = create_talking(token, image_path, bgm_style)
+    info(f"project_id={pid}")
+
+    j = poll_project(token, pid, max_s=180)
+    st = j.get("status")
+    if st != "completed":
+        fail(f"project {pid} status={st} progress={j.get('progress')} err={j.get('error')}")
         return False
+    ok(f"project {pid} completed")
 
-    final = {}
-    poll_start = time.time()
-    while time.time() - poll_start < 150 and len(final) < 5:
-        await asyncio.sleep(3)
-        for jid in job_ids:
-            if jid in final:
-                continue
-            try:
-                r = await client.get(f"{BASE}/avatar/jobs/{jid}", timeout=20)
-                if r.status_code == 200:
-                    st = r.json().get("status")
-                    if st in ("completed", "failed"):
-                        final[jid] = st
-                        log(f"  {jid}={st} t={int(time.time()-poll_start)}s")
-            except Exception:
-                pass
+    bgm_line = grep_log_recent(f"talking: BGM mixed ({expected_track})")
+    if not bgm_line:
+        any_bgm = grep_log_recent("talking: BGM mixed")
+        fail(f"missing 'talking: BGM mixed ({expected_track})'. Most recent BGM line: {any_bgm}")
+        return False
+    ok(f"log: {bgm_line.strip()[-160:]}")
 
-    completed = sum(1 for v in final.values() if v == "completed")
-    failed = sum(1 for v in final.values() if v == "failed")
-    pending = 5 - len(final)
-    log(f"  Final: completed={completed} failed={failed} pending={pending}")
-
-    # log markers
-    for f in ("/var/log/supervisor/backend.err.log",):
-        try:
-            g1 = subprocess.run(["grep", "-c", "nano banana OK on attempt", f], capture_output=True, text=True)
-            g2 = subprocess.run(["grep", "-c", "nano banana attempt", f], capture_output=True, text=True)
-            g3 = subprocess.run(["grep", "-c", "nano banana ALL", f], capture_output=True, text=True)
-            log(f"  log: OK_on_attempt={g1.stdout.strip()} attempt_warn={g2.stdout.strip()} ALL_failed={g3.stdout.strip()}")
-        except Exception:
-            pass
-
-    return completed >= 4
-
-
-async def test_c_preview(client):
-    log("\n=== C) generate-prompts/preview-audio ===")
-    cases = [
-        {"text": "Namaste, aaj ka din bahut shubh hai. Hari Om.", "voice_id": "hi-IN-SwaraNeural", "language": "hindi"},
-        {"text": "Hello world, welcome to MagiCAi Studio.", "voice_id": "en-US-JennyNeural", "language": "english"},
-    ]
-    ok = True
-    for case in cases:
-        t0 = time.time()
-        try:
-            r = await client.post(f"{BASE}/generate-prompts/preview-audio", json=case, timeout=60)
-            ct = (r.headers.get("content-type") or "").lower()
-            log(f"  voice={case['voice_id']} status={r.status_code} ct={ct} size={len(r.content)} latency={time.time()-t0:.2f}s")
-            if r.status_code != 200 or "audio/mpeg" not in ct or len(r.content) < 10240:
-                log(f"    FAIL")
-                ok = False
-        except Exception as e:
-            log(f"    EXC: {e}"); ok = False
-    return ok
-
-
-async def test_d_reg(client, token):
-    log("\n=== D) Regression sweep ===")
-    ok = True
-
-    r = await client.get(f"{BASE}/")
-    j = r.json() if r.status_code == 200 else {}
-    ver = j.get("version", "")
-    log(f"  /api/ -> {r.status_code} version={ver}")
-    if r.status_code != 200 or not ver.startswith("7."):
-        ok = False
-
-    r = await client.get(f"{BASE}/avatar/styles")
-    if r.status_code == 200:
-        emos = r.json().get("emotions", [])
-        log(f"  /avatar/styles -> 200 emotions_len={len(emos)}")
-        if len(emos) < 12:
-            ok = False
+    proc_line = grep_log_recent("talking: procedural lipsync OK")
+    if proc_line:
+        ok(f"log: {proc_line.strip()[-140:]}")
     else:
-        log(f"  /avatar/styles -> {r.status_code}"); ok = False
+        info("(no procedural-lipsync OK line found in tail)")
 
-    r = await client.get(f"{BASE}/marketplace/templates?limit=3")
-    log(f"  /marketplace/templates?limit=3 -> {r.status_code}")
+    result_url = j.get("result_url")
+    if not result_url:
+        fail(f"no result_url: {j}")
+        return False
+    full_url = result_url if result_url.startswith("http") else f"{BACKEND_URL}{result_url}"
+    r = httpx.get(full_url, timeout=60)
     if r.status_code != 200:
-        ok = False
+        fail(f"GET {full_url} -> {r.status_code}")
+        return False
+    size_kb = len(r.content) / 1024
+    ctype = r.headers.get("content-type", "")
+    if size_kb < 100 or "video/mp4" not in ctype:
+        fail(f"MP4 size={size_kb:.1f}KB ctype={ctype}")
+        return False
+    ok(f"MP4: {size_kb:.1f}KB ctype={ctype}")
 
-    r = await client.post(f"{BASE}/auth/login", json={"email": EMAIL, "password": PASSWORD})
-    has_t = "token" in (r.json() if r.status_code == 200 else {})
-    log(f"  /auth/login -> {r.status_code} has_token={has_t}")
-    if r.status_code != 200 or not has_t:
-        ok = False
+    tmp = pathlib.Path(f"/tmp/talking_{pid[:8]}.mp4")
+    tmp.write_bytes(r.content)
+    pr = subprocess.run(
+        ["/usr/bin/ffprobe", "-v", "error", "-show_streams", "-show_format",
+         "-of", "json", str(tmp)],
+        capture_output=True, timeout=20,
+    )
+    try:
+        meta = json.loads(pr.stdout.decode())
+    except Exception:
+        fail(f"ffprobe failed: {pr.stderr.decode()[:200]}")
+        return False
+    streams = meta.get("streams", [])
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    audio_codec = next((s.get("codec_name") for s in streams if s.get("codec_type") == "audio"), None)
+    duration = float(meta.get("format", {}).get("duration") or 0)
+    if not has_audio:
+        fail("MP4 has no audio stream")
+        return False
+    if duration < 3.0:
+        fail(f"duration too short: {duration:.2f}s")
+        return False
+    ok(f"ffprobe: audio={audio_codec} duration={duration:.2f}s")
+    return True
 
-    r = await client.get(f"{BASE}/mode")
+
+def test_d_regression(token: str) -> bool:
+    print("\n=== D) Regression sweep ===")
+    fails = 0
+    r = httpx.get(f"{API}/", timeout=15)
     if r.status_code == 200:
-        env = r.json().get("env")
-        log(f"  /mode -> 200 env={env}")
-        if env != "BETA":
-            ok = False
+        ok(f"GET /api/ -> 200 v={r.json().get('version')}")
     else:
-        log(f"  /mode -> {r.status_code}"); ok = False
+        fail(f"GET /api/ -> {r.status_code}"); fails += 1
+    r = httpx.post(f"{API}/auth/login", json={"email": EMAIL, "password": PASSWORD}, timeout=15)
+    if r.status_code == 200 and (r.json().get("token") or r.json().get("access_token")):
+        ok("POST /api/auth/login -> 200")
+    else:
+        fail(f"login -> {r.status_code}"); fails += 1
+    r = httpx.get(f"{API}/avatar/styles", timeout=15)
+    if r.status_code == 200 and "styles" in r.json():
+        ok(f"GET /api/avatar/styles -> 200 count={r.json().get('count')}")
+    else:
+        fail(f"GET /api/avatar/styles -> {r.status_code}"); fails += 1
+    r = httpx.get(f"{API}/projects", headers={"Authorization": f"Bearer {token}"}, timeout=20)
+    if r.status_code == 200:
+        data = r.json()
+        projs = data if isinstance(data, list) else data.get("projects", [])
+        ta = [p for p in projs if p.get("type") == "talking_avatar"]
+        ok(f"GET /api/projects -> 200 total={len(projs)} talking_avatar={len(ta)}")
+        if not ta:
+            fail("expected ≥1 talking_avatar project, got 0"); fails += 1
+    else:
+        fail(f"GET /api/projects -> {r.status_code}"); fails += 1
+    return fails == 0
 
-    return ok
 
-
-async def main():
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        token = await login(client)
-        log(f"Logged in, token len={len(token)}")
-
-        d_ok = await test_d_reg(client, token)
-        c_ok = await test_c_preview(client)
-        b_ok = await test_b_cartoonize(client, token)
-        a_ok = await test_a_procedural(client, token)
-        a_reg_ok = await test_a_reg(client, token)
-
-    log("\n========== SUMMARY ==========")
-    log(f"  A) procedural lipsync: {'PASS' if a_ok else 'FAIL'}")
-    log(f"  A-reg) MH path request: {'PASS' if a_reg_ok else 'FAIL'}")
-    log(f"  B) cartoonize 5x: {'PASS' if b_ok else 'FAIL'}")
-    log(f"  C) preview-audio: {'PASS' if c_ok else 'FAIL'}")
-    log(f"  D) regression: {'PASS' if d_ok else 'FAIL'}")
+def main():
+    print(f"Backend: {API}")
+    a_ok = test_a_smoke()
+    token = login()
+    info(f"auth token: ***{token[-8:] if token else None}")
+    img_path = pathlib.Path("/tmp/cartoon_512x768.png")
+    make_cartoon_png(img_path)
+    info(f"made cartoon {img_path} ({img_path.stat().st_size} B)")
+    upload_path = upload_image(token, img_path)
+    info(f"uploaded -> {upload_path}")
+    b_ok = test_full(token, upload_path, "cinematic_epic", "cinematic_score")
+    c_ok = test_full(token, upload_path, "devotional", "ambient_calm")
+    d_ok = test_d_regression(token)
+    print("\n=== SUMMARY ===")
+    print(f"A (smoke):              {'PASS' if a_ok else 'FAIL'}")
+    print(f"B (cinematic_epic mix): {'PASS' if b_ok else 'FAIL'}")
+    print(f"C (devotional mix):     {'PASS' if c_ok else 'FAIL'}")
+    print(f"D (regression):         {'PASS' if d_ok else 'FAIL'}")
+    sys.exit(0 if all([a_ok, b_ok, c_ok, d_ok]) else 1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

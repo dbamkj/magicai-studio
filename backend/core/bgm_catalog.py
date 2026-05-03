@@ -75,10 +75,43 @@ def get_catalog() -> list[dict]:
 
 
 def random_for_mood(mood: str) -> Optional[dict]:
-    """Non-LLM fallback: pick any track that matches the mood keyword."""
-    pool = [t for t in get_catalog() if mood in t.get('vibes', [])]
+    """Non-LLM fallback: pick any track that matches the mood keyword.
+
+    Accepts both compound mood ids (e.g. 'cinematic_epic') and bare
+    vibe tags (e.g. 'cinematic'). Matching is substring-based in both
+    directions so that 'cinematic_epic' matches a track tagged with
+    'cinematic' or 'epic', and vice-versa.
+    """
+    if not mood:
+        return None
+    needle = mood.strip().lower()
+    # Split compound moods like 'cinematic_epic' into ['cinematic', 'epic']
+    tokens = [t for t in needle.replace('-', '_').split('_') if t]
+
+    def matches(track: dict) -> bool:
+        tmood = (track.get('mood') or '').lower()
+        tvibes = [v.lower() for v in track.get('vibes', [])]
+        # 1) exact mood or exact vibe match
+        if tmood == needle or needle in tvibes:
+            return True
+        # 2) token-level overlap (handles 'cinematic_epic' <-> 'cinematic')
+        for t in tokens:
+            if t == tmood or t in tvibes:
+                return True
+            # substring hit in either direction for safety
+            if any(t in v or v in t for v in tvibes):
+                return True
+        return False
+
+    catalog = get_catalog()
+    # Priority 1: exact mood match (e.g. needle='playful' -> track.mood=='playful')
+    exact = [t for t in catalog if (t.get('mood') or '').lower() == needle]
+    if exact:
+        return random.choice(exact)
+    # Priority 2: mood token in vibes (e.g. 'cinematic_epic' -> vibes has 'cinematic')
+    pool = [t for t in catalog if matches(t)]
     if not pool:
-        pool = get_catalog()
+        pool = catalog
     return random.choice(pool) if pool else None
 
 
