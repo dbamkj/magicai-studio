@@ -1,405 +1,423 @@
-"""Phase 2 emotion-aware TTS re-verification (Tests B, C, D).
+"""Phase 3 verification — camera + effects engine end-to-end.
 
-Verifies the type-mismatch fixes:
-  1. emotion_to_voice_params returns voice_rate as edge-tts string format
-  2. _is_blank_rate helper treats None/0/0.0/"+0%"/empty as no override
+Tests A, B, C, D (procedural lipsync → camera+effects) + E regression.
 """
-import os
-import time
-import re
-import sys
+from __future__ import annotations
+
 import json
+import os
+import re
 import subprocess
+import sys
+import time
+from pathlib import Path
 
 import requests
+from PIL import Image
 
-BASE = "https://creative-plan-engine.preview.emergentagent.com"
-API = f"{BASE}/api"
-EMAIL = "demo_creator@test.com"
-PASSWORD = "Test@123"
+BACKEND_URL = "https://creative-plan-engine.preview.emergentagent.com"
+API = BACKEND_URL + "/api"
 
-TS = int(time.time())
+DEMO_CREATOR = {"email": "demo_creator@test.com", "password": "Test@123"}
 
+LOG_PATH = "/var/log/supervisor/backend.err.log"
 
-def log(msg):
-    print(f"[t+{int(time.time()-TS):03d}s] {msg}", flush=True)
+results: list[tuple[str, bool, str]] = []
 
 
-def login():
-    r = requests.post(f"{API}/auth/login", json={"email": EMAIL, "password": PASSWORD}, timeout=20)
+def _log_size() -> int:
+    try:
+        return os.path.getsize(LOG_PATH)
+    except Exception:
+        return 0
+
+
+def _read_log_tail(start_offset: int) -> str:
+    try:
+        with open(LOG_PATH, "rb") as f:
+            f.seek(start_offset)
+            return f.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        return f"<log read failed: {e}>"
+
+
+def login(creds: dict) -> tuple[str, dict]:
+    r = requests.post(f"{API}/auth/login", json=creds, timeout=30)
     r.raise_for_status()
     j = r.json()
-    log(f"login OK tier={j['user']['subscription_tier']} credits={j['user'].get('credits_balance')}")
     return j["token"], j["user"]
 
 
-def topup_if_needed(user_id, min_credits=200):
-    """Top up via direct mongo if creds < min_credits."""
-    try:
-        from pymongo import MongoClient
-        mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-        # Read from backend/.env if env not set
-        if "localhost" in mongo_url and not os.environ.get("MONGO_URL"):
-            with open("/app/backend/.env") as f:
-                for line in f:
-                    if line.startswith("MONGO_URL"):
-                        mongo_url = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
-        client = MongoClient(mongo_url)
-        # Find DB name
-        db_name = "magicai_beta"  # BETA env
-        db = client[db_name]
-        u = db.users.find_one({"id": user_id})
-        if not u:
-            u = db.users.find_one({"email": EMAIL})
-        if not u:
-            log("topup: user not found in mongo, skipping")
-            return
-        bal = u.get("credits_balance", 0)
-        if bal < min_credits:
-            db.users.update_one({"id": u["id"]}, {"$set": {"credits_balance": 5000}})
-            log(f"topup: credits {bal} -> 5000")
-        else:
-            log(f"topup: credits OK ({bal})")
-    except Exception as e:
-        log(f"topup: skipped ({e})")
+def topup_if_needed(user_id: str, min_credits: int = 500) -> int:
+    from pymongo import MongoClient
+    for dbn in ("magicai_beta", "videoai_database"):
+        try:
+            c = MongoClient("mongodb://localhost:27017", serverSelectionTimeoutMS=2000)
+            db = c[dbn]
+            u = db.users.find_one({"id": user_id})
+            if not u:
+                continue
+            bal = int(u.get("credits_balance") or 0)
+            if bal < min_credits:
+                db.users.update_one({"id": user_id},
+                                    {"$set": {"credits_balance": 5000,
+                                              "daily_usage": 0}})
+                print(f"  [topup] {dbn}: {bal} -> 5000 credits on {user_id}")
+                return 5000
+            print(f"  [credits-ok] {dbn}: balance={bal}")
+            return bal
+        except Exception as e:
+            print(f"  [topup err {dbn}]: {e}")
+    return 0
 
 
-def upload_image(token):
-    """Upload a 512x768 PNG."""
-    from PIL import Image
-    import io
-
-    img = Image.new("RGB", (512, 768), color=(180, 130, 90))
-    # Add some variation
-    import random
+def make_png(path: Path, w=512, h=768, color=(220, 180, 120)) -> Path:
+    img = Image.new("RGB", (w, h), color)
     px = img.load()
-    random.seed(42)
-    for i in range(0, 512, 4):
-        for j in range(0, 768, 4):
-            px[i, j] = (180 + random.randint(-20, 20), 130 + random.randint(-20, 20), 90 + random.randint(-20, 20))
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    files = {"file": ("portrait.png", buf, "image/png")}
-    headers = {"Authorization": f"Bearer {token}"}
-    r = requests.post(f"{API}/upload-face-image", files=files, headers=headers, timeout=30)
-    r.raise_for_status()
+    for (cx, cy) in [(int(w * 0.35), int(h * 0.35)), (int(w * 0.65), int(h * 0.35))]:
+        for dy in range(-14, 15):
+            for dx in range(-18, 19):
+                if dx * dx + dy * dy * 2 < 300:
+                    if 0 <= cy + dy < h and 0 <= cx + dx < w:
+                        px[cx + dx, cy + dy] = (40, 40, 40)
+    mx, my = int(w * 0.5), int(h * 0.62)
+    for dy in range(-10, 11):
+        for dx in range(-60, 61):
+            if abs(dy) <= 6 and abs(dx) <= 50:
+                if 0 <= my + dy < h and 0 <= mx + dx < w:
+                    px[mx + dx, my + dy] = (150, 40, 40)
+    img.save(path, "PNG")
+    return path
+
+
+def upload_image(token: str, path: Path) -> str:
+    with open(path, "rb") as f:
+        files = {"file": (path.name, f, "image/png")}
+        r = requests.post(f"{API}/upload-image",
+                          files=files,
+                          headers={"Authorization": f"Bearer {token}"},
+                          timeout=60)
+    if r.status_code != 200:
+        raise RuntimeError(f"upload-image failed {r.status_code}: {r.text[:200]}")
     j = r.json()
-    log(f"upload OK file_path={j['file_path']}")
-    return j["file_path"]
+    return j.get("file_path") or j.get("url")
 
 
-def poll_project(token, pid, max_wait=120):
-    headers = {"Authorization": f"Bearer {token}"}
-    start = time.time()
-    last_status = None
-    while time.time() - start < max_wait:
-        r = requests.get(f"{API}/project/{pid}", headers=headers, timeout=15)
+def poll_project(token: str, pid: str, timeout=120) -> dict:
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < timeout:
+        r = requests.get(f"{API}/project/{pid}",
+                         headers={"Authorization": f"Bearer {token}"},
+                         timeout=20)
+        if r.status_code == 200:
+            j = r.json()
+            last = j
+            st = j.get("status")
+            if st in ("completed", "failed"):
+                return j
+        time.sleep(2)
+    return last or {"status": "timeout"}
+
+
+def ffprobe_info(url_or_path: str) -> dict:
+    if url_or_path.startswith("/api/") or url_or_path.startswith("http"):
+        full = url_or_path if url_or_path.startswith("http") else BACKEND_URL + url_or_path
+        r = requests.get(full, timeout=60)
         if r.status_code != 200:
-            log(f"poll {pid[:8]} -> HTTP {r.status_code}")
-            time.sleep(3)
-            continue
-        j = r.json()
-        st = j.get("status")
-        prog = j.get("progress")
-        if st != last_status:
-            log(f"poll {pid[:8]} status={st} progress={prog}")
-            last_status = st
-        if st in ("completed", "failed"):
-            return j
-        time.sleep(3)
-    log(f"poll {pid[:8]} TIMEOUT after {max_wait}s")
-    r = requests.get(f"{API}/project/{pid}", headers=headers, timeout=15)
-    return r.json() if r.status_code == 200 else {"status": "timeout"}
-
-
-def tail_log_for(pattern, since_ts, max_age_s=180):
-    """Search backend log for line matching pattern, written since since_ts."""
+            return {"err": f"download {r.status_code}"}
+        tmp = Path("/tmp/_pcheck.mp4")
+        tmp.write_bytes(r.content)
+        size = len(r.content)
+        p = tmp
+    else:
+        p = Path(url_or_path)
+        size = p.stat().st_size if p.exists() else 0
     try:
-        out = subprocess.run(
-            ["tail", "-n", "5000", "/var/log/supervisor/backend.err.log"],
-            capture_output=True, timeout=10,
+        r = subprocess.run(
+            ["/usr/bin/ffprobe", "-v", "error",
+             "-select_streams", "v:0", "-show_entries",
+             "stream=codec_name,width,height:format=duration",
+             "-of", "json", str(p)],
+            capture_output=True, timeout=15,
         )
-        text = out.stdout.decode("utf-8", errors="ignore")
-        rx = re.compile(pattern)
-        for line in text.split("\n"):
-            if rx.search(line):
-                return line
+        info = json.loads(r.stdout.decode() or "{}")
+        s0 = (info.get("streams") or [{}])[0]
+        dur = float((info.get("format") or {}).get("duration") or "0")
+        vc = s0.get("codec_name")
+        w = s0.get("width")
+        h = s0.get("height")
     except Exception as e:
-        log(f"log read err: {e}")
-    return None
-
-
-def grab_logs_window(start_ts):
-    """Return all backend log lines for the past minutes window."""
+        return {"err": str(e), "size": size}
     try:
-        out = subprocess.run(
-            ["tail", "-n", "8000", "/var/log/supervisor/backend.err.log"],
+        r2 = subprocess.run(
+            ["/usr/bin/ffprobe", "-v", "error",
+             "-select_streams", "a:0", "-show_entries",
+             "stream=codec_name", "-of", "default=nw=1:nk=1", str(p)],
             capture_output=True, timeout=10,
         )
-        return out.stdout.decode("utf-8", errors="ignore")
+        ac = (r2.stdout.decode() or "").strip() or None
     except Exception:
-        return ""
+        ac = None
+    return {"size": size, "vcodec": vc, "acodec": ac,
+            "duration": dur, "width": w, "height": h}
 
 
-# ────────────────────── TEST D ──────────────────────
-def test_d_detect_emotion_shape():
-    log("=" * 60)
-    log("TEST D — POST /api/avatar/detect-emotion shape check")
-    log("=" * 60)
-    r = requests.post(f"{API}/avatar/detect-emotion", json={"text": "🕉️ Hari Om"}, timeout=30)
+def run_case_A(token: str, img_path: str) -> None:
+    print("\n=== A) Solo procedural + cinematic preset ===")
+    log0 = _log_size()
+    body = {
+        "image_path": img_path,
+        "script": "🎬 Welcome to the cinematic test. Magic awaits.",
+        "voice_id": "en-US-JennyNeural",
+        "use_procedural_lipsync": True,
+        "preset_id": "cinematic",
+    }
+    r = requests.post(f"{API}/create-talking-avatar",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=body, timeout=30)
+    print(f"  POST status={r.status_code}")
     if r.status_code != 200:
-        log(f"D FAIL: HTTP {r.status_code} body={r.text[:300]}")
-        return False
-    j = r.json()
-    log(f"D response: {json.dumps(j, ensure_ascii=False)[:400]}")
-    vp = j.get("voice_params") or {}
-    rate = vp.get("voice_rate")
-    pitch = vp.get("voice_pitch")
-    emotion = j.get("emotion")
-    intensity = j.get("intensity")
+        results.append(("A-create", False, f"{r.status_code}: {r.text[:200]}"))
+        return
+    pid = r.json().get("project_id")
+    print(f"  project_id={pid}")
+    res = poll_project(token, pid, timeout=120)
+    st = res.get("status")
+    result_url = res.get("result_url") or ""
+    print(f"  final status={st}  result_url={result_url}")
 
-    ok = True
-    if not isinstance(rate, str):
-        log(f"D FAIL: voice_rate is not str: type={type(rate).__name__} val={rate!r}")
-        ok = False
-    else:
-        if not (rate.startswith("-") or rate.startswith("+")):
-            log(f"D FAIL: voice_rate must start with +/-: {rate!r}")
-            ok = False
-        if not rate.endswith("%"):
-            log(f"D FAIL: voice_rate must end with %: {rate!r}")
-            ok = False
-    log(f"D detected: emotion={emotion} intensity={intensity} rate={rate!r} pitch={pitch!r}")
+    logs = _read_log_tail(log0)
+    preset_applied = bool(re.search(
+        r"talking: preset 'cinematic' applied \(voice_style=confident motion=ken_burns",
+        logs))
+    proc_ok = bool(re.search(r"talking: procedural lipsync OK → avatar_proc_[0-9a-f]+\.mp4",
+                             logs))
+    camera_line = bool(re.search(
+        r"camera: motion=ken_burns effects=\['vignette', 'depth_of_field'\] duration=",
+        logs))
+    fx_applied = bool(re.search(
+        r"talking: camera\+effects applied → avatar_proc_fx_[0-9a-f]+\.mp4 "
+        r"\(motion=ken_burns effects=\['vignette', 'depth_of_field'\]\)",
+        logs))
+    print(f"  log: preset_applied={preset_applied} proc_ok={proc_ok} "
+          f"camera={camera_line} fx_applied={fx_applied}")
 
-    # For "🕉️ Hari Om" expected emotion=devotional, rate="-4%" at intensity 0.8
-    # But intensity may vary per LLM — be lenient on exact value. Just verify
-    # devotional + rate is negative percent string.
-    if emotion == "devotional":
-        if rate != "-4%":
-            log(f"D NOTE: expected -4% for devotional@0.8, got {rate!r} (intensity={intensity})")
-            # not a hard fail if intensity differs
-    else:
-        log(f"D NOTE: emotion={emotion} (expected devotional). rate must still be percent-string.")
+    for patt, label in [
+        (r"talking: preset 'cinematic' applied[^\n]*", "preset_applied"),
+        (r"talking: procedural lipsync OK → avatar_proc_[0-9a-f]+\.mp4", "proc_ok"),
+        (r"camera: motion=ken_burns effects=\['vignette', 'depth_of_field'\][^\n]*",
+         "camera"),
+        (r"talking: camera\+effects applied → avatar_proc_fx_[0-9a-f]+\.mp4[^\n]*",
+         "fx"),
+    ]:
+        m = re.search(patt, logs)
+        if m:
+            print(f"    LOG[{label}]: {m.group(0)[:200]}")
 
-    if ok:
-        log("D PASS")
-    return ok
+    fx_in_url = "_fx_" in (result_url or "")
+    probe = {}
+    if result_url:
+        probe = ffprobe_info(result_url)
+        print(f"  ffprobe: {probe}")
+
+    ok = (st == "completed"
+          and preset_applied and proc_ok and camera_line and fx_applied
+          and fx_in_url
+          and probe.get("vcodec") == "h264"
+          and probe.get("acodec") == "aac"
+          and (probe.get("duration") or 0) > 3.0
+          and (probe.get("size") or 0) > 50 * 1024)
+    reason = (f"status={st} preset={preset_applied} proc={proc_ok} "
+              f"cam={camera_line} fx={fx_applied} fx_in_url={fx_in_url} "
+              f"probe={probe}")
+    results.append(("A-cinematic-preset", ok, reason))
 
 
-# ────────────────────── TEST B ──────────────────────
-def test_b_e2e_procedural(token, image_path):
-    log("=" * 60)
-    log("TEST B — End-to-end procedural lipsync with emotion auto-detection")
-    log("=" * 60)
-    payload = {
-        "image_path": image_path,
-        "script": "🕉️ Hari Om doston. Krishna ki bhakti mein dhyan lagao.",
-        "voice_id": "hi-IN-SwaraNeural",
+def run_case_B(token: str, img_path: str) -> None:
+    print("\n=== B) Solo procedural + funny preset ===")
+    log0 = _log_size()
+    body = {
+        "image_path": img_path,
+        "script": "🎉 Haha this funny preset is wild! Let's go!",
+        "voice_id": "en-US-JennyNeural",
+        "use_procedural_lipsync": True,
+        "preset_id": "funny",
+    }
+    r = requests.post(f"{API}/create-talking-avatar",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=body, timeout=30)
+    if r.status_code != 200:
+        results.append(("B-create", False, f"{r.status_code}: {r.text[:200]}"))
+        return
+    pid = r.json().get("project_id")
+    print(f"  project_id={pid}")
+    res = poll_project(token, pid, timeout=120)
+    st = res.get("status")
+    print(f"  final status={st}  result_url={res.get('result_url')}")
+    logs = _read_log_tail(log0)
+
+    camera_line = bool(re.search(
+        r"camera: motion=ken_burns effects=\['shake', 'punch_in'\]", logs))
+    fx_applied = bool(re.search(
+        r"talking: camera\+effects applied → avatar_proc_fx_[0-9a-f]+\.mp4", logs))
+    for patt, label in [
+        (r"camera: motion=ken_burns effects=\['shake', 'punch_in'\][^\n]*", "camera"),
+        (r"talking: camera\+effects applied → avatar_proc_fx_[0-9a-f]+\.mp4[^\n]*", "fx"),
+    ]:
+        m = re.search(patt, logs)
+        if m:
+            print(f"    LOG[{label}]: {m.group(0)[:200]}")
+    print(f"  log: camera={camera_line} fx_applied={fx_applied}")
+    ok = (st == "completed" and camera_line and fx_applied)
+    results.append(("B-funny-preset", ok,
+                    f"status={st} cam={camera_line} fx={fx_applied}"))
+
+
+def run_case_C(token: str, img_path: str) -> None:
+    print("\n=== C) Solo procedural — NO preset (no camera pass) ===")
+    log0 = _log_size()
+    body = {
+        "image_path": img_path,
+        "script": "Simple test without any preset.",
+        "voice_id": "en-US-JennyNeural",
         "use_procedural_lipsync": True,
     }
-    headers = {"Authorization": f"Bearer {token}"}
-    post_ts = time.time()
-    r = requests.post(f"{API}/create-talking-avatar", json=payload, headers=headers, timeout=30)
+    r = requests.post(f"{API}/create-talking-avatar",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=body, timeout=30)
     if r.status_code != 200:
-        log(f"B FAIL: POST HTTP {r.status_code} body={r.text[:400]}")
-        return False
-    j = r.json()
-    pid = j["project_id"]
-    log(f"B POST OK project_id={pid}")
+        results.append(("C-create", False, f"{r.status_code}: {r.text[:200]}"))
+        return
+    pid = r.json().get("project_id")
+    print(f"  project_id={pid}")
+    res = poll_project(token, pid, timeout=120)
+    st = res.get("status")
+    result_url = res.get("result_url") or ""
+    print(f"  final status={st}  result_url={result_url}")
 
-    proj = poll_project(token, pid, max_wait=120)
-    status = proj.get("status")
-    result_url = proj.get("result_url")
-    log(f"B final: status={status} result_url={result_url} error={proj.get('error')}")
+    logs = _read_log_tail(log0)
+    camera_present = bool(re.search(r"camera: motion=\w", logs))
+    fx_in_url = "_fx_" in result_url
+    base_proc_in_url = bool(re.search(r"avatar_proc_[0-9a-f]+\.mp4", result_url))
+    print(f"  log: camera_present={camera_present} fx_in_url={fx_in_url} "
+          f"base_proc_in_url={base_proc_in_url}")
 
-    # Required asserts
-    asserts_ok = True
-    if status != "completed":
-        log(f"B FAIL: status={status} (expected completed)")
-        asserts_ok = False
-
-    # Backend logs
-    logs = grab_logs_window(post_ts)
-    # Filter to last ~2000 lines for this test window
-    relevant_lines = logs.split("\n")[-3000:]
-    rel_text = "\n".join(relevant_lines)
-
-    # 1) talking: emotion=devotional intensity=<float>
-    m1 = re.search(r"talking: emotion=devotional intensity=([0-9.]+)", rel_text)
-    if m1 and float(m1.group(1)) > 0:
-        log(f"B LOG1 OK: 'talking: emotion=devotional intensity={m1.group(1)}'")
-    else:
-        log("B FAIL: missing 'talking: emotion=devotional intensity=...' log")
-        asserts_ok = False
-
-    # 2) -> rate=-4% pitch=+0Hz  (rate must be a percent string, not a float)
-    # The full line is "talking: emotion=X intensity=Y source=Z -> rate=R pitch=P"
-    m2 = re.search(r"-> rate=(-?\+?\d+%) pitch=(\S+)", rel_text)
-    if m2:
-        log(f"B LOG2 OK: '-> rate={m2.group(1)} pitch={m2.group(2)}'")
-        if m2.group(1) != "-4%":
-            log(f"B NOTE: rate is {m2.group(1)} (spec said -4% expected)")
-    else:
-        # check if there's a float-style rate (the bug)
-        bad = re.search(r"-> rate=(-?\d+\.\d+)\s+pitch", rel_text)
-        if bad:
-            log(f"B FAIL: rate is FLOAT {bad.group(1)} (should be percent string like -4%)")
-        else:
-            log("B FAIL: no '-> rate=N% pitch=...' log found")
-        asserts_ok = False
-
-    # 3) mouth_animator: emotion tint applied (devotional, intensity=...
-    m3 = re.search(r"mouth_animator: emotion tint applied \(devotional, intensity=([0-9.]+)", rel_text)
-    if m3:
-        log(f"B LOG3 OK: 'mouth_animator: emotion tint applied (devotional, intensity={m3.group(1)})'")
-    else:
-        log("B FAIL: missing 'mouth_animator: emotion tint applied (devotional, intensity=...)'")
-        asserts_ok = False
-
-    # 4) talking: procedural lipsync OK
-    m4 = re.search(r"talking: procedural lipsync OK", rel_text)
-    if m4:
-        log("B LOG4 OK: 'talking: procedural lipsync OK'")
-    else:
-        log("B FAIL: missing 'talking: procedural lipsync OK'")
-        asserts_ok = False
-
-    # 5) MP4 verification
-    if status == "completed" and result_url:
-        try:
-            # Fetch MP4
-            r2 = requests.get(f"{BASE}{result_url}", timeout=60)
-            if r2.status_code == 200:
-                mp4_bytes = r2.content
-                size_kb = len(mp4_bytes) // 1024
-                log(f"B MP4 size={size_kb} KB")
-                if size_kb < 50:
-                    log(f"B FAIL: MP4 too small ({size_kb} KB < 50 KB)")
-                    asserts_ok = False
-                # ffprobe duration + audio codec
-                tmpf = f"/tmp/test_b_{pid[:8]}.mp4"
-                with open(tmpf, "wb") as f:
-                    f.write(mp4_bytes)
-                pr = subprocess.run(
-                    ["/usr/bin/ffprobe", "-v", "error", "-show_entries",
-                     "format=duration:stream=codec_name,codec_type",
-                     "-of", "default=nw=1", tmpf],
-                    capture_output=True, timeout=15,
-                )
-                pout = pr.stdout.decode()
-                log(f"B ffprobe:\n{pout.strip()}")
-                # check aac + duration
-                if "aac" not in pout.lower():
-                    log("B FAIL: no aac audio in MP4")
-                    asserts_ok = False
-                dm = re.search(r"duration=([0-9.]+)", pout)
-                if dm and float(dm.group(1)) > 3.0:
-                    log(f"B duration OK: {dm.group(1)}s")
-                else:
-                    log(f"B FAIL: duration not >3s: {pout}")
-                    asserts_ok = False
-            else:
-                log(f"B FAIL: MP4 download HTTP {r2.status_code}")
-                asserts_ok = False
-        except Exception as e:
-            log(f"B MP4 verify err: {e}")
-            asserts_ok = False
-
-    if asserts_ok:
-        log("B PASS")
-    return asserts_ok
+    ok = (st == "completed" and not camera_present and not fx_in_url
+          and base_proc_in_url)
+    results.append(("C-no-preset", ok,
+                    f"status={st} camera_present={camera_present} "
+                    f"fx_in_url={fx_in_url} base_proc={base_proc_in_url}"))
 
 
-# ────────────────────── TEST C ──────────────────────
-def test_c_with_explicit_zero_rate(token, image_path):
-    log("=" * 60)
-    log("TEST C — same as B but with voice_rate=0.0 (was crashing on '0.0')")
-    log("=" * 60)
-    payload = {
-        "image_path": image_path,
-        "script": "🕉️ Hari Om doston. Krishna ki bhakti mein dhyan lagao.",
-        "voice_id": "hi-IN-SwaraNeural",
+def run_case_D(token: str) -> None:
+    print("\n=== D) Dual procedural + cinematic preset ===")
+    img_a = make_png(Path("/tmp/_speaker_a.png"), 512, 768, color=(210, 170, 130))
+    img_b = make_png(Path("/tmp/_speaker_b.png"), 512, 768, color=(180, 140, 200))
+    path_a = upload_image(token, img_a)
+    path_b = upload_image(token, img_b)
+    print(f"  img_a={path_a}\n  img_b={path_b}")
+
+    log0 = _log_size()
+    body = {
+        "image_a_path": path_a,
+        "image_b_path": path_b,
+        "script": "A: Hello!\nB: Welcome!\nA: Let's go cinematic.",
+        "voice_a_id": "hi-IN-MadhurNeural",
+        "voice_b_id": "hi-IN-SwaraNeural",
+        "motion": "none",
+        "aspect_ratio": "16:9",
+        "resolution": "480p",
         "use_procedural_lipsync": True,
-        "voice_rate": "0.0",  # the previously-crashing string value
+        "preset_id": "cinematic",
     }
-    headers = {"Authorization": f"Bearer {token}"}
-    post_ts = time.time()
-    r = requests.post(f"{API}/create-talking-avatar", json=payload, headers=headers, timeout=30)
+    r = requests.post(f"{API}/avatar/dual-lipsync",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=body, timeout=30)
+    print(f"  POST status={r.status_code}")
     if r.status_code != 200:
-        log(f"C FAIL: POST HTTP {r.status_code} body={r.text[:400]}")
-        return False
-    j = r.json()
-    pid = j["project_id"]
-    log(f"C POST OK project_id={pid}")
+        results.append(("D-dual-create", False,
+                        f"{r.status_code}: {r.text[:300]}"))
+        return
+    pid = r.json().get("project_id")
+    print(f"  project_id={pid}")
+    res = poll_project(token, pid, timeout=180)
+    st = res.get("status")
+    result_url = res.get("result_url") or ""
+    print(f"  final status={st}  result_url={result_url}")
 
-    proj = poll_project(token, pid, max_wait=120)
-    status = proj.get("status")
-    result_url = proj.get("result_url")
-    log(f"C final: status={status} result_url={result_url} error={proj.get('error')}")
-
-    ok = True
-    if status != "completed":
-        log(f"C FAIL: status={status} (expected completed). error={proj.get('error')}")
-        ok = False
-
-    # Verify the merge happened (rate filled by detected emotion)
-    logs = grab_logs_window(post_ts)
-    rel_text = "\n".join(logs.split("\n")[-3000:])
-    # We expect emotion=devotional and rate = -4% (filled by detection because 0.0 = blank)
-    m = re.search(r"talking: emotion=devotional .*?-> rate=(\S+) pitch=(\S+)", rel_text)
-    if m:
-        log(f"C LOG: rate={m.group(1)} pitch={m.group(2)} (filled by detected emotion)")
-        if not m.group(1).endswith("%"):
-            log(f"C NOTE: rate {m.group(1)} doesn't look like percent string — but flow completed.")
-    else:
-        log("C NOTE: no devotional log found in window (may have been overwritten by other tests)")
-
-    if status == "completed" and result_url:
-        try:
-            r2 = requests.get(f"{BASE}{result_url}", timeout=60)
-            if r2.status_code == 200 and len(r2.content) > 50 * 1024:
-                log(f"C MP4 OK ({len(r2.content)//1024} KB)")
-            else:
-                log(f"C FAIL: MP4 issue (HTTP {r2.status_code} size={len(r2.content)})")
-                ok = False
-        except Exception as e:
-            log(f"C MP4 err: {e}")
-            ok = False
-
-    if ok:
-        log("C PASS")
-    return ok
+    logs = _read_log_tail(log0)
+    proc_ok = bool(re.search(r"dual: procedural lipsync OK", logs))
+    camera_line = bool(re.search(
+        r"camera: motion=ken_burns effects=\['vignette', 'depth_of_field'\]", logs))
+    fx_applied = bool(re.search(
+        r"dual: camera\+effects applied → dual_[0-9a-f]{8}_proc_fx\.mp4", logs))
+    for patt, label in [
+        (r"dual: procedural lipsync OK[^\n]*", "proc_ok"),
+        (r"camera: motion=ken_burns effects=\['vignette', 'depth_of_field'\][^\n]*", "camera"),
+        (r"dual: camera\+effects applied → dual_[0-9a-f]{8}_proc_fx\.mp4[^\n]*", "fx"),
+    ]:
+        m = re.search(patt, logs)
+        if m:
+            print(f"    LOG[{label}]: {m.group(0)[:200]}")
+    print(f"  log: proc_ok={proc_ok} camera={camera_line} fx_applied={fx_applied}")
+    ok = (st == "completed" and proc_ok and camera_line and fx_applied)
+    results.append(("D-dual-cinematic", ok,
+                    f"status={st} proc={proc_ok} cam={camera_line} fx={fx_applied}"))
 
 
-# ────────────────────── Main ──────────────────────
+def run_case_E(token: str) -> None:
+    print("\n=== E) Quick regressions ===")
+    r = requests.get(f"{API}/cinematic-presets",
+                     headers={"Authorization": f"Bearer {token}"},
+                     timeout=15)
+    ok1 = r.status_code == 200
+    presets = (r.json() or {}).get("presets", []) if ok1 else []
+    ok1 = ok1 and len(presets) == 6
+    print(f"  E1 cinematic-presets: {r.status_code} count={len(presets)}")
+    results.append(("E1-cinematic-presets", ok1,
+                    f"status={r.status_code} count={len(presets)}"))
+
+    r2 = requests.post(f"{API}/avatar/detect-emotion",
+                       headers={"Authorization": f"Bearer {token}"},
+                       json={"text": "happy day! 😊"}, timeout=30)
+    ok2 = r2.status_code == 200
+    emo = (r2.json() or {}).get("emotion") if ok2 else None
+    ok2 = ok2 and emo == "happy"
+    print(f"  E2 detect-emotion: {r2.status_code} emotion={emo}")
+    results.append(("E2-detect-emotion", ok2,
+                    f"status={r2.status_code} emotion={emo}"))
+
+
 def main():
-    log("Starting Phase 2 emotion-aware TTS re-verification")
-    token, user = login()
-    topup_if_needed(user["id"], min_credits=600)
+    print("=== Phase 3 — Camera+Effects backend verification ===")
+    print(f"Backend: {BACKEND_URL}")
+    token, user = login(DEMO_CREATOR)
+    print(f"Login: {user['email']} tier={user['subscription_tier']} "
+          f"credits={user['credits_balance']}")
+    topup_if_needed(user["id"], min_credits=500)
 
-    image_path = upload_image(token)
+    img_local = make_png(Path("/tmp/_phase3_face.png"), 512, 768,
+                         color=(230, 190, 140))
+    img_path = upload_image(token, img_local)
+    print(f"Uploaded image path: {img_path}")
 
-    results = {}
+    run_case_A(token, img_path)
+    run_case_B(token, img_path)
+    run_case_C(token, img_path)
+    run_case_D(token)
+    run_case_E(token)
 
-    # Run D first (simple endpoint check)
-    results["D"] = test_d_detect_emotion_shape()
-
-    # Run B
-    results["B"] = test_b_e2e_procedural(token, image_path)
-
-    # Run C
-    results["C"] = test_c_with_explicit_zero_rate(token, image_path)
-
-    log("=" * 60)
-    log("SUMMARY")
-    log("=" * 60)
-    for k, v in results.items():
-        log(f"Test {k}: {'PASS' if v else 'FAIL'}")
-    all_pass = all(results.values())
-    log(f"OVERALL: {'PASS' if all_pass else 'FAIL'}")
-    sys.exit(0 if all_pass else 1)
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    for name, ok, reason in results:
+        mark = "✅" if ok else "❌"
+        print(f"{mark} {name}: {reason}")
+    print(f"\n{passed}/{total} passed")
+    sys.exit(0 if passed == total else 1)
 
 
 if __name__ == "__main__":

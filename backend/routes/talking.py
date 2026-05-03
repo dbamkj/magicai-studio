@@ -202,6 +202,21 @@ async def create_talking_avatar(
                 applied.get("_preset_id"), req.voice_style, req.motion, req.bgm_style,
             )
 
+    # Phase-3 — Capture the preset's effects[] BEFORE we drop into
+    # _bg(). Stored on a function-scoped variable since the request
+    # model doesn't have a generic effects field. _bg() reads this
+    # via closure to apply the camera+effects pass after procedural
+    # lipsync.
+    preset_effects: list = []
+    try:
+        if req.preset_id:
+            from core.cinematic_presets import get_preset as _get_preset
+            _p = _get_preset(req.preset_id)
+            if _p:
+                preset_effects = list(_p.get("config", {}).get("effects") or [])
+    except Exception:
+        preset_effects = []
+
     # Phase-2 — Emotion-aware TTS. Detect the dominant emotion from the
     # script (LLM with keyword fallback) and merge its rate/pitch
     # tweaks into the request UNLESS the user already set explicit
@@ -405,6 +420,35 @@ async def create_talking_avatar(
                     if ok and proc_out.exists() and proc_out.stat().st_size > 2048:
                         log.info("talking: procedural lipsync OK → %s", proc_out.name)
                         ls_local = proc_out
+
+                        # Phase-3 — Apply camera motion + effects from
+                        # the cinematic preset (or req.motion fallback).
+                        # Single-pass ffmpeg re-encode after the
+                        # mouth-animator output. Skipped silently on
+                        # failure — the un-effected mp4 is still
+                        # perfectly viewable.
+                        try:
+                            from core.camera_effects import apply_camera_effects
+                            wanted_motion = req.motion if (req.motion and req.motion.lower() not in ("none", "")) else None
+                            wanted_effects = preset_effects or []
+                            if wanted_motion or wanted_effects:
+                                fx_out = UPLOAD_DIR / f"avatar_proc_fx_{uuid.uuid4().hex}.mp4"
+                                fx_ok = await asyncio.to_thread(
+                                    apply_camera_effects,
+                                    proc_out, fx_out,
+                                    wanted_motion, wanted_effects,
+                                )
+                                if fx_ok and fx_out.exists() and fx_out.stat().st_size > 2048:
+                                    log.info(
+                                        "talking: camera+effects applied → %s (motion=%s effects=%s)",
+                                        fx_out.name, wanted_motion, wanted_effects,
+                                    )
+                                    ls_local = fx_out
+                                else:
+                                    log.info("talking: camera+effects skipped/failed — using base proc output")
+                        except Exception as _fx_err:
+                            log.warning("talking: camera+effects exception: %s", _fx_err)
+
                         # Skip MH upload + poll entirely
                         await db.video_projects.update_one(
                             {"id": p.id}, {"$set": {"progress": 85}}

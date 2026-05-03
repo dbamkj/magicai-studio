@@ -787,6 +787,164 @@ agent_communication_session_33_r4:
          contract AND the free-user free-preset flow.
 
 session_33_procedural_lipsync:
+  - task: "Phase-3 — Camera + effects engine (motion + effects[] post-processing)"
+    implemented: true
+    working: false
+    file: "backend/core/camera_effects.py, backend/routes/talking.py, backend/routes/avatar.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Phase-3 verification — LOG CONTRACT 95% CORRECT, BUT 2 CODE BUGS
+          BREAK THE REVIEW'S FILENAME + DUAL-MOTION CONTRACTS.
+          Test artefact: /app/backend_test.py.
+
+          ✅ CAMERA + EFFECTS FFMPEG PASS IS HEALTHY. For A, B and D all
+             "camera: motion=... effects=[...] duration=..." and the
+             corresponding "*: camera+effects applied → *_fx.mp4" log
+             lines fire. camera_effects.apply_camera_effects() itself
+             produces valid h264+aac MP4s (5-6 s, 80-120 KB). Regression
+             E is green (cinematic-presets=6, detect-emotion=happy).
+
+          ── TEST A (solo cinematic) — EXACT log lines captured: ──
+            "routes.talking: talking: preset 'cinematic' applied
+             (voice_style=confident motion=ken_burns bgm=cinematic_epic)"
+            "routes.talking: talking: procedural lipsync OK →
+             avatar_proc_41c893e164bb45469500b7f1e4528c71.mp4"
+            "core.camera_effects: camera: motion=ken_burns
+             effects=['vignette', 'depth_of_field'] duration=5.64s"
+            "routes.talking: talking: camera+effects applied →
+             avatar_proc_fx_0ad2cd34cbc94ff18c3be2c17fdbca94.mp4
+             (motion=ken_burns effects=['vignette', 'depth_of_field'])"
+          ffprobe on the final download: h264+aac 1280x720 5.64s 113740 B.
+
+          ❌ BUG #1 — The final result_url for A and B is NOT an
+             *_fx_*.mp4-derived file. Observed URLs:
+               A: /api/serve-file/avatar_motion_3c45770b1d8345788f935f584ec8830f.mp4
+               B: /api/serve-file/avatar_motion_e8c642720e60496aa11864dc6cdbd8b1.mp4
+             ROOT CAUSE — routes/talking.py:496-500 still runs
+               if req.motion and req.motion != "none":
+                   motioned = apply_motion_to_video_clip(ls_local, req.motion)
+                   if motioned and motioned.exists():
+                       final = motioned
+             AFTER the camera+effects pass. Because the cinematic (and
+             funny) preset sets req.motion="ken_burns" via
+             apply_preset_to_request(), the legacy motion helper is
+             invoked on the already-fx'd file, emits
+             avatar_motion_{uuid}.mp4 (server.py:2473), which becomes
+             `final` and clobbers the *_fx_*.mp4 naming. This is ALSO
+             a double-motion bug — zoompan is applied twice (once by
+             camera_effects for ken_burns, once again by
+             apply_motion_to_video_clip).
+             FIX: when camera_effects succeeded, skip the legacy
+             `apply_motion_to_video_clip` branch, e.g.:
+                fx_was_applied = False
+                # ... set True when fx_out replaces ls_local ...
+                if not fx_was_applied and req.motion and req.motion != "none":
+                    motioned = apply_motion_to_video_clip(...)
+             Review's expectation of "_fx_ in filename" will then hold.
+
+          ❌ BUG #2 — Dual procedural (TEST D) does NOT merge the
+             preset's motion into req.motion, so the logged camera
+             line for D shows "motion=None" instead of
+             "motion=ken_burns". Observed log:
+               "avatar: dual: procedural lipsync OK → dual_26272a90_proc.mp4"
+               "core.camera_effects: camera: motion=None
+                 effects=['vignette', 'depth_of_field'] duration=..."
+               "avatar: dual: camera+effects applied →
+                 dual_26272a90_proc_fx.mp4 (motion=None effects=[...])"
+             The review request explicitly expects:
+               "camera: motion=ken_burns effects=['vignette',
+                'depth_of_field']"
+             ROOT CAUSE — routes/avatar.py:1403-1420 only reads
+             `preset_effects = _p.get('config', {}).get('effects')` and
+             uses `req.motion` verbatim. Since the test body explicitly
+             passes motion="none", wanted_motion resolves to None and
+             the preset's ken_burns is lost. Unlike routes/talking.py
+             (which calls apply_preset_to_request() and merges motion
+             into req.motion BEFORE _bg()), the dual route never does
+             that merge.
+             FIX — one of:
+               (a) call apply_preset_to_request() in dual too so
+                   req.motion gets merged from the preset; or
+               (b) inside _bg(), when wanted_motion is None and a
+                   preset_id was provided, read
+                   _p.get('config', {}).get('motion') as fallback.
+             Either approach yields the expected
+             "motion=ken_burns effects=['vignette','depth_of_field']"
+             camera line for D.
+
+          ⚠ TEST C — result_url observed is /api/serve-file/pp_68dcc6112ff54e7eb3606144bbd1e2a7.mp4
+             (post-processed resolution rename) NOT avatar_proc_<hex>.mp4
+             as the review spec asks for. This happens because the
+             async `apply_resolution_to_project(p.id, req.resolution
+             or "720p", "video")` task rewrites result_url to
+             pp_<uuid>.mp4 (server.py:951). Not a critical bug —
+             the underlying file IS the un-effected procedural output
+             (log confirms avatar_proc_29232292...mp4 was post-processed
+             to pp_68dcc611...mp4 with the same byte count 40349),
+             and importantly the camera log line is NOT emitted for C
+             (spec contract met). Main agent may want to either
+               (i) have the review spec be relaxed to accept pp_*
+                   output, or
+               (ii) suppress resolution post-processing when no
+                   preset+no motion is requested so the raw
+                   avatar_proc_<hex>.mp4 survives as the result_url.
+
+          SUMMARY OF CONTRACT MATCH:
+            A: 4/4 required log lines present ✓  | _fx_ in URL ✗
+            B: 2/2 required log lines present ✓  | _fx_ in URL ✗
+            C: "camera: motion=" absent ✓        | URL is pp_* not proc_*
+            D: 2/3 required log lines present    | motion=None shown
+                                                 (should be ken_burns)
+            E: regressions (cinematic-presets=6, detect-emotion=happy) ✓
+
+          3 / 6 PASS on my strict assertion set; 5 / 6 PASS if you
+          accept the naming quirks in A/B/C. The dual motion propagation
+          in D is a real behavioural gap that must be fixed for the
+          review to go green.
+
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Phase-3 — Built the missing camera/effects engine so that
+          each cinematic preset's `motion` and `effects[]` actually
+          changes the rendered output (previously they were unused).
+
+          NEW backend/core/camera_effects.py exposes
+          apply_camera_effects(input, output, motion, effects,
+                               duration=None, fps=25) -> bool
+          which builds a single ffmpeg -vf chain and re-encodes the
+          procedural-lipsync MP4 with the requested motion + effects.
+
+          Motion library (zoompan-based, plus crop for shake):
+            slow_zoom, dolly_in, ken_burns, fast_zoom, slow_pan, shake
+
+          Effects library:
+            vignette, soft_glow / glow, bokeh, soft_blur,
+            depth_of_field, shake (handheld crop), punch_in,
+            warm_film, cool_film
+
+          Wiring:
+            * routes/talking.py — captures preset_effects from
+              cinematic_presets.get_preset(preset_id), then runs
+              apply_camera_effects on the procedural mp4 right after
+              mouth_animator returns. Skipped silently on failure
+              (un-effected mp4 still works).
+            * routes/avatar.py dual_lipsync — same pattern in the
+              procedural branch.
+
+          Local smoke tests verified all 5 motion+effects combos
+          render successfully in <1s each:
+            slow_zoom + vignette          → 57 KB
+            dolly_in + vignette + glow    → 58 KB
+            ken_burns + depth_of_field    → 58 KB
+            slow_pan + warm_film          → 57 KB
+            shake (effects-only)          → 57 KB
+
   - task: "Phase-2 — Emotion detection + emotion-aware TTS + face tint overlay"
     implemented: true
     working: true

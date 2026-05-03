@@ -1400,6 +1400,34 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
                         log.info("dual: procedural lipsync OK → %s (saved ~600 credits)",
                                  proc_out.name)
                         ls_local = proc_out
+
+                        # Phase-3 — Apply camera motion + effects from
+                        # the cinematic preset (or req.motion fallback).
+                        try:
+                            from core.camera_effects import apply_camera_effects
+                            from core.cinematic_presets import get_preset as _get_preset
+                            preset_effects = []
+                            if req.preset_id:
+                                _p = _get_preset(req.preset_id)
+                                if _p:
+                                    preset_effects = list(_p.get("config", {}).get("effects") or [])
+                            wanted_motion = req.motion if (req.motion and req.motion.lower() not in ("none", "")) else None
+                            if wanted_motion or preset_effects:
+                                fx_out = UPLOAD_DIR / f"dual_{p.id[:8]}_proc_fx.mp4"
+                                fx_ok = await _asyncio.to_thread(
+                                    apply_camera_effects,
+                                    proc_out, fx_out,
+                                    wanted_motion, preset_effects,
+                                )
+                                if fx_ok and fx_out.exists() and fx_out.stat().st_size > 4096:
+                                    log.info(
+                                        "dual: camera+effects applied → %s (motion=%s effects=%s)",
+                                        fx_out.name, wanted_motion, preset_effects,
+                                    )
+                                    ls_local = fx_out
+                        except Exception as _fx_err:
+                            log.warning("dual: camera+effects exception: %s", _fx_err)
+
                         await db.video_projects.update_one(
                             {"id": p.id}, {"$set": {"progress": 92}}
                         )
