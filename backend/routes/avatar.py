@@ -36,17 +36,19 @@ from typing import Optional, List
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
-from core.config import DB_NAME
+# Session 33 r4 — share the db handle from core.db (same instance
+# used by routes/projects.py for GET /api/project/{id}). Previously
+# routes/avatar.py created its OWN client against `core.config.DB_NAME`
+# which resolves to a different database when ENV=BETA, so projects
+# inserted here were not visible to the polling endpoint (404 every
+# time). One-line swap fixes the entire stale-write/stale-read class
+# of bugs in this file.
+from core.db import db
 
 log = logging.getLogger("avatar")
 router = APIRouter(prefix="/api/avatar", tags=["avatar"])
-
-MONGO_URL = os.environ["MONGO_URL"]
-_db_client = AsyncIOMotorClient(MONGO_URL)
-db = _db_client[DB_NAME]
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or "/app/backend/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -1296,6 +1298,14 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
 
             # 4) Build the split-screen A|B PNG and loop it for duration.
             await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 55}})
+
+            # Session 33 r4 — locals referenced in the cleanup `finally`
+            # block must always be bound, otherwise the procedural
+            # branch raises UnboundLocalError on tidy-up and flips a
+            # successful project to "failed".
+            split_img = None
+            still_v = None
+            list_txt = None
 
             # Session 33 r4 — PROCEDURAL DUAL LIPSYNC PATH.
             # When use_procedural_lipsync=True (default for dual cartoon

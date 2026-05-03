@@ -673,10 +673,8 @@ metadata:
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
-  stuck_tasks:
-    - "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
+  current_focus: []
+  stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
@@ -791,12 +789,88 @@ agent_communication_session_33_r4:
 session_33_procedural_lipsync:
   - task: "Session 33 r4 — DUAL procedural cartoon lipsync (no MagicHour)"
     implemented: true
-    working: false
+    working: true
     file: "backend/core/dual_mouth_animator.py, backend/routes/avatar.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 r4 RE-VERIFY — BOTH BUGS FIXED. FULL END-TO-END PASS
+          on Tests A / B / C / D. Test artefacts:
+          /app/backend_test_session33r4.py (full suite) and
+          /app/backend_test_r4_bc.py (B+C retry-resilient).
+
+          --- TEST A (demo_creator + use_procedural_lipsync=True) ---
+            ✅ POST /api/avatar/dual-lipsync → 200, project_id=
+               6deb9146-b01d-4aad-9b66-889c79d05c56, status=processing,
+               credits_charged=200.
+            ✅ Polling GET /api/project/{id} → 200 OK (NO 404). Status
+               flipped to "completed" within ~10s with
+               result_url=/api/serve-file/pp_40674764e57343b8b8e21da9c7550c7f.mp4
+               (postprocessed 480p downscale of the _proc.mp4 source).
+            ✅ Downloaded 156952 B video/mp4 (> 100 KB spec). ffprobe:
+               video=h264 540x480 (post-480p), audio=aac, duration=9.36s.
+            ✅ EXACT log line observed:
+                 "2026-05-03 17:28:15,214 - avatar - INFO -
+                  dual: procedural lipsync OK → dual_6deb9146_proc.mp4
+                  (saved ~600 credits)"
+               plus core.dual_mouth_animator:
+                 "dual_anim: OK dual_6deb9146_proc.mp4
+                  (frames=234 dur=9.36s WxH=1080x960)"
+            ✅ NO MagicHour calls for this project (scanned
+               upload_to_magic_hour / mh_create_lipsync = 0 matches
+               for pid 6deb9146).
+            ✅ NO "DualAvatar failed: cannot access local variable"
+               for pid 6deb9146. The two legacy occurrences in the log
+               (17:14, 17:17) are from BEFORE the fix and pre-date this
+               run.
+
+          --- TEST B (phase1test free user + use_procedural_lipsync=True) ---
+            ✅ POST 200 (NOT 402). The lip_sync_dual feature gate is
+               correctly bypassed when use_procedural=True (avatar.py
+               passes feature=None into preflight_and_reserve).
+            ✅ project_id=810d1e38-5ff4-4246-8b61-ac1343316544 →
+               status="completed" within 6s via polling.
+            ✅ result_url=/api/serve-file/pp_e3b9dfe6712c4e1cbfb95e91d3c6ef9b.mp4,
+               downloaded 152726 B video/mp4 (> 100 KB spec).
+            ✅ Log: "dual: procedural lipsync OK →
+                dual_810d1e38_proc.mp4 (saved ~600 credits)" present.
+            ✅ NO UnboundLocalError for pid 810d1e38.
+
+          --- TEST C (regression, use_procedural_lipsync=False, MH path) ---
+            ✅ POST 200, project_id=beeed108-3b84-4460-82aa-a46d85b88767.
+            ✅ GET /api/project/{id} returned 200 on EVERY poll for 60s
+               (12/12). status="processing" throughout. NO 404s —
+               confirms the core.db import swap fixed the DB mismatch.
+            ✅ Backend log shows "MH upload OK: type=video …" and
+               "MH upload OK: type=audio …" within seconds of POST —
+               MH path is clearly engaged for non-procedural dual.
+            ✅ NO UnboundLocalError for pid beeed108.
+
+          --- TEST D (regressions) — ALL PASS ---
+            ✅ GET /api/cinematic-presets → 200, 6 presets.
+            ✅ GET /api/avatar/styles → 200, 11 styles + 12 emotions.
+            ✅ POST /api/avatar/cartoonize prompt-only (no image_b64)
+               → 200 with job_id=av_30ae3b6a8a7b (text-only Nano Banana
+               fallback healthy).
+
+          --- FIX VERIFICATION ---
+          Fix #1 (avatar.py:48 `from core.db import db`) — confirmed.
+            GET /api/project/{id} returns 200 for every avatar.py
+            created project (A/B/C) — the stale-read-vs-stale-write
+            class of bugs is eliminated.
+          Fix #2 (avatar.py:1306-1308 split_img=None, still_v=None,
+            list_txt=None init before the `if not use_procedural`
+            branch) — confirmed. The cleanup loop at line 1441 no
+            longer throws UnboundLocalError when procedural succeeds,
+            so status="completed" is correctly persisted.
+
+          Result: contract met end-to-end. Session 33 r4 procedural
+          dual lipsync is production-ready; ~600 MH credits saved per
+          dual-avatar job while frontend polling works.
       - working: false
         agent: "testing"
         comment: |
