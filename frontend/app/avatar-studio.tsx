@@ -499,6 +499,32 @@ export default function AvatarStudioScreen() {
   const filteredStyles = styles.filter(s => s.category === categoryId);
   const pickedDialogue = dialogues.find(d => d.id === dialogueId) || null;
 
+  // Phase-2 — Detected emotion for the picked dialogue. Refreshes when
+  // the user picks a different card or types a new manualScript. Used
+  // to show a chip on the dialogue UI so the user knows the avatar
+  // will be tuned for that mood (face tint + TTS rate/pitch).
+  const [detectedEmotion, setDetectedEmotion] = useState<{emotion: string; intensity: number; emoji?: string} | null>(null);
+  useEffect(() => {
+    const text = (pickedDialogue?.text || manualScript || '').trim();
+    if (!text) { setDetectedEmotion(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await axios.post(`${API}/avatar/detect-emotion`, { text, language }, { timeout: 8000 });
+        if (cancelled) return;
+        const em = r.data?.emotion || 'neutral';
+        if (em === 'neutral' || (r.data?.intensity || 0) <= 0.0) { setDetectedEmotion(null); return; }
+        const emojiMap: Record<string, string> = {
+          happy: '😊', sad: '💔', calm: '🧘', playful: '😜',
+          confident: '😎', excited: '🤩', motivational: '🔥',
+          fierce: '⚔️', devotional: '🙏',
+        };
+        setDetectedEmotion({ emotion: em, intensity: r.data.intensity, emoji: emojiMap[em] || '✨' });
+      } catch { /* keyword fallback also runs server-side; on net error just skip the chip */ }
+    }, 350);  // debounce so typing doesn't fire on every keystroke
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [pickedDialogue?.id, pickedDialogue?.text, manualScript, language]);
+
   // ────────────────────────── Load styles once ──────────────────────────
   useEffect(() => {
     (async () => {
@@ -1638,6 +1664,23 @@ export default function AvatarStudioScreen() {
                   <GlassCard style={{ marginTop: 12 }}>
                     <FieldLabel>Your picked dialogue</FieldLabel>
                     <Text style={s.quotedText}>"{pickedDialogue.text}"</Text>
+                    {/* Phase-2 — Detected emotion chip. Shows the user
+                        what mood the avatar will be tuned for (face
+                        tint + TTS rate/pitch). */}
+                    {detectedEmotion && (
+                      <View style={s.emoChipRow}>
+                        <View style={s.emoChip}>
+                          <Text style={s.emoChipEmoji}>{detectedEmotion.emoji}</Text>
+                          <Text style={s.emoChipLabel}>
+                            {detectedEmotion.emotion[0].toUpperCase() + detectedEmotion.emotion.slice(1)}
+                          </Text>
+                          <View style={s.emoChipBar}>
+                            <View style={[s.emoChipBarFill, { width: `${Math.round(detectedEmotion.intensity * 100)}%` }]} />
+                          </View>
+                        </View>
+                        <Text style={s.emoChipHint}>tuned voice + face tint</Text>
+                      </View>
+                    )}
                   </GlassCard>
                 )}
 
@@ -2564,6 +2607,23 @@ const s = StyleSheet.create({
   voiceMeta:  { color: '#94A3B8', fontSize: 12, marginTop: 2, textTransform: 'capitalize' },
   voiceMetaSub: { color: '#64748B', fontSize: 11, marginTop: 2, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   voiceHint: { color: '#64748B', fontSize: 11, textAlign: 'center', marginTop: 8 },
+  // Phase-2 emotion chip on the picked-dialogue card.
+  emoChipRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 10, flexWrap: 'wrap' },
+  emoChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.35)',
+    backgroundColor: 'rgba(168,85,247,0.12)',
+  },
+  emoChipEmoji: { fontSize: 18 },
+  emoChipLabel: { color: '#F3E8FF', fontSize: 13, fontWeight: '700' },
+  emoChipBar: {
+    width: 50, height: 4, borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden', marginLeft: 4,
+  },
+  emoChipBarFill: { height: '100%', backgroundColor: '#A855F7' },
+  emoChipHint: { color: '#9CA3AF', fontSize: 11, fontStyle: 'italic' },
   quotedText: { color: '#E2E8F0', fontSize: 15, lineHeight: 22, fontStyle: 'italic' },
 
   /* Upload + generate */
