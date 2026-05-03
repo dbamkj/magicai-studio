@@ -673,10 +673,8 @@ metadata:
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "Phase-1 Cinematic Preset System (backend)"
-  stuck_tasks:
-    - "Phase-1 Cinematic Preset System (backend)"
+  current_focus: []
+  stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
@@ -737,12 +735,62 @@ agent_communication_session_33_phase1:
 session_33_procedural_lipsync:
   - task: "Phase-1 Cinematic Preset System (backend)"
     implemented: true
-    working: false
+    working: true
     file: "backend/core/cinematic_presets.py, backend/routes/talking.py, backend/core/models.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 33 re-verification — Phase-1 Cinematic Preset paywall
+          fix CONFIRMED WORKING. All three previously-failing-or-at-risk
+          cases now PASS.
+
+          B3 ✅ Free user + pro preset (cinematic) → 402 with EXACT
+             detail JSON (dict, not string):
+               {
+                 "code": "preset_locked",
+                 "preset_id": "cinematic",
+                 "message": "This cinematic preset requires a paid plan.",
+                 "cta": "Unlock Cinematic Mode"
+               }
+             The preflight_and_reserve(feature=None if is_procedural
+             else 'lip_sync') change in routes/talking.py:159-163
+             correctly bypasses the lip_sync feature gate for procedural
+             lipsync requests, letting the preset paywall contract at
+             line 179 fire as designed.
+
+          B6 ✅ Free user + free preset 'funny' + procedural lipsync →
+             200 with project_id=163d7c7c-eec7-4b55-b021-0a407b4d1fbf.
+             Polled → status=completed in ~3s with
+             result_url=/api/serve-file/pp_4488905b0c824c0f970cd9294f163ce2.mp4.
+             EXACT log strings observed in backend.err.log:
+               "talking: preset 'funny' applied (voice_style=playful motion=ken_burns bgm=playful)"
+               "talking: BGM mixed (playful_pulse) under voice"
+               "talking: procedural lipsync OK → avatar_proc_06f47314a06a4dd1b4044245037fc23c.mp4"
+             Watermark applied (correct for free tier). Free user CAN
+             now use free presets end-to-end — the side-effect blocker
+             reported in the previous run is resolved.
+
+          B7 ✅ Free user + no preset_id + procedural lipsync → 200 +
+             completes. Initial run on phase1test@example.com returned
+             402 'Insufficient credits' because B3 and B6 had already
+             consumed 200 of the 300 starting credits. Re-ran with a
+             fresh registered free user (b7test_*@example.com, 300cr)
+             as the correct isolation and got project=fa2fc679-2684-
+             4887-aca3-b0fc852cacf5 → status=completed with
+             result_url=/api/serve-file/pp_2dbdb8cffa304acca42a8d31efd2fdfe.mp4.
+             Log: 'talking: procedural lipsync OK → avatar_proc_459f6c179c3c486dbf8a8a9d4d0f21c1.mp4'.
+             The cartoon-solo flow on free tier is unblocked.
+
+          Root-cause fix verified: routes/talking.py now passes
+          feature=None to preflight_and_reserve when
+          use_procedural_lipsync=true, so the lip_sync feature gate is
+          skipped for the zero-MagicHour-cost procedural path. The
+          Cinematic preset paywall (402 preset_locked) is now the sole
+          gate for pro presets, exactly as the PRD specifies.
       - working: false
         agent: "testing"
         comment: |
