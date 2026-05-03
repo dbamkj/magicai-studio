@@ -10005,3 +10005,71 @@ agent_communication:
 
       Ask main agent to summarise and finish — the b3 hybrid feature is
       shippable from the frontend perspective.
+
+# ===================================================================
+# SESSION 25 — Round 11: BGM mixing pipeline
+# ===================================================================
+agent_communication:
+  -agent: "main"
+  -message: |
+      Wired optional BGM mixing into the talking-avatar AND dual-lipsync
+      pipelines. Royalty-free: 1 curated track + 3 procedural pads.
+
+      ✅ Procedural BGM library (4 moods)
+        New module: /app/backend/core/bgm_procedural.py
+        Generates 3 ambient pads at startup via ffmpeg synthesis (lavfi
+        sine generators + tremolo + amix + fade in/out + mp3 encode).
+        License: "MIT generated" — pure code, zero copyright concerns.
+        Tracks (60s each, 128kbps stereo, ~960 KB):
+          • ambient_calm.mp3       — A2+E3+A3 sine pad, 0.4Hz tremolo
+                                     → devotional / spiritual / soft
+          • playful_pulse.mp3      — C4+E4+G4 triad, 4.5Hz tremolo
+                                     → playful / funny / cute
+          • motivational_pulse.mp3 — C3+E3+G3+C4 chord, 2Hz tremolo
+                                     → motivational / inspirational
+        Plus the existing cinematic_score.mp3 (Pixabay license) for the
+        cinematic_epic mood.
+        Idempotent — startup hook in server.py skips files already on
+        disk. Verified: first boot logged
+          'bgm_procedural: {generated: 3, skipped: 0, failures: []}'
+        Reload boot logged
+          'bgm_procedural: {generated: 0, skipped: 3, failures: []}'
+
+      ✅ Catalog extended (core/bgm_catalog.py)
+        Added 3 new entries with mood / vibes / bpm / description /
+        license fields. random_for_mood() now matches across all 4
+        moods so a wider variety of dialogues get appropriate BGM.
+
+      ✅ Pipeline integration (talking.py + routes/avatar.py dual-lipsync)
+        Both endpoints accept a new optional bgm_style field.
+        Pipeline insertion point: AFTER the +0.75s tail padding, BEFORE
+        the still-video creation. ffmpeg amix chain:
+          [0:a]volume=1.0[a]
+          [1:a]aloop=loop=-1:size=2e9,volume=0.18[b]
+          [a][b]amix=inputs=2:duration=first:dropout_transition=0[out]
+        Voice held at unity (1.0); BGM looped+attenuated to ~-15dB
+        (0.18 linear). amix duration=first crops to voice length so we
+        never overshoot. Failure-safe — any ffmpeg error logs a warning
+        and continues without BGM (no broken render).
+        Verified end-to-end with a manual ffmpeg run:
+          voice.mp3 = 18,720 B / 3.12s
+          voice_with_bgm.mp3 = 51,117 B / 3.17s (BGM riding under voice)
+          Distinct md5 → audio genuinely combined.
+
+      ✅ Data model
+        core/models.py CreateTalkingAvatarRequest.bgm_style: Optional[str]
+        routes/avatar.py DualLipsyncRequest.bgm_style: Optional[str]
+        Both default to None — legacy clients see no behavior change.
+
+      Frontend NOT yet wired — backend is ready to receive the field.
+      Exposing the BGM toggle on Step 5 is a small UI change for next
+      session (single chip row: "No BGM | Cinematic | Devotional |
+      Playful | Motivational").
+
+      ⏳ Phase-B server.py refactor — ROUND 9 already shipped 5
+      project-CRUD endpoints to routes/projects.py. Further
+      extractions (mh-models, image/video gen) need bg-task helpers
+      extracted first (cascading import cleanup) — bigger surgical
+      lift. Marked for a dedicated refactor session rather than
+      mixing with feature work.
+

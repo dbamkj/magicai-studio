@@ -33,6 +33,35 @@ CATALOG: list[dict] = [
         'description': 'Sweeping orchestral cinematic score with drums and strings. Works for motivation, devotional reveals, epic transformations.',
         'license': 'Pixabay content license',
     },
+    # Session 25 round 11 — procedural ambient pads generated at startup
+    # by core/bgm_procedural.py. Royalty-free (pure ffmpeg synthesis).
+    {
+        'id': 'ambient_calm',
+        'filename': 'ambient_calm.mp3',
+        'mood': 'devotional',
+        'vibes': ['calm', 'devotional', 'spiritual', 'meditation', 'soft'],
+        'bpm': 60,
+        'description': 'Soft sustained sine pad in low register (A2 + E3 + A3). Devotional, meditative, calming. Best for spiritual content and quiet emotional moments.',
+        'license': 'MIT generated (procedural ffmpeg synthesis)',
+    },
+    {
+        'id': 'playful_pulse',
+        'filename': 'playful_pulse.mp3',
+        'mood': 'playful',
+        'vibes': ['playful', 'funny', 'comedy', 'cute', 'upbeat'],
+        'bpm': 120,
+        'description': 'Bright tremoloed C-major triad pad with fast wobble. Light, fun mood for comedy / kids content.',
+        'license': 'MIT generated (procedural ffmpeg synthesis)',
+    },
+    {
+        'id': 'motivational_pulse',
+        'filename': 'motivational_pulse.mp3',
+        'mood': 'motivational',
+        'vibes': ['motivational', 'inspirational', 'uplifting', 'energy', 'driving'],
+        'bpm': 100,
+        'description': 'Rich C-major chord pad (root + third + fifth + octave) with mid-energy tremolo. Inspirational, motivating, suitable for hook/CTA moments.',
+        'license': 'MIT generated (procedural ffmpeg synthesis)',
+    },
 ]
 
 

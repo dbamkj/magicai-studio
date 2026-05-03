@@ -1099,6 +1099,9 @@ class DualLipsyncRequest(BaseModel):
     aspect_ratio: Optional[str] = "16:9"   # hstack composites are wider
     resolution: Optional[str] = "720p"
     style_hint: Optional[str] = None
+    # Round 11 — optional BGM layer (cinematic_epic | devotional |
+    # playful | motivational). Mixed under the combined A/B audio at -15dB.
+    bgm_style: Optional[str] = None
 
 
 @router.post("/dual-lipsync")
@@ -1248,6 +1251,32 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
                 ], capture_output=True, timeout=40)
                 if padded.exists() and padded.stat().st_size > 500:
                     combined = padded; audio_dur = audio_dur + 0.75
+
+            # Round 11 — optional BGM mixing for dual mode.
+            if req.bgm_style:
+                try:
+                    from core.bgm_catalog import random_for_mood, BGM_DIR as _BGM_DIR
+                    track = random_for_mood(req.bgm_style)
+                    if track:
+                        bgm_path = _BGM_DIR / track["filename"]
+                        if bgm_path.exists():
+                            mixed = UPLOAD_DIR / f"dual_{p.id[:8]}_bgm.mp3"
+                            mix_r = subprocess.run([
+                                "/usr/bin/ffmpeg", "-y",
+                                "-i", str(combined),
+                                "-i", str(bgm_path),
+                                "-filter_complex",
+                                "[0:a]volume=1.0[a];"
+                                "[1:a]aloop=loop=-1:size=2e9,volume=0.18[b];"
+                                "[a][b]amix=inputs=2:duration=first:dropout_transition=0[out]",
+                                "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "128k",
+                                str(mixed),
+                            ], capture_output=True, timeout=60)
+                            if mix_r.returncode == 0 and mixed.exists() and mixed.stat().st_size > 500:
+                                combined = mixed
+                                log.info("dual: BGM mixed (%s) under combined voice", track["id"])
+                except Exception as _be:
+                    log.warning("dual: BGM mixing exception (skipping): %s", _be)
 
             # 4) Build the split-screen A|B PNG and loop it for duration.
             await db.video_projects.update_one({"id": p.id}, {"$set": {"progress": 55}})

@@ -141,6 +141,11 @@ class CreateTalkingAvatarRequest(BaseModel):
     aspect_ratio: Optional[str] = "9:16"
     resolution: Optional[str] = "720p"
     parent_id: Optional[str] = None
+    # Session 25 round 11 — optional BGM mood (cinematic_epic | devotional |
+    # playful | motivational). When set, server picks a track from
+    # core.bgm_catalog and mixes it under the voice at -15dB before
+    # sending to MH lipsync. None / empty = no BGM (legacy behavior).
+    bgm_style: Optional[str] = None
 
 
 # ========== Sprint 6 — Content Intelligence: Templates ==========

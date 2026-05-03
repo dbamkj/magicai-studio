@@ -3482,6 +3482,14 @@ async def _startup_scheduler():
                 asyncio.create_task(_mp_enrich2(_mp_db, force=False))
         except Exception as e:
             logger.warning("dialogues/funny templates seed skipped: %s", e)
+        # Round 11 — generate procedural BGM tracks if missing.
+        # Idempotent: skips files that already exist on disk.
+        try:
+            from core.bgm_procedural import ensure_procedural_bgm_tracks
+            bgm_res = ensure_procedural_bgm_tracks()
+            logger.info("bgm_procedural: %s", bgm_res)
+        except Exception as e:
+            logger.warning("bgm_procedural seed skipped: %s", e)
         from core.scheduler import start_scheduler
         # Use the templates router's db which respects ENV-based routing.
         from routes.templates import db as _tmpl_db

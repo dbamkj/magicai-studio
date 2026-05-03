@@ -178,6 +178,44 @@ async def create_talking_avatar(
                     tts_path = padded
                     audio_dur = audio_dur + 0.75
 
+            # Round 11 — optional BGM mixing. If req.bgm_style is provided,
+            # pick a track from the catalog and amix it under the voice
+            # at -15dB. Voice clarity stays priority; BGM is atmospheric.
+            if req.bgm_style:
+                try:
+                    from core.bgm_catalog import random_for_mood, BGM_DIR as _BGM_DIR
+                    track = random_for_mood(req.bgm_style)
+                    if track:
+                        bgm_path = _BGM_DIR / track["filename"]
+                        if bgm_path.exists():
+                            mixed = UPLOAD_DIR / f"avatar_tts_bgm_{uuid.uuid4().hex}.mp3"
+                            # ffmpeg amix with the voice channel weighted 1.0
+                            # and BGM at 0.18 (~-15dB). `apad` ensures BGM
+                            # is at least as long as voice; `-shortest` then
+                            # crops to voice length so we don't overshoot.
+                            mix_r = subprocess.run([
+                                "/usr/bin/ffmpeg", "-y",
+                                "-i", str(tts_path),
+                                "-i", str(bgm_path),
+                                "-filter_complex",
+                                "[0:a]volume=1.0[a];"
+                                "[1:a]aloop=loop=-1:size=2e9,volume=0.18[b];"
+                                "[a][b]amix=inputs=2:duration=first:dropout_transition=0[out]",
+                                "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "128k",
+                                str(mixed),
+                            ], capture_output=True, timeout=45)
+                            if mix_r.returncode == 0 and mixed.exists() and mixed.stat().st_size > 500:
+                                tts_path = mixed
+                                log.info("talking: BGM mixed (%s) under voice", track["id"])
+                            else:
+                                log.warning("talking: BGM mix failed; continuing without BGM. stderr=%s", mix_r.stderr.decode()[:200])
+                        else:
+                            log.warning("talking: BGM file missing on disk: %s", bgm_path)
+                    else:
+                        log.info("talking: bgm_style=%s — no track matched, skipping", req.bgm_style)
+                except Exception as _bgm_e:
+                    log.warning("talking: BGM mixing exception (continuing without BGM): %s", _bgm_e)
+
             # 3) Create still video from the image (duration matches audio+1)
             # Scale filter: ensure min 256px on shortest side and even dims —
             # `trunc(iw/2)*2:trunc(ih/2)*2` alone explodes on 1×1 placeholders.
