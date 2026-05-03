@@ -733,6 +733,47 @@ agent_communication_session_33_phase1:
          contract AND the free-user free-preset flow.
 
 session_33_procedural_lipsync:
+  - task: "Session 33 r3 — Voice preview cutoff PERMANENT fix + Solo gender + Voice→Gender derivation + Full-body prompt"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/avatar-studio.tsx, backend/routes/avatar.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Session 33 r3 — Round-3 user feedback batch (option a):
+          (1) Voice preview cutoff — permanent fix. Removed the
+              `dynamicCapMs` derived from durationMillis (which was 0
+              at loadAsync time for some Hindi mp3s, causing 12s cap).
+              Now drives ONLY off `didJustFinish` with a 90s runaway
+              safety net + setProgressUpdateIntervalAsync(150).
+              Solo preview also now plays the FULL cleaned dialogue
+              (no more split on `[.!?।]` taking only first clause).
+          (2) Solo cartoon: removed mandatory upload. Step 5 now shows
+              gender chips (Male/Female) + auto-generates 4 character
+              variants from the chosen gender (no photo needed). The
+              `cartoonize` endpoint accepts `prompt` field for
+              text-only generation.
+          (3) Voice→Gender auto-derivation. Added `_voiceToGender`
+              helper that maps voice_id (e.g. hi-IN-MadhurNeural) to
+              'male'/'female'/'neutral' via the VOICE_LIBRARY
+              manifest + heuristic fallback. useEffects keep
+              genderA/genderB/genderSolo in sync with the voice
+              picker so Step 5 chips pre-fill correctly. Was
+              previously locked at 'neutral' regardless of voice.
+          (4) Full-body Nano Banana prompt. Updated the cartoonize
+              full_prompt to request "9:16 vertical FULL BODY shot —
+              character visible from head to feet" so the procedural
+              mouth animator output isn't a giant face crop.
+          (5) generate() now allows pickedVariantPath without
+              imagePath in cartoon mode (was requiring upload).
+
+          Backend regression confirmed via /api/cinematic-presets
+          still 200 with 6 presets. Frontend bundles cleanly.
+
   - task: "Phase-1 Cinematic Preset System (backend)"
     implemented: true
     working: true

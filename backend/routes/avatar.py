@@ -1411,9 +1411,17 @@ async def _process_avatar_job(*, job_id: str, style: str, emotion: str,
         style_def = STYLES[style]
         emo_text = EMOTIONS.get(emotion, EMOTIONS["happy"])
         user_prompt = (prompt or "a portrait of a friendly person").strip()
+        # Session 33 r3 — request FULL BODY framing (head-to-toe) so the
+        # mouth-animator output isn't a giant face cropped square. The
+        # avatar still has a clearly-visible face for lipsync but now
+        # also feet, arms, clothing, and a colourful background. 9:16
+        # vertical with bottom safe-zone for caption overlays.
         full_prompt = (
             f"{user_prompt}, {style_def['prompt_modifier']}, {emo_text}, "
-            "9:16 vertical portrait composition, centered framing, no text overlay"
+            "9:16 vertical FULL BODY shot — character visible from head to feet, "
+            "centred composition with comfortable headroom, expressive face clearly "
+            "visible in the upper-third of the frame, colourful festive background, "
+            "no text overlay, no watermark"
         )
         await _set_job(job_id, stage="generate", prompt_used=full_prompt[:600])
 

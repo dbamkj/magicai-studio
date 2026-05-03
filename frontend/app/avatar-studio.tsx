@@ -36,6 +36,7 @@ import { Chip, GlassCard, GradientButton, GhostButton, FieldLabel } from '../src
 import VoicePicker from '../src/VoicePicker';
 import VoiceStylePicker from '../src/VoiceStylePicker';
 import MotionPicker from '../src/MotionPicker';
+import { VOICE_LIBRARY } from '../src/voices';
 import ResolutionPicker from '../src/ResolutionPicker';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
@@ -387,6 +388,43 @@ export default function AvatarStudioScreen() {
   const [imageAPath, setImageAPath] = useState<string | null>(null);
   const [imageBUri, setImageBUri] = useState<string | null>(null);
   const [imageBPath, setImageBPath] = useState<string | null>(null);
+  // Session 33 r3 — Solo cartoon gender. Was implicit/random before;
+  // now an explicit chip on Step 3 that drives Nano Banana's
+  // generated character (so the variants finally MATCH the voice).
+  const [genderSolo, setGenderSolo] = useState<'male' | 'female' | 'neutral'>('neutral');
+
+  // Session 33 r3 — Voice → Gender auto-derivation. When the user
+  // picks "Hindi ♂ Madhur" on Voice A, genderA flips to 'male'
+  // automatically so the AI character variants are gender-matched.
+  // Was previously locked at 'neutral' regardless of voice pick.
+  const _voiceToGender = useCallback((vid: string): 'male' | 'female' | 'neutral' => {
+    if (!vid) return 'neutral';
+    const found = VOICE_LIBRARY.find(v => v.id === vid);
+    if (found?.gender === 'M') return 'male';
+    if (found?.gender === 'F') return 'female';
+    // Heuristic fallback for ids not in the manifest
+    const id = vid.toLowerCase();
+    const maleHints = ['guy', 'madhur', 'arjun', 'vikram', 'dadaji', 'prabhat', 'roshan', 'andrew', 'brian', 'davis'];
+    const femaleHints = ['jenny', 'swara', 'priya', 'meera', 'neerja', 'aria', 'ava', 'libby', 'natasha'];
+    if (maleHints.some(h => id.includes(h))) return 'male';
+    if (femaleHints.some(h => id.includes(h))) return 'female';
+    return 'neutral';
+  }, []);
+  useEffect(() => {
+    const g = _voiceToGender(voiceAId);
+    if (g !== 'neutral') setGenderA(g);
+  }, [voiceAId, _voiceToGender]);
+  useEffect(() => {
+    const g = _voiceToGender(voiceBId);
+    if (g !== 'neutral') setGenderB(g);
+  }, [voiceBId, _voiceToGender]);
+  useEffect(() => {
+    // Solo voice (cartoon mode) drives genderSolo.
+    const v = cartoonVoiceId || activeStyle?.personality?.voice_id;
+    if (!v) return;
+    const g = _voiceToGender(v);
+    if (g !== 'neutral') setGenderSolo(g);
+  }, [cartoonVoiceId, activeStyle, _voiceToGender]);
 
   // ── Phase 2b (b3 hybrid) — AI-generated character variants ──
   // 4-card grid on Step 5 (dual mode). Each card polls its Nano-Banana
@@ -577,7 +615,7 @@ export default function AvatarStudioScreen() {
       }
       // Helper — runs preview-audio for a single line and plays it.
       const speakLine = async (lineText: string, voiceId: string, voiceStyle?: string) => {
-        const previewText = lineText.slice(0, 180);
+        const previewText = lineText.slice(0, 200);
         const r = await axios.post(
           `${API}/generate-prompts/preview-audio`,
           {
@@ -593,27 +631,28 @@ export default function AvatarStudioScreen() {
         const b64 = arrayBufferToBase64(r.data);
         const uri = `data:audio/mpeg;base64,${b64}`;
         const sound = new Audio.Sound();
-        const loadStatus: any = await sound.loadAsync({ uri });
+        await sound.loadAsync({ uri });
         audioRef.current = sound;
-        // Session 33 — compute the actual cap from durationMillis (+1.5s
-        // buffer) so long Hindi previews don't get cut off by the
-        // previous hard-coded 12s timeout.
-        const loadedMs = Number(loadStatus?.durationMillis) || 0;
-        const dynamicCapMs = loadedMs > 0
-          ? Math.min(Math.max(loadedMs + 1500, 4000), 60000)
-          : 60000;  // generous 60s fallback if duration unknown
+        // Session 33 r3 — Voice preview cutoff fix.
+        // Previous attempts (12s hard cap, then dynamicCap from
+        // durationMillis+1.5s) both truncated long Hindi previews
+        // because expo-av's durationMillis is sometimes 0 / stale at
+        // loadAsync time. New strategy: NO duration-based cap —
+        // listen for didJustFinish (the only reliable signal), fall
+        // back to 90s only as a runaway-safety net.
+        try { await sound.setProgressUpdateIntervalAsync(150); } catch {}
         await sound.playAsync();
-        // Wait for playback to finish before moving on (dual-mode chains A→B).
         await new Promise<void>((resolve) => {
           let done = false;
+          const finish = () => { if (done) return; done = true; resolve(); };
           sound.setOnPlaybackStatusUpdate((status: any) => {
             if (done) return;
-            if (status?.didJustFinish || status?.isLoaded === false) {
-              done = true;
-              resolve();
-            }
+            if (status?.didJustFinish) finish();
+            else if (status?.isLoaded === false || status?.error) finish();
           });
-          setTimeout(() => { if (!done) { done = true; resolve(); } }, dynamicCapMs);
+          // Hard runaway safety: 90s. Long enough for any single line
+          // (Hindi 4-line ≈ 22s, full dialogue ≈ 60s).
+          setTimeout(finish, 90000);
         });
         try { await sound.unloadAsync(); } catch {}
       };
@@ -673,34 +712,49 @@ export default function AvatarStudioScreen() {
   // generate() (skipping the second cartoonize step).
   const generateVariants = useCallback(async () => {
     if (!requireLogin()) return;
-    if (!imageUri) { Alert.alert('Upload a photo first'); return; }
     if (!activeStyle) { Alert.alert('Pick an avatar style first'); return; }
 
     setVariantsBusy(true);
     setPickedVariantPath(null);
     setVariants([]);
 
-    const variantEmotions = ['happy', 'excited', 'confident', 'playful', 'peaceful'];
+    // Session 33 r3 — Solo cartoon: no upload required.
+    // If the user uploaded a portrait we'll still use it as Nano
+    // Banana's image-to-image source. If they didn't, we send a
+    // text-only prompt that bakes in the chosen gender + style so
+    // the AI generates a fresh full-body cartoon character.
+    const variantEmotions = ['happy', 'excited', 'confident', 'playful'];
     try {
-      const b64 = await fileToBase64(imageUri);
+      const b64 = imageUri ? await fileToBase64(imageUri) : null;
       const initial: Variant[] = variantEmotions.map((em, i) => ({
         id: `v${i + 1}`, emotion: em, status: 'pending',
       }));
       setVariants(initial);
 
-      // Kick off all 5 cartoonize jobs — staggered by 400ms so the
-      // Nano Banana endpoint doesn't hit a rate-limit burst on the
-      // first cold-start call (was the root cause of "first time all
-      // fail, retry works" bug reported in Session 33 round 2).
+      // Build a gender-aware text prompt (used when no upload).
+      const genderWord = genderSolo === 'male' ? 'young Indian man' :
+                         genderSolo === 'female' ? 'young Indian woman' :
+                         'young Indian person';
+      const styleHint = activeStyle.id === 'desi_toon' ? 'desi cartoon style' :
+                        activeStyle.id === 'pixar' ? 'pixar 3D style' :
+                        'stylised cartoon';
+      const buildPrompt = (em: string) =>
+        `A ${genderWord}, ${em} expression, ${styleHint}, full body 9:16 vertical, ` +
+        `colourful festive background, head clearly visible in upper third, ` +
+        `friendly and expressive face, no text overlay`;
+
+      // Kick off all jobs — staggered by 400ms to avoid Nano Banana
+      // rate-limit burst.
       const startResults: PromiseSettledResult<any>[] = [];
       for (let i = 0; i < variantEmotions.length; i++) {
         const em = variantEmotions[i];
-        // Fire this one (don't await yet — we'll collect results below).
-        const pending = axios.post(`${API}/avatar/cartoonize`, {
-          image_b64: b64,
+        const reqBody: any = {
           style: activeStyle.id,
           emotion: em,
-        }, { timeout: 30000 }).then(
+        };
+        if (b64) reqBody.image_b64 = b64;
+        else reqBody.prompt = buildPrompt(em);
+        const pending = axios.post(`${API}/avatar/cartoonize`, reqBody, { timeout: 30000 }).then(
           (v) => ({ status: 'fulfilled', value: v } as const),
           (r) => ({ status: 'rejected', reason: r } as const),
         );
@@ -762,12 +816,12 @@ export default function AvatarStudioScreen() {
     } finally {
       setVariantsBusy(false);
     }
-  }, [imageUri, activeStyle, user]);
+  }, [imageUri, activeStyle, user, genderSolo]);
 
   // Retry a single failed variant — fires one cartoonize call and polls
   // just that job without touching the other 4 cards. Issue #3 follow-up.
   const retryVariant = useCallback(async (id: string) => {
-    if (!activeStyle || !imageUri) return;
+    if (!activeStyle) return;
     const vIdx = variants.findIndex(x => x.id === id);
     if (vIdx < 0) return;
     const v = variants[vIdx];
@@ -776,12 +830,18 @@ export default function AvatarStudioScreen() {
     next[vIdx] = { ...v, status: 'pending', error: undefined, imageUrl: undefined, localPath: undefined, jobId: undefined };
     setVariants(next);
     try {
-      const b64 = await fileToBase64(imageUri);
-      const cr = await axios.post(`${API}/avatar/cartoonize`, {
-        image_b64: b64,
-        style: activeStyle.id,
-        emotion: v.emotion,
-      }, { timeout: 30000 });
+      const reqBody: any = { style: activeStyle.id, emotion: v.emotion };
+      if (imageUri) {
+        reqBody.image_b64 = await fileToBase64(imageUri);
+      } else {
+        const genderWord = genderSolo === 'male' ? 'young Indian man' :
+                           genderSolo === 'female' ? 'young Indian woman' :
+                           'young Indian person';
+        const styleHint = activeStyle.id === 'desi_toon' ? 'desi cartoon style' :
+                          activeStyle.id === 'pixar' ? 'pixar 3D style' : 'stylised cartoon';
+        reqBody.prompt = `A ${genderWord}, ${v.emotion} expression, ${styleHint}, full body 9:16 vertical, colourful festive background, head clearly visible in upper third`;
+      }
+      const cr = await axios.post(`${API}/avatar/cartoonize`, reqBody, { timeout: 30000 });
       const jobId = cr.data?.job_id;
       if (!jobId) throw new Error('no job_id');
       next[vIdx] = { ...next[vIdx], jobId };
@@ -816,7 +876,7 @@ export default function AvatarStudioScreen() {
       next[vIdx] = { ...next[vIdx], status: 'failed', error: e?.message || 'Retry failed' };
       setVariants([...next]);
     }
-  }, [variants, activeStyle, imageUri]);
+  }, [variants, activeStyle, imageUri, genderSolo]);
 
   // ── Phase 2a dual mode: uploads for A and B + gender auto-infer ──
   const pickAndUploadDual = useCallback(async (slot: 'A' | 'B') => {
@@ -1034,8 +1094,20 @@ export default function AvatarStudioScreen() {
   // Talking mode → create-talking-avatar(photo, voice)   [no cartoonize]
   const generate = useCallback(async () => {
     if (!requireLogin()) return;
-    if (!imagePath) { Alert.alert('Upload a photo first'); return; }
     if (!activeStyle) { Alert.alert('Pick an avatar style first'); return; }
+    // Session 33 r3 — Solo cartoon mode no longer requires upload.
+    // The user can pick a generated variant (pickedVariantPath) and
+    // the variant alone is sufficient. Talking-mode and dual-mode
+    // still require uploads.
+    if (mode === 'cartoon') {
+      if (!pickedVariantPath && !imagePath) {
+        Alert.alert('Pick a character variant first or upload a photo');
+        return;
+      }
+    } else if (!imagePath) {
+      Alert.alert('Upload a photo first');
+      return;
+    }
 
     // Script resolution: prefer AI dialogue; otherwise use free-typed script.
     const script = pickedDialogue?.text?.trim() || manualScript.trim();
@@ -1046,7 +1118,7 @@ export default function AvatarStudioScreen() {
 
     try {
       const persona = activeStyle.personality;  // kept for future use; emotion handled via state
-      let cartoonPath = imagePath;
+      let cartoonPath: string | null = imagePath;
 
       // ── CARTOON MODE: cartoonize the uploaded photo first ─────────
       // …unless the user already picked a variant on Step 4 — in that
@@ -1056,7 +1128,7 @@ export default function AvatarStudioScreen() {
         cartoonPath = pickedVariantPath;
         setGenStage('Using your picked variant…');
         setGenProgress(35);
-      } else if (mode === 'cartoon') {
+      } else if (mode === 'cartoon' && imageUri) {
         setGenStage(`Cartoonizing in ${activeStyle.label} style…`);
         setGenProgress(10);
         try {
@@ -1799,58 +1871,48 @@ export default function AvatarStudioScreen() {
                   </>
                 ) : (
                 <>
-                <Text style={s.sectionTitle}>Upload your photo</Text>
-                <Text style={s.sectionSub}>We'll animate it with your picked voice + dialogue.</Text>
+                <Text style={s.sectionTitle}>Generate your character</Text>
+                <Text style={s.sectionSub}>
+                  We'll auto-generate 4 cartoon variants based on your voice + gender.
+                  Tap one to use it (no photo upload needed).
+                </Text>
 
-                {imageUri ? (
-                  <GlassCard>
-                    <Image source={{ uri: imageUri }} style={s.photoPreview} />
-                    <View style={{ height: 12 }} />
-                    <GhostButton
-                      label="Change photo"
-                      icon="refresh"
-                      size="md"
-                      onPress={pickAndUploadImage}
+                {/* Session 33 r3 — Gender chip drives Nano Banana variants. */}
+                <FieldLabel style={{ marginTop: 12 }}>Character gender</FieldLabel>
+                <View style={s.catRow}>
+                  {(['male', 'female'] as const).map(g => (
+                    <Chip
+                      key={'solo-'+g}
+                      label={g === 'male' ? '♂ Male' : '♀ Female'}
+                      active={genderSolo === g}
+                      onPress={() => setGenderSolo(g)}
+                      style={{ marginRight: 8, marginBottom: 8 }}
                     />
-                    {imageUploading && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, justifyContent: 'center' }}>
-                        <ActivityIndicator color="#A855F7" size="small" />
-                        <Text style={s.uploadingText}>Uploading…</Text>
-                      </View>
-                    )}
-                  </GlassCard>
-                ) : (
-                  <GlassCard onPress={pickAndUploadImage} style={s.uploadBox}>
-                    <Ionicons name="cloud-upload-outline" size={38} color="#A855F7" />
-                    <Text style={s.uploadTitle}>Tap to upload</Text>
-                    <Text style={s.uploadSub}>JPG / PNG · portrait works best</Text>
-                  </GlassCard>
-                )}
+                  ))}
+                </View>
 
-                {/* Issue #6 — 5 cartoon variants picker */}
-                {imagePath && (
-                  <View style={{ marginTop: 16 }}>
-                    <FieldLabel>Try 5 cartoon variants</FieldLabel>
-                    <Text style={s.sectionSub}>
-                      Skip the surprise — generate 5 quick previews in {activeStyle?.label} style
-                      and pick your favorite before we make the talking video.
-                    </Text>
-                    {variants.length === 0 && (
-                      <GradientButton
-                        label={variantsBusy ? 'Cooking up 5 variants…' : 'Generate 5 cartoon previews'}
-                        icon="grid"
-                        loading={variantsBusy}
-                        disabled={variantsBusy || generating}
-                        onPress={generateVariants}
-                        size="md"
-                        colors={['#A855F7', '#EC4899']}
-                      />
-                    )}
-                    {variants.length > 0 && (
-                      <>
-                        <View style={s.variantGrid}>
-                          {variants.map(v => {
-                            const isPicked = !!v.localPath && pickedVariantPath === v.localPath;
+                {/* Issue #6 — 4 cartoon variants picker (now auto-fires) */}
+                <View style={{ marginTop: 16 }}>
+                  <FieldLabel>AI-generated character variants</FieldLabel>
+                  <Text style={s.sectionSub}>
+                    Tap a card to pick your favourite. We'll use it for the talking video.
+                  </Text>
+                  {variants.length === 0 && (
+                    <GradientButton
+                      label={variantsBusy ? 'Cooking up 4 variants…' : 'Generate 4 character previews'}
+                      icon="grid"
+                      loading={variantsBusy}
+                      disabled={variantsBusy || generating}
+                      onPress={generateVariants}
+                      size="md"
+                      colors={['#A855F7', '#EC4899']}
+                    />
+                  )}
+                  {variants.length > 0 && (
+                    <>
+                      <View style={s.variantGrid}>
+                        {variants.map(v => {
+                          const isPicked = !!v.localPath && pickedVariantPath === v.localPath;
                             return (
                               <Pressable
                                 key={v.id}
@@ -1923,7 +1985,6 @@ export default function AvatarStudioScreen() {
                       </>
                     )}
                   </View>
-                )}
 
 
                 <View style={{ height: 20 }} />
@@ -1981,7 +2042,7 @@ export default function AvatarStudioScreen() {
                   label={generating ? 'Generating…' : 'Generate Avatar Video'}
                   icon="sparkles"
                   loading={generating}
-                  disabled={!imagePath || generating}
+                  disabled={(!imagePath && !pickedVariantPath) || generating}
                   onPress={generate}
                 />
 
