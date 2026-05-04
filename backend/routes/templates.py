@@ -149,6 +149,35 @@ async def festival_summary():
     return {"festivals": out}
 
 
+# IMPORTANT: static-path routes MUST come before `/{template_id}` otherwise
+# FastAPI's path matcher treats "preview-stats" as a template_id and 404s.
+@router.get("/preview-stats")
+async def preview_stats():
+    """Quick observability helper — how many templates have previews?"""
+    total = await db.templates.count_documents({})
+    with_thumb = await db.templates.count_documents({
+        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
+    })
+    with_preview = await db.templates.count_documents({
+        "preview_url": {"$exists": True, "$nin": [None, ""]},
+    })
+    missing = await db.templates.count_documents({
+        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
+        "$or": [
+            {"preview_url": {"$exists": False}},
+            {"preview_url": None},
+            {"preview_url": ""},
+        ],
+    })
+    return {
+        "total": total,
+        "with_thumbnail": with_thumb,
+        "with_preview": with_preview,
+        "needs_preview": missing,
+        "coverage_pct": round(100 * with_preview / max(1, total), 1),
+    }
+
+
 @router.get("/{template_id}")
 async def get_template(template_id: str):
     t = await db.templates.find_one({"id": template_id}, {"_id": 0})
@@ -479,31 +508,4 @@ async def backfill_template_previews(
         "ok": True,
         "queued": len(todo),
         "message": f"Queued {len(todo)} templates for preview generation. Check back in ~{len(todo)*2}s.",
-    }
-
-
-@router.get("/preview-stats")
-async def preview_stats():
-    """Quick observability helper — how many templates have previews?"""
-    total = await db.templates.count_documents({})
-    with_thumb = await db.templates.count_documents({
-        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
-    })
-    with_preview = await db.templates.count_documents({
-        "preview_url": {"$exists": True, "$nin": [None, ""]},
-    })
-    missing = await db.templates.count_documents({
-        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
-        "$or": [
-            {"preview_url": {"$exists": False}},
-            {"preview_url": None},
-            {"preview_url": ""},
-        ],
-    })
-    return {
-        "total": total,
-        "with_thumbnail": with_thumb,
-        "with_preview": with_preview,
-        "needs_preview": missing,
-        "coverage_pct": round(100 * with_preview / max(1, total), 1),
     }

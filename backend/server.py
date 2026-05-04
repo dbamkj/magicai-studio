@@ -2113,25 +2113,8 @@ async def video_redub(req: VideoRedubRequest, background_tasks: BackgroundTasks,
     await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks)
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
-@api_router.get("/usage")
-async def get_usage(request: Request):
-    user = await get_current_user(request)
-    pipeline = [{"$match": {"user_id": user["user_id"]}}, {"$group": {"_id": "$type", "count": {"$sum": 1}}}]
-    counts = {}
-    async for doc in db.video_projects.aggregate(pipeline):
-        counts[doc["_id"]] = doc["count"]
-    completed_pipeline = [{"$match": {"user_id": user["user_id"], "status": "completed"}}, {"$group": {"_id": "$type", "count": {"$sum": 1}}}]
-    completed = {}
-    async for doc in db.video_projects.aggregate(completed_pipeline):
-        completed[doc["_id"]] = doc["count"]
-    return {
-        "lipsync": {"total": counts.get("lipsync", 0), "completed": completed.get("lipsync", 0)},
-        "faceswap": {"total": counts.get("faceswap", 0), "completed": completed.get("faceswap", 0)},
-        "headswap": {"total": counts.get("headswap", 0), "completed": completed.get("headswap", 0)},
-        "bodyswap": {"total": counts.get("bodyswap", 0), "completed": completed.get("bodyswap", 0)},
-        "total_projects": sum(counts.values()),
-        "total_completed": sum(completed.values()),
-    }
+# Phase-B — /usage moved to routes/account.py
+
 
 # Session 27d — VOICE_LIBRARY moved to core/voice_library.py
 from core.voice_library import VOICE_LIBRARY  # noqa: E402
@@ -2146,145 +2129,8 @@ MH_CREDIT_COSTS = _MH_CREDIT_COSTS  # re-exported for backwards-compat in this f
 MH_QUALITY_TIERS = _MH_QUALITY_TIERS
 
 
-@api_router.get("/credits-info")
-async def credits_info(request: Request = None):
-    """Returns Magic Hour credit usage + per-action cost estimates.
-    Since MH has no public balance endpoint, we sum credits_charged captured from completed jobs."""
-    user_id = "anonymous"
-    try:
-        if request is not None:
-            user = await get_current_user(request)
-            user_id = user.get("id") or user.get("email") or "anonymous"
-    except Exception:
-        user_id = "anonymous"
-    # Sum credits from completed projects
-    try:
-        pipeline = [
-            {"$match": {"user_id": user_id, "status": "completed"}},
-            {"$group": {"_id": None, "total": {"$sum": "$credits_charged"}, "count": {"$sum": 1}}},
-        ]
-        cur = db.video_projects.aggregate(pipeline)
-        agg = await cur.to_list(length=1)
-        total_used = int(agg[0]["total"]) if agg and agg[0].get("total") else 0
-        total_count = int(agg[0]["count"]) if agg and agg[0].get("count") else 0
-    except Exception as e:
-        logger.warning(f"credits-info agg failed: {e}")
-        total_used, total_count = 0, 0
-    from core.pricing import MH_PER_SEC, MH_MIN_BILLED_SECONDS
-    return {
-        "credits_used_total": total_used,
-        "completed_jobs": total_count,
-        "cost_table": MH_CREDIT_COSTS,
-        "pricing": {
-            "min_billed_seconds": MH_MIN_BILLED_SECONDS,
-            "per_sec": MH_PER_SEC,
-            "video_5s_quick": MH_PER_SEC['quick'] * MH_MIN_BILLED_SECONDS,
-            "video_5s_studio": MH_PER_SEC['studio'] * MH_MIN_BILLED_SECONDS,
-            "video_5s_cinematic": MH_PER_SEC['cinematic'] * MH_MIN_BILLED_SECONDS,
-            "image_flux_schnell": 4,
-            "image_flux_dev": 6,
-            "face_swap_photo": 60,
-            "lip_sync_per_sec": 40,
-            "talking_avatar_per_sec": 60,
-        },
-        "quality_tiers": MH_QUALITY_TIERS,
-        "resolutions": ["480p", "720p", "1080p"],
-        "resolutions_enabled": ["480p", "720p"],  # 1080p greyed for now
-        "note": "MH enforces 5-second minimum billing. Shorter videos are still billed for 5s.",
-    }
-
-
-@api_router.get("/mh-models")
-async def get_mh_models():
-    """Returns MH quality tiers + REAL credit pricing (matches MH 2026 billing).
-
-    Also returns per-feature ``duration_options`` and ``resolution_options`` so
-    the frontend only exposes picker values that Magic Hour actually supports
-    for the currently selected tool + model combination.
-
-    Batch 1 (user feedback): These numbers are what MH actually charges on our
-    account, so the cost shown in-app mirrors what the user will be debited.
-    MH enforces 5-second minimum billed duration — any video shorter is still
-    billed for 5s (backend locally trims with FFmpeg if the user picked <5s).
-    """
-    # Duration + resolution options are gated to what MH actually accepts.
-    # * text_to_video / image_to_video / video_to_video: 5 / 10 / 15 s
-    #   (MH min-billed = 5s; backend locally trims 2/3/4s requests before
-    #    returning, but we only expose these ≥5s values in the UI because
-    #    shorter values bill the user the same as 5s.)
-    # * lip_sync / talking_avatar / redub: duration comes from audio/script
-    #   (no picker required — we still return a sensible preview list).
-    # * face_swap_photo: no duration concept.
-    # * face_swap_video: matches source video duration (no picker).
-    MH_VIDEO_DURATIONS = [5, 10, 15]
-    MH_RES = {
-        "480p":  {"id": "480p",  "label": "480p",          "enabled": True,  "note": "Fast, low data · same MH cost"},
-        "720p":  {"id": "720p",  "label": "720p (HD)",     "enabled": True,  "note": "Default, HD · same MH cost"},
-        "1080p": {"id": "1080p", "label": "1080p (Full HD)","enabled": False, "note": "Coming soon"},
-    }
-    std_res = [MH_RES["480p"], MH_RES["720p"], MH_RES["1080p"]]
-    return {
-        "quality_tiers": MH_QUALITY_TIERS,
-        "min_billed_seconds": 5,
-        "resolutions": std_res,  # legacy global list (kept for back-compat)
-        "features": {
-            "text_to_video": {
-                "models": [
-                    {"id": "quick", "label": "Kling Lite", "enabled": True, "credits_per_sec": 60, "min_cost": 300, "default": True, "desc": "Fast · cheapest"},
-                    {"id": "studio", "label": "Kling 2.5", "enabled": True, "credits_per_sec": 80, "min_cost": 400, "desc": "Balanced quality"},
-                    {"id": "cinematic", "label": "Kling 3.0 / Veo", "enabled": True, "credits_per_sec": 120, "min_cost": 600, "desc": "Top quality · premium"},
-                ],
-                "duration_options": MH_VIDEO_DURATIONS,
-                "resolution_options": std_res,
-            },
-            "image_to_video": {
-                "models": [
-                    {"id": "quick", "label": "Kling Lite", "enabled": True, "credits_per_sec": 60, "min_cost": 300, "default": True, "desc": "Animate images fast"},
-                    {"id": "studio", "label": "Kling 2.5", "enabled": True, "credits_per_sec": 80, "min_cost": 400, "desc": "Balanced animation"},
-                    {"id": "cinematic", "label": "Kling 3.0 / Veo", "enabled": True, "credits_per_sec": 120, "min_cost": 600, "desc": "Premium animation"},
-                ],
-                "duration_options": MH_VIDEO_DURATIONS,
-                "resolution_options": std_res,
-            },
-            "video_to_video": {
-                "models": [
-                    {"id": "quick", "label": "Fast Style", "enabled": True, "credits_per_sec": 50, "min_cost": 250, "default": True, "desc": "Fast style transfer"},
-                    {"id": "studio", "label": "Studio Style", "enabled": True, "credits_per_sec": 70, "min_cost": 350, "desc": "Better quality"},
-                ],
-                "duration_options": MH_VIDEO_DURATIONS,
-                "resolution_options": std_res,
-            },
-            "ai_image_generator": {
-                "models": [
-                    {"id": "quick", "label": "FLUX Schnell", "enabled": True, "credits_per_image": 4, "default": True, "desc": "Fastest (~2s)"},
-                    {"id": "studio", "label": "FLUX Dev", "enabled": True, "credits_per_image": 6, "desc": "Balanced default"},
-                    {"id": "cinematic", "label": "FLUX Pro", "enabled": True, "credits_per_image": 10, "desc": "Top quality"},
-                ],
-                "duration_options": None,  # N/A for still images
-                "resolution_options": std_res,
-            },
-            "face_swap_photo": {
-                "flat_cost": 60, "desc": "Photo face-swap (per image)",
-                "duration_options": None, "resolution_options": std_res,
-            },
-            "face_swap_video": {
-                "credits_per_sec": 80, "min_cost": 400, "desc": "Video face-swap",
-                "duration_options": None,  # derived from source video
-                "resolution_options": std_res,
-            },
-            "lip_sync": {
-                "credits_per_sec": 40, "min_cost": 200, "desc": "Lip sync to audio",
-                "duration_options": None,  # driven by audio length
-                "resolution_options": std_res,
-            },
-            "talking_avatar": {
-                "credits_per_sec": 60, "min_cost": 300, "desc": "AI Talking Photo",
-                "duration_options": None,  # driven by script/audio length
-                "resolution_options": std_res,
-            },
-        },
-        "notice": "MH enforces 5-second minimum billing. Videos under 5s are still charged for 5s.",
-    }
+# Phase-B — /credits-info moved to routes/account.py
+# Phase-B — /mh-models    moved to routes/account.py
 
 
 @api_router.get("/preview-voice")
@@ -3413,6 +3259,10 @@ app.include_router(_avatar_router)
 # Creative Plan Engine — POST /api/creative-plan (GPT-4o-mini structured plan)
 from routes.creative_plan import router as _creative_plan_router
 app.include_router(_creative_plan_router)
+
+# Phase-B account router — /usage + /credits-info + /mh-models
+from routes.account import router as _account_router
+app.include_router(_account_router)
 
 # V2.0 — ChatGPT-style Prompt Selection (POST /api/generate-prompts)
 from routes.prompts import router as _prompts_router

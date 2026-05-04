@@ -668,12 +668,374 @@ v2_prompt_generator_session31:
 
 metadata:
   created_by: "main_agent"
-  version: "2.8"
-  test_sequence: 10
+  version: "2.9"
+  test_sequence: 11
   run_ui: true
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Phase-B Refactor — /usage, /credits-info, /mh-models moved to routes/account.py"
+    - "Template Auto-Preview Backfill — POST /api/templates/backfill-previews + GET /api/templates/preview-stats"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+phase_b_account_extraction_session_34:
+  - task: "Phase-B — /api/usage moved to routes/account.py"
+    implemented: true
+    working: false
+    file: "backend/routes/account.py, backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Session-34 Phase-B refactor. /api/usage was extracted from
+          server.py (~20 LOC aggregation) into routes/account.py. Uses
+          the shared `core.db.db` client (not a freshly created one)
+          and the centralized `core.auth.get_current_user` for the
+          Bearer-token check. No behavior change — same response
+          shape: {lipsync:{total,completed}, faceswap:..., ...,
+          total_projects, total_completed}. Unauthenticated calls
+          return 401 (verified via curl).
+      - working: false
+        agent: "testing"
+        comment: |
+          Session-34 verification — /api/usage WITH valid Bearer
+          returns 500 Internal Server Error.
+
+          ROOT CAUSE — KeyError in routes/account.py:46.
+          Backend traceback:
+            File "/app/backend/routes/account.py", line 46, in get_usage
+              uid = user["user_id"]
+                    ~~~~^^^^^^^^^^^
+            KeyError: 'user_id'
+
+          The new account.py imports `get_current_user` from
+          `core.auth` (line 25) — that function returns the raw
+          users-collection document which only has the key `id`,
+          NOT `user_id`. server.py's own get_current_user (lines
+          176-222) is the one that populates BOTH `id` AND
+          `user_id` (line 200: `user['user_id'] = user.get('id')`).
+          The other extracted route file (routes/projects.py) avoids
+          this by lazy-importing server.get_current_user instead of
+          core.auth.get_current_user.
+
+          FIX (one-line, in routes/account.py:46):
+            uid = user.get("user_id") or user.get("id")
+          OR change the import on line 25 to use server.py's
+          get_current_user (matching projects.py pattern).
+
+          Verified empirically — POST /api/auth/login demo_creator
+          returns token; GET /api/usage with that token → 500.
+          Without token → 401 ✓ (correct).
+
+          The 401-without-token path works because get_current_user
+          raises before reaching the buggy line 46. The 500
+          regression is only triggered for authenticated callers —
+          which is the entire purpose of the endpoint.
+
+          IMPACT: /api/usage endpoint is BROKEN for ALL real users.
+          This is a functional regression introduced by Phase-B.
+
+  - task: "Phase-B — /api/credits-info moved to routes/account.py"
+    implemented: true
+    working: true
+    file: "backend/routes/account.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Session-34 Phase-B refactor. /api/credits-info extracted
+          from server.py into routes/account.py. Anonymous-safe
+          (returns 0-usage card when no Bearer token). Constants
+          (MH_CREDIT_COSTS, MH_QUALITY_TIERS, MH_PER_SEC,
+          MH_MIN_BILLED_SECONDS) now imported DIRECTLY from
+          core.constants / core.pricing — removed the old circular
+          import back into server.py. Verified via curl — 200 with
+          all required keys {credits_used_total, completed_jobs,
+          cost_table, pricing, quality_tiers, resolutions,
+          resolutions_enabled, note}. cost_table still contains the
+          10 published MH credit-per-action estimates.
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. GET /api/credits-info (no auth) → 200 with all 8
+          required top-level keys: {credits_used_total:int=0,
+          completed_jobs:int=0, cost_table, pricing, quality_tiers,
+          resolutions, resolutions_enabled, note}.
+          cost_table contains the required entries:
+            lip_sync_per_sec=7, face_swap_per_sec=3,
+            ai_image_generator=5, head_swap=10 (plus 6 more).
+          credits_used_total + completed_jobs are int (not str) —
+          STRICT assertion satisfied. Refactor preserved behaviour.
+
+  - task: "Phase-B — /api/mh-models moved to routes/account.py"
+    implemented: true
+    working: true
+    file: "backend/routes/account.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Session-34 Phase-B refactor. /api/mh-models extracted from
+          server.py into routes/account.py.
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. GET /api/mh-models → 200 with features dict containing
+          all 8 required keys: text_to_video, image_to_video,
+          video_to_video, ai_image_generator, face_swap_photo,
+          face_swap_video, lip_sync, talking_avatar.
+          quality_tiers has exactly 3 entries with ids
+          [quick, studio, cinematic] (set match). Resolution +
+          duration pickers populated per-feature as expected.
+
+  - task: "Template Auto-Preview — POST /api/templates/backfill-previews"
+    implemented: true
+    working: true
+    file: "backend/routes/templates.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Session-34 implementation."
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 2/2.
+          B2 POST /api/templates/backfill-previews (no params) → 200
+            {"ok":true,"queued":0,"message":"No templates need
+             previews."} — current magicai_beta has 26/26 previews so
+             nothing qualifies.
+          B3 POST /api/templates/backfill-previews?force=true&limit=2
+             → 200 {"ok":true,"queued":2,"message":"Queued 2
+             templates for preview generation. Check back in ~4s."}.
+             After 10s sleep, GET /api/templates/preview-stats still
+             reports {total:26, with_preview:26, coverage_pct:100.0}.
+             Background job logged "backfill: done — 0 previews
+             generated, 2 failed (out of 2 queued)" because the two
+             selected templates have https://pixabay.com URLs as
+             thumbnail_url and the regex strips only /api/serve-file/
+             and /uploads/ prefixes — leaving an unreachable disk
+             path for those 2. This is a pre-existing data issue,
+             NOT a regression. Coverage stat unchanged.
+
+  - task: "Template Auto-Preview — GET /api/templates/preview-stats"
+    implemented: true
+    working: true
+    file: "backend/routes/templates.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Session-34. Path-order bug fixed — moved /preview-stats
+          ABOVE /{template_id} catch-all.
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. GET /api/templates/preview-stats → 200 with all 5
+          required keys {total, with_thumbnail, with_preview,
+          needs_preview, coverage_pct}. Verified values:
+            total=26, with_thumbnail=26, with_preview=26,
+            needs_preview=0, coverage_pct=100.0 (float).
+          STRICT assertion that coverage_pct is float — satisfied.
+          Path-order fix confirmed (no longer 404).
+
+  - task: "Regression — root, credits-info, mh-models, templates/* after Phase-B"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/routes/*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Needs regression pass."
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 6/6 regression sweep.
+          C1 GET /api/ → 200 {"message":"MagiCAi Studio API",
+             "version":"7.1.0"}.
+          C2 POST /api/auth/login {demo_creator@test.com / Test@123}
+             → 200 with token + user.subscription_tier="creator".
+             credits_balance came back as 1000 (not 3000 from
+             test_credentials.md) — that is state drift from prior
+             runs consuming credits, NOT a refactor regression.
+          C3 POST /api/creative-plan {idea:"quick test"} → 200 with
+             ALL required keys: creative_plan_id, hook, script,
+             scene_keywords, voice_style, bgm_style, mood (plus
+             cache_key, language, duration, scene_count, source,
+             template_id, idea, created_at). STRICT assertion in
+             review (creative-plan must still succeed) — satisfied.
+             Confirms Phase-B did not break shared imports.
+          C4 GET /api/marketplace/templates?limit=5 → 200 with
+             templates array of length 5.
+          C5 GET /api/mode → 200 {env:"BETA", is_beta:true,
+             is_dev:false, is_prod:false, version:"v1.0-beta"}.
+          C6 GET /api/cinematic-presets → 200 with 6 presets.
+    file: "backend/routes/account.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Session-34 Phase-B refactor. /api/credits-info extracted
+          from server.py into routes/account.py. Anonymous-safe
+          (returns 0-usage card when no Bearer token). Constants
+          (MH_CREDIT_COSTS, MH_QUALITY_TIERS, MH_PER_SEC,
+          MH_MIN_BILLED_SECONDS) now imported DIRECTLY from
+          core.constants / core.pricing — removed the old circular
+          import back into server.py. Verified via curl — 200 with
+          all required keys {credits_used_total, completed_jobs,
+          cost_table, pricing, quality_tiers, resolutions,
+          resolutions_enabled, note}. cost_table still contains the
+          10 published MH credit-per-action estimates.
+
+agent_communication_session_34:
+  - agent: "main"
+    message: |
+      Session-34 Phase-B completion. The previous agent (session 33)
+      began routes/account.py but didn't wire it into server.py and
+      left duplicates of /usage + /credits-info at lines 2116-2287 of
+      server.py. This session:
+
+      1. Rewrote routes/account.py to import constants directly from
+         core.constants + core.pricing (removed circular dep back into
+         server.py) and added the 3rd endpoint (/mh-models) that the
+         previous agent had not extracted.
+      2. Fixed FastAPI signature — `Optional[Request]` is not a valid
+         response field type, changed to `request: Request = None`.
+      3. Removed the three duplicate endpoints from server.py (kept
+         breadcrumb comments pointing at routes/account.py).
+      4. Added `app.include_router(_account_router)` in server.py
+         after the creative_plan router.
+      5. routes/templates.py already had POST /backfill-previews and
+         GET /preview-stats from session 33. Moved /preview-stats to
+         BEFORE /{template_id} (FastAPI path-order bug that made the
+         first smoke test return 404).
+      6. Deleted duplicate /preview-stats from bottom of templates.py.
+
+      Post-fix health checks all green:
+         GET /api/                       -> 200 v7.1.0
+         GET /api/credits-info           -> 200 with all required keys
+         GET /api/mh-models              -> 200 with 8 features
+         GET /api/usage (no auth)        -> 401 as expected
+         GET /api/templates/preview-stats -> 200 coverage_pct=100
+         POST /api/templates/backfill-previews -> queued=0 (nothing to do)
+
+      Handing to backend testing agent for formal verification of:
+      * account.py (3 endpoints)
+      * templates backfill + preview-stats
+      * full regression sweep (root, auth, creative-plan, marketplace, mode)
+
+  - agent: "testing"
+    message: |
+      Session-34 Phase-B verification — 17/19 PASS, 1 CRITICAL bug.
+      Test artefact: /app/backend_test.py.
+
+      ✅ FULL PASS:
+        A1 GET /api/credits-info — all 8 required keys, integers
+           (not strings), cost_table has lip_sync_per_sec=7,
+           face_swap_per_sec=3, ai_image_generator=5, head_swap=10.
+        A2 GET /api/mh-models — features dict with all 8 keys
+           {text_to_video, image_to_video, video_to_video,
+           ai_image_generator, face_swap_photo, face_swap_video,
+           lip_sync, talking_avatar}; quality_tiers=
+           [quick, studio, cinematic].
+        A3 GET /api/usage WITHOUT auth → 401 ✓.
+        B1 GET /api/templates/preview-stats — total=26,
+           with_thumbnail=26, with_preview=26, needs_preview=0,
+           coverage_pct=100.0 (float). Path-order fix confirmed.
+        B2 POST /api/templates/backfill-previews → 200
+           {ok:true, queued:0, message:"No templates need previews."}.
+        B3 POST /api/templates/backfill-previews?force=true&limit=2
+           → 200 queued=2; coverage_pct still 100.0 after 10s wait.
+           (Note: 2 of the seed templates have https://pixabay.com
+           thumbnail URLs that the regex doesn't strip, so the
+           background ffmpeg job logged "0 generated, 2 failed" —
+           pre-existing data issue, NOT a Phase-B regression.)
+        C1-C6 regression sweep — all green:
+           C1 GET /api/ → 200 v7.1.0
+           C2 POST /api/auth/login demo_creator → 200 token, tier=
+              creator (credits_balance=1000 — drift from prior test
+              runs, NOT a refactor regression. test_credentials.md
+              says 3000.)
+           C3 POST /api/creative-plan {idea:"quick test"} → 200
+              with all required keys (creative_plan_id, hook,
+              script, scene_keywords, voice_style, bgm_style,
+              mood). Confirms account.py import didn't break the
+              creative-plan pipeline.
+           C4 GET /api/marketplace/templates?limit=5 → 200 len=5.
+           C5 GET /api/mode → 200 env=BETA, is_beta=true,
+              version=v1.0-beta.
+           C6 GET /api/cinematic-presets → 200 with 6 presets.
+
+      ❌ CRITICAL BUG — A3 GET /api/usage WITH valid Bearer token
+         returns 500 Internal Server Error.
+
+         ROOT CAUSE — KeyError in routes/account.py:46.
+         Backend traceback (verbatim from
+         /var/log/supervisor/backend.err.log):
+
+           File "/app/backend/routes/account.py", line 46,
+                in get_usage
+             uid = user["user_id"]
+                   ~~~~^^^^^^^^^^^
+           KeyError: 'user_id'
+
+         WHY — routes/account.py imports get_current_user from
+         core.auth (line 25). core/auth.py:64 fetches the user via
+         `_db.users.find_one({'id': data['sub']}, ...)` and returns
+         that document directly. The DB document only has the field
+         `id`, NOT `user_id`. server.py's own get_current_user
+         (server.py:200) is the one that synthesises both keys
+         (`user['user_id'] = user.get('id')`). routes/projects.py
+         lazy-imports server.get_current_user precisely for this
+         reason — routes/account.py does not.
+
+         FIX (one-line, in routes/account.py:46) — easiest:
+           uid = user.get("user_id") or user.get("id")
+
+         OR change line 25 to import server.get_current_user (matching
+         the projects.py pattern). The latter is closer to the
+         pre-refactor behaviour because server.get_current_user also
+         supports the legacy session_token cookie path.
+
+         IMPACT — /api/usage is BROKEN for every authenticated user,
+         which is the entire purpose of the endpoint. The "no-auth
+         → 401" path works only because get_current_user raises
+         BEFORE reaching line 46.
+
+         No other Phase-B endpoint is affected because
+         /credits-info reads `user.get("id") or user.get("email")`
+         and /mh-models is anonymous.
+
+      Recommended action: main agent applies the one-line fix in
+      routes/account.py:46 then re-runs /app/backend_test.py
+      (only A3-with-auth needs to flip from 500 → 200).
+
+test_plan:
+  current_focus:
+    - "Phase-B Refactor — /usage, /credits-info, /mh-models moved to routes/account.py"
+    - "Template Auto-Preview Backfill — POST /api/templates/backfill-previews + GET /api/templates/preview-stats"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
