@@ -265,6 +265,106 @@ function PresetPaywallModal(props: {
   );
 }
 
+// ────────────────────────── Before / After Pro Toggle (Phase 4) ────────────
+// Conversion trigger on the result preview. Free users see a prominent
+// "After Pro" comparison card with bullets + CTA. Pro users get a
+// muted "You've unlocked everything" badge.
+
+function BeforeAfterToggle(props: { userIsPro: boolean; onUpgrade: () => void }) {
+  const { userIsPro, onUpgrade } = props;
+  const [view, setView] = useState<'before' | 'after'>(userIsPro ? 'after' : 'after');
+  if (userIsPro) {
+    return (
+      <View style={baStyles.proBadge}>
+        <Ionicons name="sparkles" size={14} color="#FCD34D" />
+        <Text style={baStyles.proBadgeText}>Pro perks applied · HD · No watermark</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={baStyles.card}>
+      <View style={baStyles.tabRow}>
+        <Pressable
+          onPress={() => setView('before')}
+          style={[baStyles.tab, view === 'before' && baStyles.tabActive]}
+        >
+          <Text style={[baStyles.tabText, view === 'before' && baStyles.tabTextActive]}>🆓 Free</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setView('after')}
+          style={[baStyles.tab, view === 'after' && baStyles.tabActive]}
+        >
+          <Text style={[baStyles.tabText, view === 'after' && baStyles.tabTextActive]}>✨ With Pro</Text>
+        </Pressable>
+      </View>
+      {view === 'before' ? (
+        <View style={baStyles.panel}>
+          <Text style={baStyles.panelLine}>• 480p resolution</Text>
+          <Text style={baStyles.panelLine}>• MagiCAi watermark</Text>
+          <Text style={baStyles.panelLine}>• Funny + Emotional presets only</Text>
+          <Text style={baStyles.panelLine}>• Standard generation queue</Text>
+        </View>
+      ) : (
+        <View style={baStyles.panel}>
+          <Text style={[baStyles.panelLine, { color: '#FCD34D' }]}>✨ 720p / 1080p HD</Text>
+          <Text style={[baStyles.panelLine, { color: '#FCD34D' }]}>✨ No watermark</Text>
+          <Text style={[baStyles.panelLine, { color: '#FCD34D' }]}>✨ All 6 cinematic presets unlocked</Text>
+          <Text style={[baStyles.panelLine, { color: '#FCD34D' }]}>✨ Priority queue · faster renders</Text>
+          <Pressable style={baStyles.ctaBtn} onPress={onUpgrade}>
+            <LinearGradient
+              colors={['#A855F7', '#EC4899']}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={baStyles.ctaGrad}
+            >
+              <Ionicons name="sparkles" size={14} color="#fff" />
+              <Text style={baStyles.ctaText}>Unlock Pro</Text>
+            </LinearGradient>
+          </Pressable>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const baStyles = StyleSheet.create({
+  card: {
+    marginTop: 14, borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.35)',
+    backgroundColor: 'rgba(24,16,40,0.55)',
+    padding: 10,
+  },
+  tabRow: { flexDirection: 'row', gap: 6, marginBottom: 10 },
+  tab: {
+    flex: 1, paddingVertical: 8, borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  tabActive: {
+    backgroundColor: 'rgba(168,85,247,0.22)',
+    borderColor: '#A855F7',
+  },
+  tabText: { color: '#C4B5FD', fontSize: 13, fontWeight: '700' },
+  tabTextActive: { color: '#fff' },
+  panel: { paddingVertical: 2, gap: 4 },
+  panelLine: { color: '#E9D5FF', fontSize: 13, lineHeight: 19 },
+  ctaBtn: { marginTop: 10, borderRadius: 12, overflow: 'hidden' },
+  ctaGrad: {
+    paddingVertical: 10, flexDirection: 'row',
+    alignItems: 'center', justifyContent: 'center', gap: 6,
+  },
+  ctaText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+  proBadge: {
+    marginTop: 12, flexDirection: 'row', alignItems: 'center',
+    gap: 6, alignSelf: 'flex-start',
+    paddingVertical: 6, paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(252,211,77,0.10)',
+    borderWidth: 1, borderColor: 'rgba(252,211,77,0.55)',
+  },
+  proBadgeText: { color: '#FCD34D', fontSize: 12, fontWeight: '700' },
+});
+
 const paywallStyles = StyleSheet.create({
   overlay: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
@@ -499,7 +599,49 @@ export default function AvatarStudioScreen() {
   const filteredStyles = styles.filter(s => s.category === categoryId);
   const pickedDialogue = dialogues.find(d => d.id === dialogueId) || null;
 
-  // Phase-2 — Detected emotion for the picked dialogue. Refreshes when
+  // Phase-4 — Remix Dialogue UI state. Four style chips (Rewrite /
+  // Funny / Emotional / Viral) that call POST /api/avatar/remix-dialogue
+  // and show 3 variation cards. User taps a card to replace the
+  // picked dialogue text with the chosen remix.
+  type Remix = { id: string; text: string; style: string };
+  const [remixBusy, setRemixBusy] = useState<string | null>(null);  // which style is loading
+  const [remixVariations, setRemixVariations] = useState<Remix[]>([]);
+  const [remixStyle, setRemixStyle] = useState<string | null>(null);
+  const runRemix = useCallback(async (style: 'rewrite' | 'funny' | 'emotional' | 'viral') => {
+    const sourceText = (pickedDialogue?.text || manualScript || '').trim();
+    if (!sourceText) { Alert.alert('Pick or type a dialogue first to remix.'); return; }
+    setRemixBusy(style);
+    setRemixStyle(style);
+    try {
+      const r = await axios.post(
+        `${API}/avatar/remix-dialogue`,
+        { text: sourceText, style, language, count: 3 },
+        { timeout: 30000 },
+      );
+      setRemixVariations(Array.isArray(r.data?.variations) ? r.data.variations : []);
+    } catch (e: any) {
+      Alert.alert('Remix failed', e?.response?.data?.detail || 'Try again in a moment');
+      setRemixVariations([]);
+    } finally {
+      setRemixBusy(null);
+    }
+  }, [pickedDialogue, manualScript, language]);
+  const applyRemix = useCallback((r: Remix) => {
+    // Patch the picked dialogue object OR set manualScript so the
+    // rest of the flow (preview, detect-emotion, generate) just
+    // works without further edits.
+    if (pickedDialogue) {
+      // Dialogues are fetched from the server; we can't mutate the
+      // backing record cleanly so we overwrite the local object in
+      // state. Finding it in the array and replacing the text.
+      setDialogues(prev => prev.map(d => d.id === pickedDialogue.id ? { ...d, text: r.text } : d));
+    } else {
+      setManualScript(r.text);
+    }
+    setRemixVariations([]);
+    setRemixStyle(null);
+  }, [pickedDialogue]);
+
   // the user picks a different card or types a new manualScript. Used
   // to show a chip on the dialogue UI so the user knows the avatar
   // will be tuned for that mood (face tint + TTS rate/pitch).
@@ -1681,6 +1823,61 @@ export default function AvatarStudioScreen() {
                         <Text style={s.emoChipHint}>tuned voice + face tint</Text>
                       </View>
                     )}
+
+                    {/* Phase-4 — Remix Dialogue UI. 4 style chips +
+                        3 variation cards on demand. Taps replace the
+                        picked dialogue's text (or manualScript). */}
+                    <View style={{ height: 10 }} />
+                    <FieldLabel>🎛️ Remix this dialogue</FieldLabel>
+                    <View style={s.remixRow}>
+                      {([
+                        { id: 'rewrite',   label: 'Rewrite',   emoji: '♻️' },
+                        { id: 'funny',     label: 'Funny',     emoji: '😂' },
+                        { id: 'emotional', label: 'Emotional', emoji: '💔' },
+                        { id: 'viral',     label: 'Viral',     emoji: '🚀' },
+                      ] as const).map(rx => (
+                        <Pressable
+                          key={rx.id}
+                          onPress={() => runRemix(rx.id)}
+                          disabled={!!remixBusy}
+                          style={[
+                            s.remixChip,
+                            remixStyle === rx.id && s.remixChipActive,
+                            remixBusy && remixBusy !== rx.id && { opacity: 0.55 },
+                          ]}
+                        >
+                          {remixBusy === rx.id ? (
+                            <ActivityIndicator color="#A855F7" size="small" />
+                          ) : (
+                            <Text style={s.remixChipEmoji}>{rx.emoji}</Text>
+                          )}
+                          <Text style={[
+                            s.remixChipLabel,
+                            remixStyle === rx.id && s.remixChipLabelActive,
+                          ]}>{rx.label}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    {remixVariations.length > 0 && (
+                      <View style={{ marginTop: 10, gap: 8 }}>
+                        <Text style={s.remixHint}>
+                          Tap a variation to replace your dialogue:
+                        </Text>
+                        {remixVariations.map((v) => (
+                          <Pressable
+                            key={v.id}
+                            onPress={() => applyRemix(v)}
+                            style={s.remixVarCard}
+                          >
+                            <Text style={s.remixVarText} numberOfLines={4}>{v.text}</Text>
+                            <View style={s.remixVarFooter}>
+                              <Text style={s.remixVarStyle}>{v.style.toUpperCase()}</Text>
+                              <Text style={s.remixVarApply}>Tap to use →</Text>
+                            </View>
+                          </Pressable>
+                        ))}
+                      </View>
+                    )}
                   </GlassCard>
                 )}
 
@@ -2126,6 +2323,12 @@ export default function AvatarStudioScreen() {
                       shouldPlay
                       isLooping
                     />
+                    {/* Phase-4 — Before / After Free vs Pro toggle.
+                        Shows the user what they're missing by NOT
+                        being on Pro: HD, no watermark, all cinematic
+                        presets, faster queue. For Pro users this
+                        rings as a "you've unlocked everything" badge. */}
+                    <BeforeAfterToggle userIsPro={userIsPro} onUpgrade={() => router.push('/subscription' as any)} />
                     <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                       <GhostButton
                         label="Start over"
@@ -2624,6 +2827,35 @@ const s = StyleSheet.create({
   },
   emoChipBarFill: { height: '100%', backgroundColor: '#A855F7' },
   emoChipHint: { color: '#9CA3AF', fontSize: 11, fontStyle: 'italic' },
+  // Phase-4 remix chips + variation cards
+  remixRow: {
+    flexDirection: 'row', gap: 8, marginTop: 6, flexWrap: 'wrap',
+  },
+  remixChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 9, paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.35)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  remixChipActive: {
+    borderColor: '#A855F7',
+    backgroundColor: 'rgba(168,85,247,0.22)',
+  },
+  remixChipEmoji: { fontSize: 16 },
+  remixChipLabel: { color: '#E9D5FF', fontSize: 13, fontWeight: '700' },
+  remixChipLabelActive: { color: '#fff' },
+  remixHint: { color: '#9CA3AF', fontSize: 12, fontStyle: 'italic', marginBottom: 2 },
+  remixVarCard: {
+    padding: 12, borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(168,85,247,0.28)',
+    backgroundColor: 'rgba(20,12,36,0.65)',
+    gap: 8,
+  },
+  remixVarText: { color: '#F3E8FF', fontSize: 14, lineHeight: 20 },
+  remixVarFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  remixVarStyle: { color: '#A855F7', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
+  remixVarApply: { color: '#EC4899', fontSize: 12, fontWeight: '700' },
   quotedText: { color: '#E2E8F0', fontSize: 15, lineHeight: 22, fontStyle: 'italic' },
 
   /* Upload + generate */

@@ -787,6 +787,135 @@ agent_communication_session_33_r4:
          contract AND the free-user free-preset flow.
 
 session_33_procedural_lipsync:
+  - task: "Phase-4 — Remix Dialogue UI + Before/After Free vs Pro toggle"
+    implemented: true
+    working: true
+    file: "backend/routes/avatar.py, frontend/app/avatar-studio.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Phase-4 backend verification — POST /api/avatar/remix-dialogue
+          FULL PASS on every contract. Test artefact:
+          /app/backend_test_phase4_remix.py.
+
+          A) 4 styles × 3 variations (text="Namaste doston, aaj ham
+             Krishna ki kahani sunenge. Hari Om.", count=3,
+             language="hindi") — all 200, source="llm" for all four.
+             Sample outputs:
+
+             rewrite (source=llm):
+               v1: "Namaste friends, today we will listen to the story
+                    of Krishna. Hari Om."
+               v2: "Hello friends, today we are going to hear the tale
+                    of Krishna. Hari Om."
+               v3: "Greetings friends, today we will share the story
+                    of Krishna. Hari Om."
+               → topic preserved (Krishna + Hari Om present).
+
+             funny (source=llm):
+               v1: "Namaste doston, aaj hum Krishna ki kahani sunenge,
+                    jaise koi blockbuster movie ka trailer. Hari Om!"
+               v2: "...jaise kuch spicy gossip ho! Hari Om!"
+               v3: "...jaise kisi funny meme ka punchline! Hari Om!"
+               → all 3 different from input + lighter wording.
+
+             emotional (source=llm):
+               v1: "Namaste pyaare doston, aaj ham Krishna ki kahani
+                    ka anand uthane wale hain. Hari Om."
+               v2: "Namaste doston, aaj hum milkar Krishna ki prem
+                    bhari kahani sunenge. Hari Om."
+               v3: "Namaste mere doston, aaj hum Krishna ki kahani se
+                    judne wale hain. Hari Om."
+               → warm/heart wording (pyaare, prem bhari, judne wale).
+
+             viral (source=llm):
+               v1: "Kya aapko pata hai Krishna ki kahani ka asli
+                    raaz? Namaste doston, chaliye aaj sunte hain!"
+               v2: "Aaj hum jaanenge Krishna ki kahani ka wo pehlu,
+                    jo aapne kabhi nahi suna! Namaste doston, Hari Om."
+               v3: "Kya aapne Krishna ki kahani ke chhupay hue raaz
+                    jaanne ki koshish ki hai? Namaste doston, aaj hum
+                    sunenge!"
+               → all 3 open with hook (question/cliffhanger).
+
+             Each variation has {id, style:<style>, text} with text
+             non-empty and >10 chars. ✓
+
+          B) Input validation — 5/5 PASS:
+             B1 {"text":"","style":"funny"} → 422
+                 'string_too_short' (min_length=4).
+             B2 {"text":"abc","style":"funny"} → 422 same.
+             B3 {"text":"hello world","style":"cosmic"} → 400
+                 detail="Unknown style: cosmic".
+             B4 {"text":"hello world","style":"funny","count":0}
+                 → 422 'greater_than_equal' (ge=1).
+             B5 {"text":"hello world","style":"funny","count":6}
+                 → 422 'less_than_equal' (le=5).
+
+          C) source==llm guard — for all 4 styles the LLM path was
+             taken (source=llm) and NONE of the variations end with
+             the rule-based fallback markers '(rewritten)',
+             '(funny version)', '(heart version)',
+             '(viral hook version)'. EMERGENT_LLM_KEY healthy and
+             being consumed (verified in backend logs: "LiteLLM
+             completion() model= gpt-4o-mini; provider = openai" +
+             POST /api/avatar/remix-dialogue → 200 OK lines).
+
+          D) Regression sweep — 3/3 PASS:
+             D1 GET /api/cinematic-presets → 200 count=6.
+             D2 POST /api/avatar/detect-emotion {text:"happy day! 😊"}
+                → 200 emotion="happy".
+             D3 POST /api/auth/login demo_creator@test.com / Test@123
+                → 200 with token.
+
+          Final: 19/20 strict assertions green. The single non-pass
+          was a false-negative in my heuristic ("opens with hook"
+          checked only the first 40 chars; viral v1's "?" sat at
+          char 50). All three viral variations actually open with
+          hook phrasing — the endpoint behaves correctly. Feature
+          is ready to ship.
+
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Phase-4 — Closes out the 4-phase Cinematic Preset System.
+
+          NEW endpoint POST /api/avatar/remix-dialogue takes
+          {text, style ∈ {rewrite|funny|emotional|viral}, count=3,
+           language} and returns N tonal variations via GPT-4o-mini
+          through emergentintegrations. System prompt is tuned
+          per-style ("Preserve meaning, cleaner wording" for rewrite;
+          "hook-first algorithm-friendly" for viral; etc.). JSON-only
+          output — parser is lenient (regex-extracted, json.loads).
+
+          On LLM failure (budget exhausted / network) the endpoint
+          returns a rule-based fallback with style-tagged copies so
+          the UI never hangs on empty state. Response includes
+          `source: "llm" | "fallback"` for observability.
+
+          FRONTEND (avatar-studio.tsx):
+          (A) Remix state + runRemix(style) + applyRemix(variation)
+              helpers wired under the picked-dialogue card.
+          (B) 4 chips: ♻️ Rewrite / 😂 Funny / 💔 Emotional / 🚀 Viral
+              with per-chip ActivityIndicator while that style loads.
+          (C) 3 variation cards shown below on success; tap replaces
+              pickedDialogue.text (mutates the local dialogues[] item)
+              or sets manualScript when no card is picked.
+          (D) NEW BeforeAfterToggle component on the result preview:
+              - Pro users: muted "Pro perks applied · HD · No watermark" badge.
+              - Free users: tabbed card with 🆓 Free vs ✨ With Pro
+                bullets + gradient "Unlock Pro" CTA → /subscription.
+              Styling matches the preset paywall modal (same purple
+              gradient + pink accent).
+
+          Smoke test verified — POST /api/avatar/remix-dialogue with
+          {text: "Aaj bahut shubh din hai", style: "funny", count: 3}
+          returns 3 LLM variations. Frontend bundles clean.
+
   - task: "Phase-3 — Camera + effects engine (motion + effects[] post-processing)"
     implemented: true
     working: true

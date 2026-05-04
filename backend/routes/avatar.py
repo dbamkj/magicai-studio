@@ -927,6 +927,111 @@ async def post_detect_emotion(req: DetectEmotionRequest):
     }
 
 
+# ── Phase 4 — Remix Dialogue endpoint ──────────────────────────────────
+
+class RemixDialogueRequest(BaseModel):
+    text: str = Field(..., min_length=4, max_length=4000)
+    style: str = Field(..., description="rewrite | funny | emotional | viral")
+    language: Optional[str] = None
+    count: int = Field(3, ge=1, le=5)
+
+
+@router.post("/remix-dialogue")
+async def post_remix_dialogue(req: RemixDialogueRequest):
+    """Produce N tonal variations of an existing dialogue.
+
+    Styles:
+      - rewrite    : same meaning, different wording (safer, palatable)
+      - funny      : add humour, puns, meme energy
+      - emotional  : add pathos, heart-tugging beats
+      - viral      : hook-first, cliffhanger, algorithm-friendly
+
+    Uses GPT-4o-mini via Emergent. Response:
+      {"variations": [{"id": "v1", "style": "viral",
+                       "text": "..."}, ...]}
+
+    On LLM failure, returns a light rule-based fallback so the UI
+    never hangs on empty state (same input with a style tag appended).
+    """
+    style = (req.style or "").strip().lower()
+    if style not in {"rewrite", "funny", "emotional", "viral"}:
+        raise HTTPException(status_code=400, detail=f"Unknown style: {req.style}")
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "").strip()
+    variations: List[dict] = []
+
+    if api_key:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            style_brief = {
+                "rewrite":   "Preserve the original meaning and tone but rephrase with cleaner, more natural wording. Same length.",
+                "funny":     "Rewrite with light humour, playful metaphors, a dash of meme energy. Keep it clean. Same length.",
+                "emotional": "Rewrite with pathos — evoke warmth, nostalgia, or heart-tugging moments. Same length.",
+                "viral":     "Rewrite as a hook-first, algorithm-friendly short-form social script. Start with a bold question or cliffhanger. Same length.",
+            }[style]
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=f"remix_{style}_{hash(req.text) & 0xFFFF:04x}",
+                system_message=(
+                    "You are a short-form video scriptwriter. The user "
+                    f"gives you a base dialogue. You return exactly "
+                    f"{req.count} variations. Rules:\n"
+                    f"- {style_brief}\n"
+                    f"- Language must match the user's input (Hindi / "
+                    "English / Hinglish preserved).\n"
+                    "- Keep dual-speaker A:/B: prefixes if present.\n"
+                    "- Output ONLY valid JSON of this shape:\n"
+                    '  {"variations":[{"text":"..."}, ...]}'
+                    "  No prose before or after. No markdown fence."
+                ),
+            )
+            chat = chat.with_model("openai", "gpt-4o-mini").with_params(temperature=0.85)
+            msg = UserMessage(text=f"Base dialogue:\n\n{req.text[:1500]}")
+            resp = await chat.send_message(msg)
+            if isinstance(resp, str):
+                import json as _json, re as _re
+                m = _re.search(r"\{[\s\S]*\}", resp)
+                if m:
+                    try:
+                        data = _json.loads(m.group(0))
+                        for i, v in enumerate((data.get("variations") or [])[: req.count]):
+                            txt = str(v.get("text") or "").strip()
+                            if txt:
+                                variations.append({
+                                    "id": f"v{i+1}",
+                                    "style": style,
+                                    "text": txt,
+                                })
+                    except Exception as _je:
+                        log.debug("remix: JSON parse failed: %s", _je)
+        except Exception as e:
+            log.warning("remix: LLM path failed — falling back: %s", e)
+
+    # Fallback — ensure we always return at least one variation so the
+    # UI doesn't show an empty grid. Simple rule-based tweaks.
+    if not variations:
+        tag = {
+            "rewrite":   "(rewritten)",
+            "funny":     "(funny version)",
+            "emotional": "(heart version)",
+            "viral":     "(viral hook version)",
+        }[style]
+        hook = {
+            "funny":     "Wait for it… ",
+            "emotional": "I'll never forget the day… ",
+            "viral":     "You won't believe what happened — ",
+            "rewrite":   "",
+        }[style]
+        for i in range(req.count):
+            variations.append({
+                "id": f"v{i+1}",
+                "style": style,
+                "text": f"{hook}{req.text.strip()} {tag}",
+            })
+
+    return {"variations": variations, "source": "llm" if api_key and variations and not variations[0]["text"].endswith(("(rewritten)", "(funny version)", "(heart version)", "(viral hook version)")) else "fallback"}
+
+
 @router.post("/infer-genders")
 async def post_infer_genders(req: InferGendersRequest):
     """Cheap LLM call that guesses the gender of Person A and Person B
