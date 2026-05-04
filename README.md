@@ -423,18 +423,132 @@ See [`docs/PRICING_AND_LAUNCH_STRATEGY.md`](docs/PRICING_AND_LAUNCH_STRATEGY.md)
 
 ---
 
-## 💳 Pricing (Beta v1)
+## 💳 Pricing & Plans (Beta v1)
 
-| Tier | ₹/mo | Credits | Watermark | Resolution | Typical net margin |
-|---|---|---|---|---|---|
-| **Free** | 0 | 300 | Yes | 480p | -₹24 (funnel loss-leader) |
-| **Starter** | ₹249 | 1,500 | No | 720p | **~55%** |
-| **Creator ⭐** | ₹599 | 3,000 | No | 720p + 1080p images | **~66%** |
-| **Pro** | ₹1,499 | 6,000 | No | 1080p | **~79%** |
+> Based on actual MH Creator subscription cost ₹1,350/mo (₹0.135 per credit). Healthy SaaS unit economics across all paid tiers.
 
-Add-on credit packs: ₹99 / 500, ₹249 / 1,500, ₹799 / 5,000, ₹1,499 / 10,000. Annual plans ~17% off.
+### Quick Plan Comparison
 
-> Based on actual ₹1,350/mo MH Creator plan (₹0.135/credit). Full pricing rationale + feature-by-feature cost matrix in [`docs/PRICING_AND_LAUNCH_STRATEGY.md`](docs/PRICING_AND_LAUNCH_STRATEGY.md).
+| | **Free** | **Starter** | **Creator** ⭐ | **Pro** |
+|---|---|---|---|---|
+| **Price/month** | ₹0 | ₹249 | **₹599** | ₹1,499 |
+| **Annual price** (~17% off) | — | ₹2,490 | ₹5,990 | ₹14,990 |
+| **Credits/month** | 300 | 1,500 | 3,000 | 6,000 |
+| **Watermark** | ✅ Yes | ❌ Removed | ❌ Removed | ❌ Removed |
+| **Max resolution** | 480p | 720p | 720p (1080p img) | **1080p** |
+| **Daily image cap** | 5/day | Unlimited | Unlimited | Unlimited |
+| **Monthly reels** | 0 | 30 | 60 | Unlimited |
+| **Monthly lip syncs** | 0 | 5 | 15 | 30 |
+| **Monthly AI videos** | 0 | 0 | 3 (≤3s) | 8 (≤5s) |
+| **Priority queue** | — | — | ✅ | ✅ |
+| **Net margin** | -₹24 (funnel) | ~55% | ~66% | **~79%** |
+
+### What each tier unlocks
+
+#### 🆓 Free — try the magic
+**Best for:** First-time users testing the app
+- ✅ 300 credits/month
+- ✅ Creator Wizard (idea → 60s reel, **0 MH spend**)
+- ✅ Cartoon Avatar (Nano Banana, **0 MH spend**)
+- ✅ Procedural lipsync (FFmpeg local, **0 MH spend**)
+- ✅ 5 FLUX Schnell images/day
+- ✅ Marketplace browsing (Free-tier templates)
+- ✅ All 36 edge-tts voices
+- ✅ 12 emotion chips, 2 cinematic presets (Funny, Emotional)
+- ⚠️ **Watermark on outputs**, 480p max, no MH features
+
+#### 🚀 Starter — ₹249/mo — go pro on basics
+**Best for:** Hobby creators making 1-2 reels/week
+- ✅ Everything in Free, **without watermark**
+- ✅ 1,500 credits/month, 720p output
+- ✅ **Lip Sync** (MH) — 5/month
+- ✅ **Face Swap** (Photo + Video, MH)
+- ✅ **Head Swap** + **Body Swap** (MH)
+- ✅ **FLUX Dev** (better images, MH)
+- ✅ **Kling Lite** Text-to-Video / Image-to-Video
+- ✅ Video Re-dub
+- ✅ 1 Sarvam Premium voice trial
+- ✅ 4 emotion chips, all 12 cinematic emotions
+- ✅ 4 camera FX presets
+
+#### ⭐ Creator — ₹599/mo — for daily creators (most popular)
+**Best for:** Power users producing daily content
+- ✅ Everything in Starter
+- ✅ 3,000 credits/month, **priority queue**
+- ✅ **30 reels/mo, 15 lip syncs/mo, 3 AI videos/mo**
+- ✅ **Kling 2.5 Studio** (better video quality)
+- ✅ **FLUX Pro** (cinematic image quality)
+- ✅ **Video-to-Video** style transfer
+- ✅ **Divine Transform** (devotional content packs)
+- ✅ **AI BG Lipsync** (character + scene + dialogue combo)
+- ✅ Multi-shot videos (up to 2 shots)
+- ✅ All 7 Sarvam Premium voices
+- ✅ All 6 cinematic presets (Bhakti, Cinematic, Viral, Story, +)
+- ✅ Unlimited dialogue remixes (Rewrite/Funny/Emotional/Viral)
+- ✅ All 7 camera FX (vignette, glow, shake, DoF, ken-burns, pan, zoom)
+- ✅ 1080p image output (videos still 720p)
+
+#### 💎 Pro — ₹1,499/mo — agency-grade
+**Best for:** Agencies, brands, full-time creators
+- ✅ Everything in Creator
+- ✅ 6,000 credits/month
+- ✅ **Unlimited reels**, 30 lip syncs/mo, 8 AI videos/mo
+- ✅ **Kling 3.0 Pro / Veo** (top-tier cinematic AI video)
+- ✅ **1080p Full HD** output
+- ✅ Multi-shot videos up to 4 shots
+- ✅ AI videos up to 5s (vs 3s on Creator)
+- ✅ Commercial license (V2)
+- ✅ Public API access (V3)
+- ✅ Team accounts (V3)
+
+### Credit Top-up Packs (one-time, 6-month expiry)
+
+| Pack | ₹ Price | Credits | ₹/credit | Best for |
+|---|---|---|---|---|
+| Top-up 500 | ₹99 | 500 | ₹0.20 | Occasional bursts |
+| Top-up 1,500 | ₹249 | 1,500 | ₹0.166 | Productive week |
+| Top-up 5,000 | ₹799 | 5,000 | ₹0.16 | Power-user pack |
+| Top-up 10,000 | ₹1,499 | 10,000 | ₹0.15 | Agency-size |
+
+### Full Feature Access Matrix
+
+| Feature | Cost type | MH credits/use | Free | Starter | Creator | Pro |
+|---|---|---|:-:|:-:|:-:|:-:|
+| Wizard (0-MH reel) | LOCAL+EMG | 0 | 🟢 | 🟢 | 🟢 | 🟢 |
+| Cartoon Avatar (Nano Banana) | EMG | 0 | 🟢 3/day | 🟢 10/day | 🟢 ∞ | 🟢 ∞ |
+| Procedural Solo Lipsync | LOCAL | 0 | 🟢 + WM | 🟢 | 🟢 | 🟢 |
+| Procedural Dual Lipsync | LOCAL | 0 | 🔒 | 🟢 | 🟢 | 🟢 |
+| Creative Plan Engine | EMG | 0 | 🟢 3/day | 🟢 ∞ | 🟢 ∞ | 🟢 ∞ |
+| Dialogue Remix | EMG | 0 | 🟢 3/day | 🟢 5/mo | 🟢 ∞ | 🟢 ∞ |
+| AI Image (FLUX Schnell) | MH | 5 | 🟢 5/day | 🟢 | 🟢 | 🟢 |
+| AI Image (FLUX Dev) | MH | 6 | 🔒 | 🟢 | 🟢 | 🟢 |
+| AI Image (FLUX Pro) | MH | 10 | 🔒 | 🔒 | 🟢 | 🟢 |
+| Lip Sync (MH) | MH | 7/sec, min 35 | 🔒 | 🟢 5/mo | 🟢 15/mo + ⚡ | 🟢 30/mo + ⚡ |
+| Face Swap Photo | MH | 6 | 🔒 | 🟢 | 🟢 | 🟢 |
+| Face Swap Video | MH | 3/sec | 🔒 | 🟢 | 🟢 | 🟢 |
+| Head Swap | MH | 10 | 🔒 | 🟢 | 🟢 | 🟢 |
+| Body / Outfit Swap | MH | 10 | 🔒 | 🟢 | 🟢 | 🟢 |
+| Text→Video Kling Lite | MH | 60/sec | 🔒 | 🟢 | 🟢 | 🟢 |
+| Text→Video Kling 2.5 Studio | MH | 80/sec | 🔒 | 🔒 | 🟢 | 🟢 |
+| Text→Video Kling 3.0 Pro / Veo | MH | 120/sec | 🔒 | 🔒 | 🔒 | 🟢 |
+| Image→Video | MH | 60–120/sec | 🔒 | 🟢 | 🟢 | 🟢 |
+| Video→Video Style Transfer | MH | 50–70/sec | 🔒 | 🔒 | 🟢 | 🟢 |
+| Video Re-dub | MH | 7/sec | 🔒 | 🟢 | 🟢 | 🟢 |
+| Talking Avatar (MH) | MH | 60/sec | 🔒 | 🟢 | 🟢 | 🟢 |
+| Divine Transform | MH | ~80 | 🔒 | 🔒 | 🟢 | 🟢 |
+| AI BG Lipsync (combo) | MH | ~67/sec | 🔒 | 🔒 | 🟢 | 🟢 |
+| Multi-shot videos | MH | per-shot | 🔒 | 🔒 | 🟢 (2 max) | 🟢 (4 max) |
+| Sarvam Premium voices | SARVAM | ~₹0.02/line | 🔒 | 🟢 1 voice | 🟢 all 7 | 🟢 all 7 |
+| Marketplace templates | metadata | 0 | 🟢 Free-tier | 🟢 Starter+ | 🟢 Creator+ | 🟢 all |
+| Cinematic Presets (6) | metadata | 0 | 🟢 2/6 | 🟢 2/6 | 🟢 6/6 | 🟢 6/6 |
+| Camera FX (7) | LOCAL | 0 | 🟢 2/7 | 🟢 4/7 | 🟢 7/7 | 🟢 7/7 |
+| Priority queue | infra | — | — | — | ⚡ | ⚡ |
+| Resolution | infra | — | 480p | 720p | 720p (1080p img) | **1080p** |
+
+> **Legend:** 🟢 included · 🔒 upgrade required · ⚡ priority queue · WM = watermark · ∞ unlimited
+> Cost type: **MH** = uses Magic Hour credits · **EMG** = Emergent LLM key (free for users) · **LOCAL** = FFmpeg/Pixabay/edge-tts (free) · **SARVAM** = ~₹0.02 per voice line
+
+> Full pricing rationale, capacity planning, and 12-month roadmap in [`docs/PRICING_AND_LAUNCH_STRATEGY.md`](docs/PRICING_AND_LAUNCH_STRATEGY.md).
 
 ---
 

@@ -466,19 +466,80 @@ ping past-waitlist drop-outs.
 
 ## 11. Definition of Done — Beta v1 ready to open the door
 
-- [ ] Phase-B refactor complete (server.py <2,500 LOC — currently 3,335)
-- [ ] Marketplace templates have `plan_tier` tags
-- [ ] Premium Neon Glass UI rolled across 12 hero screens
-- [ ] Onboarding screen built
-- [ ] Watermark pipeline live for free tier
-- [ ] Razorpay LIVE mode keys + KYC
-- [ ] Privacy + T&Cs reviewed
-- [ ] Sentry + Better Uptime wired
-- [ ] Demo video recorded
-- [ ] Waitlist landing page live and collecting emails
-- [ ] First 5 beta invites sent
+### A. Pre-launch readiness checklist (track in Linear / Notion)
 
-When **9/11** green → open the door.
+#### 🟢 Backend (✅ DONE — green as of 2026-05-04)
+- [x] Phase-B server.py refactor in progress (3,335 / target <2,500 LOC)
+- [x] Tier gating enforcement (head/body/video-to-video/divine/ai_bg_lipsync)
+- [x] Quality-mode gates (Kling 3.0 Pro = Pro-only, Kling 2.5 Studio = Creator+, FLUX Pro = Creator+)
+- [x] Monthly quota enforcement + automatic month rollover
+- [x] Free daily image cap (5 FLUX/day)
+- [x] `/api/me/limits` endpoint with feature_gates + upgrade_hints
+- [x] Marketplace `plan_tier` reseed (68/68 templates tagged)
+- [x] Watermark FFmpeg pipeline (drawtext + image overlay)
+- [x] `/api/waitlist-signup` + `/waitlist-stats` + `/admin/waitlist`
+- [x] 32/32 backend tests green via deep_testing_backend_v2
+
+#### 🟡 Frontend (in progress)
+- [x] `useMyLimits` hook + UsageCard / UpgradeBanner / LockBadge components
+- [x] Subscription screen consumes `/api/me/limits`
+- [x] Landing page email-capture form with live counter
+- [ ] **12-screen Premium Neon Glass UI redesign** (handoff: `memory/HANDOFF_NEXT_SESSION_v2.md`, ~6-8h work)
+- [ ] Onboarding screen (3-slide carousel)
+- [ ] Light Mode theme (P2)
+- [ ] LockBadge integration on marketplace + tool grids
+
+#### 🔴 Pre-launch operational tasks (NOT yet done — do BEFORE inviting users)
+- [ ] Razorpay LIVE mode keys + KYC done (currently test-mode mocked)
+- [ ] Privacy policy + Terms of Service reviewed by lawyer (~₹5,000 one-time)
+- [ ] Sentry account created + frontend/backend SDKs wired (free tier OK initially)
+- [ ] Better Uptime / synthetic monitoring on `/api/`, `/api/auth/login`, `/api/wizard/generate`
+- [ ] App Store / Play Store listings (only if going native — can defer to V2)
+- [ ] 90-second demo video recorded (Wizard → cartoon avatar → reel)
+- [ ] First weekly newsletter template drafted (Mailchimp / Brevo)
+
+#### ⚪ Optional polish (nice-to-have, not blocking)
+- [ ] Customer support email (support@magicai.example)
+- [ ] FAQ page on the landing site
+- [ ] Discord server set up for beta users
+- [ ] Press kit / 1-pager PDF for ProductHunt
+
+### B. Trigger criteria — open the door when 9/11 are green
+
+Specifically, BEFORE flipping ENV from BETA → PROD:
+1. ✅ NPS ≥ 35 from beta users
+2. ✅ Zero P0 bugs open for >7 days
+3. ✅ p95 < 8s for `/api/wizard/generate`
+4. ✅ p95 < 25s for `/api/avatar/cartoonize`
+5. ✅ At least 3 beta users have **paid real money** (no free upgrades, proves WTP)
+6. ✅ 0% data loss in 30 days
+7. ✅ Razorpay LIVE keys + KYC done
+8. ✅ Privacy + T&Cs reviewed
+9. ✅ Sentry + uptime monitor wired
+10. ✅ Demo video recorded
+11. ✅ Landing page collecting emails (currently ✅ done)
+
+### C. Beta v1 onboarding cadence (capped at 20 paying users, 6 months)
+
+**Wave 1 (week 3, after waitlist reaches 50):** invite 5 — pick a mix of 2 Free trials, 2 Starter, 1 Creator
+**Wave 2 (week 4):** another 5
+**Wave 3 (week 5):** another 5 — by now you should have ≥10 paid users
+**Wave 4 (week 6):** final 5 — total 20 users
+
+Each wave: send personalized email with the beta invite code + ask for their first reel within 48h. Track time-to-aha (when they share their reel publicly) — this is your #1 north-star metric.
+
+### D. Beta retro at end of Phase 1 (week 8)
+
+Compile and answer in a single 1-page doc:
+1. Which 3 features got >70% of usage? → Hero features for the production landing page
+2. Which 3 features got <10% of usage? → Kill or hide them
+3. Free → Starter conversion rate? (Target >8%)
+4. Starter → Creator upgrade rate? (Target >15%)
+5. MH burn per ARPU rupee? (Target <30%, you'll likely be at 25–28%)
+6. Net Promoter Score (NPS)? (Target ≥35 to unlock production launch)
+7. What's the biggest "I'd pay more if..." request from each tier?
+
+If NPS ≥ 35 AND 3+ users paid AND no data-loss incidents → flip to PROD.
 
 ---
 
