@@ -425,16 +425,16 @@ See [`docs/PRICING_AND_LAUNCH_STRATEGY.md`](docs/PRICING_AND_LAUNCH_STRATEGY.md)
 
 ## 💳 Pricing (Beta v1)
 
-| Tier | ₹/mo | Credits | Watermark | Resolution | Headline perks |
+| Tier | ₹/mo | Credits | Watermark | Resolution | Typical net margin |
 |---|---|---|---|---|---|
-| **Free** | 0 | 30 + 50/mo refill | Yes | 480p | Try the wizard + cartoon avatar |
-| **Starter** | ₹249 | 1,000 | No | 720p | 5 LLM remixes, 1 Sarvam Premium voice |
-| **Creator ⭐** | ₹599 | 2,500 | No | 720p | Unlimited LLM remix, all Sarvam voices, priority queue |
-| **Pro** | ₹1,499 | 7,000 | No | 1080p | Commercial license, API access (V3) |
+| **Free** | 0 | 300 | Yes | 480p | -₹24 (funnel loss-leader) |
+| **Starter** | ₹249 | 1,500 | No | 720p | **~55%** |
+| **Creator ⭐** | ₹599 | 3,000 | No | 720p + 1080p images | **~66%** |
+| **Pro** | ₹1,499 | 6,000 | No | 1080p | **~79%** |
 
-Annual plans: ~17% discount. Add-on credit packs from ₹149 / 500 credits up to ₹1,199 / 5,000 credits.
+Add-on credit packs: ₹99 / 500, ₹249 / 1,500, ₹799 / 5,000, ₹1,499 / 10,000. Annual plans ~17% off.
 
-> Full pricing rationale + cost-of-goods analysis in [`docs/PRICING_AND_LAUNCH_STRATEGY.md`](docs/PRICING_AND_LAUNCH_STRATEGY.md).
+> Based on actual ₹1,350/mo MH Creator plan (₹0.135/credit). Full pricing rationale + feature-by-feature cost matrix in [`docs/PRICING_AND_LAUNCH_STRATEGY.md`](docs/PRICING_AND_LAUNCH_STRATEGY.md).
 
 ---
 
