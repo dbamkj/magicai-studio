@@ -43,7 +43,7 @@ async def get_usage(request: Request):
          "total_projects": 12, "total_completed": 9}
     """
     user = await get_current_user(request)
-    uid = user["user_id"]
+    uid = user.get("user_id") or user.get("id") or user.get("email")
 
     pipeline = [
         {"$match": {"user_id": uid}},

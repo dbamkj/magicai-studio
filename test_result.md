@@ -683,7 +683,7 @@ test_plan:
 phase_b_account_extraction_session_34:
   - task: "Phase-B — /api/usage moved to routes/account.py"
     implemented: true
-    working: false
+    working: true
     file: "backend/routes/account.py, backend/server.py"
     stuck_count: 1
     priority: "high"
@@ -740,6 +740,21 @@ phase_b_account_extraction_session_34:
           IMPACT: /api/usage endpoint is BROKEN for ALL real users.
           This is a functional regression introduced by Phase-B.
 
+      - working: true
+        agent: "main"
+        comment: |
+          Applied the one-line fix at routes/account.py:46:
+            uid = user.get("user_id") or user.get("id") or user.get("email")
+          Falls through all three dialects so the endpoint works with
+          both core.auth.get_current_user (returns {id, email}) AND
+          server.py's get_current_user (which synthesizes user_id).
+
+          Re-verified via curl locally:
+            curl -H "Authorization: Bearer $TOKEN" /api/usage
+            -> 200 {"lipsync":{"total":0,"completed":0},
+                    "faceswap":{...},"headswap":{...},"bodyswap":{...},
+                    "total_projects":30,"total_completed":27}
+          Backend logs clean — no more KeyError. Ready to ship.
   - task: "Phase-B — /api/credits-info moved to routes/account.py"
     implemented: true
     working: true
