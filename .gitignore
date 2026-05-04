@@ -194,3 +194,12 @@ credentials.json
 *.key
 .credentials
 backend/uploads/wz_wz_6474008ad625/wvid_c2961536a2.mp4
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
