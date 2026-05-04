@@ -1,258 +1,472 @@
+"""Session 34-D verification suite — waitlist + plan_tier migration + regression sweep.
+
+Tests against EXPO_PUBLIC_BACKEND_URL from frontend/.env (NOT localhost).
 """
-Session-34B Tier Gating Verification — backend test.
-Tests /api/me/limits, tier gate enforcement (402), preview-voice, regression.
-"""
+from __future__ import annotations
+import json
+import os
 import sys
+import time
+from typing import Any
+
 import requests
 
 BASE = "https://creative-plan-engine.preview.emergentagent.com"
 API = f"{BASE}/api"
+PWD = "Test@123"
 
-ACCOUNTS = {
-    "free":    {"email": "demo_free@test.com",    "tier": "free",    "credits": 300,  "price": 0,    "max_res": "480p"},
-    "starter": {"email": "demo_starter@test.com", "tier": "starter", "credits": 1500, "price": 249,  "max_res": "720p"},
-    "creator": {"email": "demo_creator@test.com", "tier": "creator", "credits": 3000, "price": 599,  "max_res": "720p"},
-    "pro":     {"email": "demo_pro@test.com",     "tier": "pro",     "credits": 6000, "price": 1499, "max_res": "1080p"},
-}
-PASSWORD = "Test@123"
-
-results = []
-def rec(section, name, ok, detail=""):
-    status = "PASS" if ok else "FAIL"
-    results.append((section, name, ok, detail))
-    print(f"[{status}] [{section}] {name}: {detail}")
+results: list[tuple[str, bool, str]] = []
 
 
-def login(email, password=PASSWORD):
-    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=30)
+def rec(name: str, ok: bool, detail: str = ""):
+    results.append((name, ok, detail))
+    flag = "OK " if ok else "FAIL"
+    print(f"[{flag}] {name}  {detail[:200]}")
+
+
+def login(email: str) -> str:
+    r = requests.post(f"{API}/auth/login", json={"email": email, "password": PWD}, timeout=15)
     if r.status_code != 200:
-        return None, f"login {email} -> {r.status_code} {r.text[:200]}"
-    data = r.json()
-    return data.get("token") or data.get("access_token"), None
+        raise RuntimeError(f"login {email} failed: {r.status_code} {r.text}")
+    return r.json()["token"]
 
 
-tokens = {}
-
-# =========================
-# Section A — /api/me/limits
-# =========================
-EXPECTED_GATES_FREE    = {k: False for k in ["face_swap","lip_sync","head_swap","body_swap","video_to_video","divine","ai_bg_lipsync","multishot","ai_video","video_studio","video_cinematic","image_cinematic"]}
-EXPECTED_GATES_STARTER = {**EXPECTED_GATES_FREE, "face_swap": True, "lip_sync": True, "head_swap": True, "body_swap": True}
-EXPECTED_GATES_CREATOR = {k: True for k in EXPECTED_GATES_FREE}
-EXPECTED_GATES_CREATOR["video_cinematic"] = False
-EXPECTED_GATES_PRO     = {k: True for k in EXPECTED_GATES_FREE}
-
-EXPECTED_GATES = {
-    "free": EXPECTED_GATES_FREE,
-    "starter": EXPECTED_GATES_STARTER,
-    "creator": EXPECTED_GATES_CREATOR,
-    "pro": EXPECTED_GATES_PRO,
-}
-
-def section_a():
-    print("\n=== Section A — /api/me/limits ===")
-    for key, info in ACCOUNTS.items():
-        tok, err = login(info["email"])
-        if err:
-            rec("A", f"login {key}", False, err)
-            continue
-        tokens[key] = tok
-        r = requests.get(f"{API}/me/limits", headers={"Authorization": f"Bearer {tok}"}, timeout=30)
-        if r.status_code != 200:
-            rec("A", f"GET /me/limits {key}", False, f"status={r.status_code} body={r.text[:300]}")
-            continue
-        data = r.json()
-        # Required keys
-        required = {"tier","credits","usage_this_month","usage_today","feature_gates","upgrade_hints"}
-        missing = required - set(data.keys())
-        if missing:
-            rec("A", f"keys {key}", False, f"missing: {missing}")
-            continue
-        rec("A", f"keys {key}", True, "all 6 top-level keys present")
-
-        tier = data["tier"]
-        # tier.id
-        tier_id_ok = tier.get("id") == info["tier"]
-        rec("A", f"tier.id {key}", tier_id_ok, f"got={tier.get('id')} expected={info['tier']}")
-        # tier.price_inr - integer
-        price = tier.get("price_inr")
-        price_int_ok = isinstance(price, int) and not isinstance(price, bool)
-        rec("A", f"tier.price_inr type {key}", price_int_ok, f"value={price} type={type(price).__name__}")
-        rec("A", f"tier.price_inr value {key}", price == info["price"], f"got={price} expected={info['price']}")
-        # tier.max_resolution
-        rec("A", f"tier.max_resolution {key}", tier.get("max_resolution") == info["max_res"], f"got={tier.get('max_resolution')} expected={info['max_res']}")
-
-        # feature_gates 12 keys
-        gates = data["feature_gates"]
-        expected_gates = EXPECTED_GATES[key]
-        if set(gates.keys()) != set(expected_gates.keys()):
-            rec("A", f"gates keys {key}", False, f"got={sorted(gates.keys())} expected={sorted(expected_gates.keys())}")
-        else:
-            rec("A", f"gates keys {key}", True, "12 keys present")
-        # gates values
-        mismatches = {k: (gates.get(k), expected_gates[k]) for k in expected_gates if gates.get(k) != expected_gates[k]}
-        rec("A", f"gates values {key}", not mismatches, f"mismatches={mismatches}" if mismatches else "all match")
-
-        # upgrade hints
-        hints = data.get("upgrade_hints", [])
-        if key == "pro":
-            rec("A", "pro upgrade_hints empty", hints == [], f"got={hints}")
-        elif key == "creator":
-            text_blob = " ".join(h.get("text","") for h in hints).lower()
-            ok = ("kling 3.0" in text_blob) or ("veo" in text_blob)
-            rec("A", "creator upgrade_hints mentions Kling 3.0/Veo", ok, f"hints text='{text_blob}'")
-
-        # usage_today.images.cap
-        cap = data.get("usage_today", {}).get("images", {}).get("cap")
-        expected_cap = 5 if key == "free" else 9999
-        rec("A", f"usage_today.images.cap {key}", cap == expected_cap, f"got={cap} expected={expected_cap}")
+def hdr(tok: str) -> dict:
+    return {"Authorization": f"Bearer {tok}"}
 
 
-# =========================
-# Section B — Tier gate enforcement (402)
-# =========================
-def expect_402(section, name, resp, expected_substr):
-    if resp.status_code != 402:
-        rec(section, name, False, f"status={resp.status_code} body={resp.text[:300]}")
-        return
-    try:
-        body = resp.json()
-        detail = body.get("detail", "")
-    except Exception:
-        detail = resp.text
-    if not isinstance(detail, str) or not detail.strip():
-        rec(section, name, False, f"detail not human-readable: {detail!r}")
-        return
-    ok = expected_substr.lower() in detail.lower()
-    rec(section, name, ok, f"detail='{detail}' (expected substring='{expected_substr}')")
+# ────────────────────────────────────────────────────────────────────
+# A) NEW WAITLIST ENDPOINTS
+# ────────────────────────────────────────────────────────────────────
+def test_waitlist():
+    print("\n=== A) WAITLIST ENDPOINTS ===")
 
+    # Cleanup first (in case prior test runs left rows). We delete via Mongo direct
+    # at the END (cleanup section). Here we run the actual tests.
 
-def section_b():
-    print("\n=== Section B — Tier gate enforcement ===")
-    h_free    = {"Authorization": f"Bearer {tokens['free']}"}
-    h_starter = {"Authorization": f"Bearer {tokens['starter']}"}
-    h_creator = {"Authorization": f"Bearer {tokens['creator']}"}
-
-    # B1: free /api/create-faceswap
-    r = requests.post(f"{API}/create-faceswap", headers=h_free, json={"target_video_path":"/tmp/x.mp4","source_image_paths":["/tmp/y.png"]}, timeout=30)
-    expect_402("B", "B1 free->faceswap", r, "Face Swap requires Starter plan or higher.")
-
-    # B2: free /api/create-headswap
-    r = requests.post(f"{API}/create-headswap", headers=h_free, json={"head_image_path":"/tmp/h.png","body_image_path":"/tmp/b.png"}, timeout=30)
-    expect_402("B", "B2 free->headswap", r, "Head Swap requires Starter plan or higher.")
-
-    # B3: free /api/create-bodyswap
-    r = requests.post(f"{API}/create-bodyswap", headers=h_free, json={"person_image_path":"/tmp/p.png","garment_image_path":"/tmp/g.png","garment_type":"dress"}, timeout=30)
-    expect_402("B", "B3 free->bodyswap", r, "Body Swap requires Starter plan or higher.")
-
-    # B4: starter /api/create-video-to-video
-    r = requests.post(f"{API}/create-video-to-video", headers=h_starter, json={"video_path":"/tmp/v.mp4","prompt":"x","art_style":"Anime","duration":5}, timeout=30)
-    expect_402("B", "B4 starter->v2v", r, "Video-to-Video style transfer requires Creator plan or higher.")
-
-    # B5: starter /api/generate-video studio
-    r = requests.post(f"{API}/generate-video", headers=h_starter, json={"prompt":"x","duration":5,"quality_mode":"studio"}, timeout=30)
-    expect_402("B", "B5 starter->generate-video studio", r, "AI Video requires Creator plan or higher")
-
-    # B6: creator /api/generate-video cinematic
-    r = requests.post(f"{API}/generate-video", headers=h_creator, json={"prompt":"x","duration":3,"quality_mode":"cinematic"}, timeout=30)
-    expect_402("B", "B6 creator->generate-video cinematic", r, "Kling 3.0 Pro")
-
-    # B7: starter /api/generate-image cinematic
-    r = requests.post(f"{API}/generate-image", headers=h_starter, json={"prompt":"x","quality":"cinematic"}, timeout=30)
-    expect_402("B", "B7 starter->generate-image cinematic", r, "FLUX Pro (cinematic) image quality requires Creator plan or higher.")
-
-
-# =========================
-# Section C — credits-info regression
-# =========================
-def section_c():
-    print("\n=== Section C — /api/credits-info regression ===")
-    r = requests.get(f"{API}/credits-info", timeout=30)
-    if r.status_code != 200:
-        rec("C", "GET /credits-info", False, f"status={r.status_code}")
-        return
-    data = r.json()
-    cost = data.get("cost_table") or {}
-    qt = data.get("quality_tiers") or []
-    rec("C", "cost_table non-empty", bool(cost), f"keys={list(cost.keys())[:8]}")
-    needed_costs = ["lip_sync_per_sec","face_swap_per_sec","head_swap","ai_image_generator","ai_clothes_changer"]
-    rec("C", "cost_table required keys", all(k in cost for k in needed_costs), f"missing={[k for k in needed_costs if k not in cost]}")
-    qt_ids = [t.get("id") for t in qt] if isinstance(qt, list) else (list(qt.keys()) if isinstance(qt, dict) else [])
-    rec("C", "quality_tiers has quick/studio/cinematic", set(["quick","studio","cinematic"]).issubset(set(qt_ids)), f"got={qt_ids}")
-
-
-# =========================
-# Section D — preview-voice
-# =========================
-def section_d():
-    print("\n=== Section D — /api/preview-voice ===")
-    r = requests.get(f"{API}/preview-voice", params={"voice_id":"en-US-JennyNeural"}, timeout=60)
-    ok = r.status_code == 200 and "audio/mpeg" in (r.headers.get("Content-Type") or "") and len(r.content) > 10*1024
-    rec("D", "preview-voice valid", ok, f"status={r.status_code} ct={r.headers.get('Content-Type')} bytes={len(r.content)}")
-    r2 = requests.get(f"{API}/preview-voice", params={"voice_id":"BOGUS_VOICE"}, timeout=60)
-    detail = ""
-    try:
-        if r2.status_code == 500:
-            detail = r2.json().get("detail","")
-    except Exception:
-        pass
-    ok2 = (r2.status_code == 200) or (r2.status_code == 500 and isinstance(detail, str) and detail.strip())
-    rec("D", "preview-voice bogus handled", ok2, f"status={r2.status_code} bytes={len(r2.content)} detail={detail!r}")
-
-
-# =========================
-# Section E — regression
-# =========================
-def section_e():
-    print("\n=== Section E — Regression ===")
-    r = requests.get(f"{API}/", timeout=15)
-    rec("E", "GET /", r.status_code == 200 and r.json().get("version") == "7.1.0", f"status={r.status_code} body={r.text[:120]}")
-
-    r = requests.get(f"{API}/credits-info", timeout=15)
-    needed = {"credits_used_total","completed_jobs","cost_table","pricing","quality_tiers","resolutions","resolutions_enabled","note"}
-    body = r.json() if r.status_code == 200 else {}
-    rec("E", "credits-info keys", r.status_code == 200 and needed.issubset(set(body.keys())), f"missing={needed - set(body.keys())}")
-
-    r = requests.get(f"{API}/mh-models", timeout=15)
-    feats = (r.json().get("features") or {}) if r.status_code == 200 else {}
-    rec("E", "mh-models 8 features", r.status_code == 200 and len(feats) == 8, f"len={len(feats)}")
-
-    r = requests.get(f"{API}/usage", headers={"Authorization": f"Bearer {tokens['creator']}"}, timeout=15)
-    rec("E", "usage with creator token", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-
-    r = requests.get(f"{API}/templates/preview-stats", timeout=15)
-    cov = r.json().get("coverage_pct") if r.status_code == 200 else None
-    rec("E", "templates/preview-stats coverage_pct=100", r.status_code == 200 and cov == 100.0, f"cov={cov}")
-
-    r = requests.post(f"{API}/creative-plan", json={"idea":"test"}, timeout=60)
-    body = r.json() if r.status_code == 200 else {}
-    rec("E", "creative-plan keys", r.status_code == 200 and all(k in body for k in ("hook","script","scene_keywords")), f"status={r.status_code} keys={list(body.keys())[:6]}")
-
-    r = requests.get(f"{API}/cinematic-presets", timeout=15)
-    body = r.json() if r.status_code == 200 else {}
-    if isinstance(body, list):
-        presets = body
+    # A1 — first signup
+    r = requests.post(f"{API}/waitlist-signup",
+                      json={"email": "alice@example.com", "name": "Alice", "tier_interest": "creator"},
+                      timeout=10)
+    a1_pass = (r.status_code == 200)
+    if a1_pass:
+        j = r.json()
+        a1_pass = (
+            j.get("ok") is True
+            and j.get("already_signed_up") is False
+            and j.get("email") == "alice@example.com"
+            and isinstance(j.get("position"), int)
+            and "#" in (j.get("message") or "")
+        )
+        rec("A1 first signup alice", a1_pass, f"position={j.get('position')} msg={j.get('message')}")
     else:
-        presets = body.get("presets") or []
-    rec("E", "cinematic-presets 6", r.status_code == 200 and len(presets) == 6, f"status={r.status_code} count={len(presets) if presets else 0}")
+        rec("A1 first signup alice", False, f"status={r.status_code} body={r.text[:200]}")
 
-    r = requests.get(f"{API}/marketplace/templates", params={"limit":5}, timeout=30)
-    body = r.json() if r.status_code == 200 else {}
-    items = body if isinstance(body, list) else (body.get("templates") or [])
-    rec("E", "marketplace 5 items", r.status_code == 200 and len(items) == 5, f"count={len(items)}")
+    # A2 — same email idempotency
+    r = requests.post(f"{API}/waitlist-signup",
+                      json={"email": "alice@example.com", "name": "Alice", "tier_interest": "creator"},
+                      timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        ok = (
+            j.get("ok") is True
+            and j.get("already_signed_up") is True
+            and j.get("email") == "alice@example.com"
+            and isinstance(j.get("position"), int)
+            and "already" in (j.get("message") or "").lower()
+        )
+        rec("A2 idempotent re-signup", ok, f"already_signed_up={j.get('already_signed_up')} msg={j.get('message')}")
+    else:
+        rec("A2 idempotent re-signup", False, f"status={r.status_code}")
+
+    # A3 — invalid email
+    r = requests.post(f"{API}/waitlist-signup",
+                      json={"email": "not-an-email", "name": "X"}, timeout=10)
+    if r.status_code == 422:
+        body = r.text.lower()
+        rec("A3 invalid email -> 422", "email" in body, f"detail mentions email: {('email' in body)}")
+    else:
+        rec("A3 invalid email -> 422", False, f"status={r.status_code} body={r.text[:200]}")
+
+    # A4 — UTM params
+    r = requests.post(f"{API}/waitlist-signup",
+                      json={"email": "bob@example.com", "utm_source": "twitter",
+                            "utm_medium": "share", "utm_campaign": "launch"}, timeout=10)
+    a4_pass = (r.status_code == 200 and r.json().get("ok") is True)
+    rec("A4 UTM signup bob", a4_pass, f"status={r.status_code}")
+
+    # A5 — malicious name
+    r = requests.post(f"{API}/waitlist-signup",
+                      json={"email": "hack@example.com", "name": "<script>alert(1)</script>"}, timeout=10)
+    if r.status_code == 400:
+        try:
+            d = r.json().get("detail", "")
+        except Exception:
+            d = r.text
+        rec("A5 malicious name -> 400", "invalid characters" in d.lower(), f"detail={d}")
+    else:
+        rec("A5 malicious name -> 400", False, f"status={r.status_code} body={r.text[:200]}")
+
+    # A6 — public stats
+    r = requests.get(f"{API}/waitlist-stats", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        total = j.get("total")
+        invited = j.get("invited")
+        seats = j.get("remaining_seats")
+        ok = (
+            isinstance(total, int) and isinstance(invited, int) and isinstance(seats, int)
+            and seats == max(0, 20 - invited)
+            and total >= 2  # alice + bob (hack rejected)
+        )
+        rec("A6 waitlist-stats", ok, f"total={total} invited={invited} seats={seats}")
+    else:
+        rec("A6 waitlist-stats", False, f"status={r.status_code}")
+
+    # A7 — admin endpoint no auth
+    r = requests.get(f"{API}/admin/waitlist", timeout=10)
+    rec("A7 admin/waitlist no auth -> 401/403", r.status_code in (401, 403),
+        f"status={r.status_code}")
+
+    # A8 — non-admin
+    try:
+        tok = login("demo_creator@test.com")
+        r = requests.get(f"{API}/admin/waitlist", headers=hdr(tok), timeout=10)
+        if r.status_code == 403:
+            try:
+                d = r.json().get("detail", "")
+            except Exception:
+                d = r.text
+            rec("A8 non-admin -> 403", "admin only" in d.lower(), f"detail={d}")
+        else:
+            rec("A8 non-admin -> 403", False, f"status={r.status_code} body={r.text[:200]}")
+    except Exception as e:
+        rec("A8 non-admin -> 403", False, f"login err: {e}")
+
+    # A9 — admin listing
+    try:
+        admin_tok = login("admin@magicai.test")
+        r = requests.get(f"{API}/admin/waitlist?limit=10", headers=hdr(admin_tok), timeout=10)
+        if r.status_code == 200:
+            j = r.json()
+            items = j.get("items") or []
+            # check sort ascending by created_at
+            cas = [it.get("created_at") for it in items if it.get("created_at")]
+            sorted_ok = (cas == sorted(cas))
+            # verify meta stripped
+            meta_stripped = all("meta" not in it for it in items)
+            # check our 2 emails appear
+            emails = {it.get("email") for it in items}
+            has_alice = "alice@example.com" in emails
+            has_bob = "bob@example.com" in emails
+            ok = (
+                isinstance(j.get("total"), int)
+                and isinstance(items, list)
+                and sorted_ok and meta_stripped
+                and has_alice and has_bob
+            )
+            rec("A9 admin GET list", ok,
+                f"total={j.get('total')} items={len(items)} sorted={sorted_ok} meta_stripped={meta_stripped} alice={has_alice} bob={has_bob}")
+            # Verify A4 UTM persisted via the admin listing
+            bob_doc = next((it for it in items if it.get("email") == "bob@example.com"), None)
+            if bob_doc:
+                utm = bob_doc.get("utm") or {}
+                utm_ok = (
+                    utm.get("source") == "twitter"
+                    and utm.get("medium") == "share"
+                    and utm.get("campaign") == "launch"
+                )
+                rec("A4b UTM persisted in DB doc", utm_ok, f"utm={utm}")
+            else:
+                rec("A4b UTM persisted in DB doc", False, "bob not found in admin listing")
+            # Also verify alice had name persisted
+            alice_doc = next((it for it in items if it.get("email") == "alice@example.com"), None)
+            if alice_doc:
+                rec("A1b name+tier persisted",
+                    alice_doc.get("name") == "Alice" and alice_doc.get("tier_interest") == "creator",
+                    f"name={alice_doc.get('name')} tier_interest={alice_doc.get('tier_interest')}")
+        else:
+            rec("A9 admin GET list", False, f"status={r.status_code} body={r.text[:200]}")
+
+        # A10 — only_uninvited filter
+        r = requests.get(f"{API}/admin/waitlist?only_uninvited=true", headers=hdr(admin_tok), timeout=10)
+        if r.status_code == 200:
+            items = r.json().get("items") or []
+            ok = all((it.get("invited") is False) for it in items)
+            rec("A10 only_uninvited filter", ok, f"items={len(items)} all uninvited={ok}")
+        else:
+            rec("A10 only_uninvited filter", False, f"status={r.status_code}")
+        return admin_tok
+    except Exception as e:
+        rec("A9 admin GET list", False, f"login err: {e}")
+        return None
+
+
+# ────────────────────────────────────────────────────────────────────
+# B) PLAN_TIER MIGRATION
+# ────────────────────────────────────────────────────────────────────
+def test_plan_tier():
+    print("\n=== B) PLAN_TIER MIGRATION ===")
+    r = requests.get(f"{API}/marketplace/templates?limit=100", timeout=15)
+    if r.status_code != 200:
+        rec("B1 marketplace/templates", False, f"status={r.status_code}")
+        return
+    j = r.json()
+    items = j.get("templates") or []
+    valid_tiers = {"free", "starter", "creator", "pro"}
+    missing = [it.get("id") for it in items if it.get("plan_tier") not in valid_tiers]
+    distrib = {"free": 0, "starter": 0, "creator": 0, "pro": 0}
+    for it in items:
+        pt = it.get("plan_tier")
+        if pt in distrib:
+            distrib[pt] += 1
+    rec("B1 every template has plan_tier", len(missing) == 0,
+        f"items={len(items)} missing={len(missing)} distribution={distrib}")
+    # B2 spot check creator
+    creator_items = [it for it in items if it.get("plan_tier") == "creator"]
+    rec("B2 plan_tier=creator field set",
+        len(creator_items) > 0 and creator_items[0].get("plan_tier") == "creator",
+        f"creator_count={len(creator_items)}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# C) REGRESSION SWEEP
+# ────────────────────────────────────────────────────────────────────
+def test_regression():
+    print("\n=== C) REGRESSION SWEEP ===")
+
+    # C1
+    r = requests.get(f"{API}/", timeout=10)
+    j = r.json() if r.status_code == 200 else {}
+    rec("C1 / -> 200 v7.1.0", r.status_code == 200 and j.get("version") == "7.1.0",
+        f"version={j.get('version')}")
+
+    # C2
+    r = requests.post(f"{API}/auth/login",
+                      json={"email": "demo_creator@test.com", "password": PWD}, timeout=15)
+    creator_tok = None
+    if r.status_code == 200 and r.json().get("token"):
+        creator_tok = r.json()["token"]
+        rec("C2 demo_creator login", True, "token received")
+    else:
+        rec("C2 demo_creator login", False, f"status={r.status_code}")
+        return
+
+    # C3 /me/limits
+    r = requests.get(f"{API}/me/limits", headers=hdr(creator_tok), timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        keys = {"tier", "credits", "usage_this_month", "usage_today", "feature_gates", "upgrade_hints"}
+        missing_keys = keys - set(j.keys())
+        gates = j.get("feature_gates") or {}
+        expected_gates = {"face_swap","lip_sync","head_swap","body_swap","video_to_video",
+                          "divine","ai_bg_lipsync","multishot","ai_video","video_studio",
+                          "video_cinematic","image_cinematic"}
+        gate_match = (set(gates.keys()) == expected_gates)
+        # creator hint mentions kling 3.0 / pro
+        hints = j.get("upgrade_hints") or []
+        hint_text = " ".join(str(h.get("text", "")) for h in hints).lower()
+        kling_hint = ("kling" in hint_text and "pro" in hint_text)
+        rec("C3 /me/limits creator", not missing_keys and gate_match and kling_hint and len(gates) == 12,
+            f"missing={missing_keys} gates={len(gates)} gate_match={gate_match} kling_hint={kling_hint}")
+    else:
+        rec("C3 /me/limits creator", False, f"status={r.status_code}")
+
+    # C4 demo_free faceswap
+    free_tok = login("demo_free@test.com")
+    r = requests.post(f"{API}/create-faceswap",
+                      headers=hdr(free_tok),
+                      json={"target_video_path": "/tmp/x.mp4",
+                            "source_image_paths": ["/tmp/a.png"],
+                            "video_duration": 5},
+                      timeout=10)
+    if r.status_code == 402:
+        try:
+            d = r.json().get("detail", "")
+        except Exception:
+            d = r.text
+        rec("C4 free /create-faceswap -> 402", "Face Swap requires Starter" in d, f"detail={d}")
+    else:
+        rec("C4 free /create-faceswap -> 402", False, f"status={r.status_code} body={r.text[:200]}")
+
+    # C5 demo_free headswap
+    r = requests.post(f"{API}/create-headswap",
+                      headers=hdr(free_tok),
+                      json={"head_image_path": "/tmp/a.png", "body_image_path": "/tmp/b.png"},
+                      timeout=10)
+    if r.status_code == 402:
+        try:
+            d = r.json().get("detail", "")
+        except Exception:
+            d = r.text
+        rec("C5 free /create-headswap -> 402", "Head Swap requires Starter" in d, f"detail={d}")
+    else:
+        rec("C5 free /create-headswap -> 402", False, f"status={r.status_code} body={r.text[:200]}")
+
+    # C6 demo_starter generate-video studio
+    starter_tok = login("demo_starter@test.com")
+    r = requests.post(f"{API}/generate-video",
+                      headers=hdr(starter_tok),
+                      json={"prompt": "test", "duration": 5, "quality_mode": "studio",
+                            "aspect_ratio": "9:16"},
+                      timeout=10)
+    if r.status_code == 402:
+        try:
+            d = r.json().get("detail", "")
+        except Exception:
+            d = r.text
+        rec("C6 starter studio -> 402", "AI Video requires Creator" in d, f"detail={d}")
+    else:
+        rec("C6 starter studio -> 402", False, f"status={r.status_code} body={r.text[:200]}")
+
+    # C7 demo_creator generate-video cinematic
+    r = requests.post(f"{API}/generate-video",
+                      headers=hdr(creator_tok),
+                      json={"prompt": "test", "duration": 3, "quality_mode": "cinematic",
+                            "aspect_ratio": "9:16"},
+                      timeout=10)
+    if r.status_code == 402:
+        try:
+            d = r.json().get("detail", "")
+        except Exception:
+            d = r.text
+        rec("C7 creator cinematic -> 402",
+            "Kling 3.0 Pro" in d or "cinematic" in d.lower() and "Pro plan" in d,
+            f"detail={d}")
+    else:
+        rec("C7 creator cinematic -> 402", False, f"status={r.status_code} body={r.text[:200]}")
+
+    # C8 credits-info
+    r = requests.get(f"{API}/credits-info", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        ok = ("cost_table" in j and "pricing" in j and "quality_tiers" in j)
+        rec("C8 /credits-info", ok, f"keys={list(j.keys())[:10]}")
+    else:
+        rec("C8 /credits-info", False, f"status={r.status_code}")
+
+    # C9 mh-models
+    r = requests.get(f"{API}/mh-models", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        feats = j.get("features") or {}
+        rec("C9 /mh-models 8 features", len(feats) == 8, f"features={len(feats)}")
+    else:
+        rec("C9 /mh-models 8 features", False, f"status={r.status_code}")
+
+    # C10 usage demo_creator
+    r = requests.get(f"{API}/usage", headers=hdr(creator_tok), timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        rec("C10 /usage", isinstance(j, dict) and len(j) > 0, f"keys={list(j.keys())[:10]}")
+    else:
+        rec("C10 /usage", False, f"status={r.status_code}")
+
+    # C11 templates/preview-stats
+    r = requests.get(f"{API}/templates/preview-stats", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        rec("C11 preview-stats coverage_pct=100",
+            j.get("coverage_pct") in (100, 100.0), f"coverage_pct={j.get('coverage_pct')}")
+    else:
+        rec("C11 preview-stats coverage_pct=100", False, f"status={r.status_code}")
+
+    # C12 creative-plan
+    r = requests.post(f"{API}/creative-plan", json={"idea": "test"}, timeout=30)
+    if r.status_code == 200:
+        j = r.json()
+        ok = all(k in j for k in ("hook", "script", "scene_keywords"))
+        rec("C12 creative-plan", ok, f"keys: hook={bool(j.get('hook'))} script={bool(j.get('script'))} scene_keywords={bool(j.get('scene_keywords'))}")
+    else:
+        rec("C12 creative-plan", False, f"status={r.status_code}")
+
+    # C13 cinematic-presets
+    r = requests.get(f"{API}/cinematic-presets", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        # could be list or {presets:[...]}
+        presets = j if isinstance(j, list) else j.get("presets", [])
+        rec("C13 cinematic-presets 6", len(presets) == 6, f"presets={len(presets)}")
+    else:
+        rec("C13 cinematic-presets 6", False, f"status={r.status_code}")
+
+    # C14 preview-voice
+    t0 = time.time()
+    r = requests.get(f"{API}/preview-voice?voice_id=en-US-JennyNeural", timeout=20)
+    dt = time.time() - t0
+    if r.status_code == 200:
+        ct = r.headers.get("content-type", "")
+        size = len(r.content)
+        rec("C14 preview-voice JennyNeural",
+            "audio/mpeg" in ct and size > 10000,
+            f"content-type={ct} size={size}B time={dt:.2f}s")
+    else:
+        rec("C14 preview-voice JennyNeural", False, f"status={r.status_code} time={dt:.2f}s")
+
+    # C15 voices 43
+    r = requests.get(f"{API}/voices", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        v = j.get("voices") or []
+        rec("C15 voices 43", len(v) == 43, f"count={len(v)}")
+    else:
+        rec("C15 voices 43", False, f"status={r.status_code}")
+
+    # C16 mode
+    r = requests.get(f"{API}/mode", timeout=10)
+    if r.status_code == 200:
+        j = r.json()
+        ok = j.get("env") == "BETA" and j.get("is_beta") is True and j.get("version") == "v1.0-beta"
+        rec("C16 /mode BETA v1.0-beta", ok, f"env={j.get('env')} is_beta={j.get('is_beta')} version={j.get('version')}")
+    else:
+        rec("C16 /mode BETA v1.0-beta", False, f"status={r.status_code}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# D) CLEANUP
+# ────────────────────────────────────────────────────────────────────
+def cleanup():
+    print("\n=== D) CLEANUP — delete test waitlist rows ===")
+    try:
+        import asyncio
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        sys.path.insert(0, "/app/backend")
+        os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+        from core.config import DB_NAME
+
+        async def _del():
+            cli = AsyncIOMotorClient(os.environ["MONGO_URL"])
+            d = cli[DB_NAME]
+            res = await d.waitlist.delete_many({"email": {"$in": [
+                "alice@example.com", "bob@example.com", "hack@example.com"
+            ]}})
+            return res.deleted_count
+
+        deleted = asyncio.run(_del())
+        rec("D cleanup waitlist", True, f"deleted {deleted} rows")
+    except Exception as e:
+        rec("D cleanup waitlist", False, f"err: {e}")
+
+
+def main():
+    cleanup()  # pre-cleanup so position counts are deterministic
+    test_waitlist()
+    test_plan_tier()
+    test_regression()
+    cleanup()
+
+    print("\n" + "=" * 60)
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    print(f"RESULTS: {passed}/{total} passed")
+    failed = [(n, d) for n, ok, d in results if not ok]
+    if failed:
+        print("\nFailures:")
+        for n, d in failed:
+            print(f"  - {n}: {d}")
+    sys.exit(0 if passed == total else 1)
 
 
 if __name__ == "__main__":
-    section_a()
-    section_b()
-    section_c()
-    section_d()
-    section_e()
-
-    print("\n=== SUMMARY ===")
-    fails = [r for r in results if not r[2]]
-    passes = [r for r in results if r[2]]
-    print(f"PASS: {len(passes)}  FAIL: {len(fails)}")
-    for s,n,ok,d in fails:
-        print(f"  X [{s}] {n}: {d}")
-    sys.exit(0 if not fails else 1)
+    main()
