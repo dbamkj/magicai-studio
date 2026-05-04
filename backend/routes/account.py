@@ -25,7 +25,10 @@ from fastapi import APIRouter, Request
 from core.auth import get_current_user
 from core.db import db
 from core.constants import MH_CREDIT_COSTS, MH_QUALITY_TIERS
-from core.pricing import MH_PER_SEC, MH_MIN_BILLED_SECONDS
+from core.pricing import (
+    MH_PER_SEC, MH_MIN_BILLED_SECONDS,
+    PLANS, plan_by_id, utc_month_str, utc_today_str,
+)
 
 log = logging.getLogger("routes.account")
 router = APIRouter(prefix="/api", tags=["account"])
@@ -126,6 +129,121 @@ async def credits_info(request: Request = None):
         "resolutions_enabled": ["480p", "720p"],
         "note": "MH enforces 5-second minimum billing. Shorter videos are still billed for 5s.",
     }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# GET /api/me/limits — current tier feature gates + month-to-date usage
+# ══════════════════════════════════════════════════════════════════════
+@router.get("/me/limits")
+async def me_limits(request: Request):
+    """Return the calling user's tier gates + this-month usage + upsell hints.
+
+    Frontend uses this to render progress bars on the Credits screen and to
+    pre-disable buttons / show lock badges on Pro-only / Creator-only features
+    BEFORE the user hits them (saving a wasted 402 round-trip).
+    """
+    user = await get_current_user(request)
+    uid = user.get("user_id") or user.get("id") or user.get("email")
+
+    # Re-hydrate from DB so we get the latest monthly_usage counters
+    u = await db.users.find_one({"id": uid}) or user
+    tier_id = (u.get("subscription_tier") or "free").lower()
+    plan = plan_by_id(tier_id)
+
+    month = utc_month_str()
+    today = utc_today_str()
+    mu = u.get("monthly_usage") or {}
+    if u.get("monthly_usage_month") != month:
+        mu = {"reels": 0, "lipsync": 0, "ai_videos": 0, "images": 0}
+
+    daily_images = int(u.get("daily_image_usage", 0) or 0) if u.get("daily_usage_date") == today else 0
+
+    def _bar(used, cap):
+        used = int(used or 0)
+        cap = int(cap or 0)
+        if cap >= 9999 or cap == 0:
+            return {"used": used, "cap": cap, "unlimited": cap >= 9999, "pct": 0.0, "exhausted": False}
+        pct = round(100 * used / cap, 1) if cap > 0 else 0
+        return {"used": used, "cap": cap, "unlimited": False, "pct": pct, "exhausted": used >= cap}
+
+    return {
+        "tier": {
+            "id": plan["id"],
+            "label": plan["label"],
+            "price_inr": plan["price_inr"],
+            "max_resolution": plan.get("max_resolution", "480p"),
+            "watermark": plan.get("watermark", False),
+        },
+        "credits": {
+            "balance": int(u.get("credits_balance", 0) or 0),
+            "monthly_grant": int(plan.get("credits", 0)),
+        },
+        "usage_this_month": {
+            "month": month,
+            "reels":     _bar(mu.get("reels"),     plan.get("monthly_reels_limit", 0)),
+            "lipsync":   _bar(mu.get("lipsync"),   plan.get("monthly_lipsync_limit", 0)),
+            "ai_videos": _bar(mu.get("ai_videos"), plan.get("monthly_ai_videos_limit", 0)),
+            "images":    _bar(mu.get("images"),    plan.get("max_images", 9999)),
+        },
+        "usage_today": {
+            "date": today,
+            "images": _bar(daily_images, plan.get("daily_image_limit", 9999)),
+        },
+        "feature_gates": {
+            "face_swap":        plan.get("allow_face_swap", False),
+            "lip_sync":         plan.get("allow_lip_sync", False),
+            "head_swap":        plan.get("allow_head_swap", False),
+            "body_swap":        plan.get("allow_body_swap", False),
+            "video_to_video":   plan.get("allow_video_to_video", False),
+            "divine":           plan.get("allow_divine", False),
+            "ai_bg_lipsync":    plan.get("allow_ai_bg_lipsync", False),
+            "multishot":        plan.get("allow_multishot", False),
+            "ai_video":         plan.get("allow_ai_video", False),
+            "video_studio":     plan.get("allow_video_studio", False),
+            "video_cinematic":  plan.get("allow_video_cinematic", False),
+            "image_cinematic":  plan.get("allow_image_cinematic", False),
+        },
+        "upgrade_hints": _upgrade_hints(tier_id, plan, mu, daily_images),
+    }
+
+
+def _upgrade_hints(tier_id: str, plan: dict, mu: dict, daily_images: int) -> list[dict]:
+    """Return a list of friendly upsell suggestions based on current usage."""
+    hints: list[dict] = []
+    # Free: daily image cap hit
+    cap_img = int(plan.get("daily_image_limit", 9999) or 9999)
+    if cap_img < 9999 and daily_images >= cap_img - 1:
+        hints.append({
+            "icon": "image",
+            "text": f"You're about to hit the {cap_img}-image/day Free cap. Upgrade to Starter for unlimited images.",
+            "cta": "Upgrade to Starter",
+            "target_tier": "starter",
+        })
+    # Starter/Creator: nearing reel cap
+    for bucket, label, next_tier in [
+        ("reels", "reels", "pro"),
+        ("lipsync", "lip syncs", "pro"),
+        ("ai_videos", "AI videos", "pro"),
+    ]:
+        cap = int(plan.get(f"monthly_{bucket}_limit", 0) or 0)
+        if cap and cap < 9999:
+            used = int((mu or {}).get(bucket, 0) or 0)
+            if used >= cap - 1:
+                hints.append({
+                    "icon": bucket,
+                    "text": f"You've used {used}/{cap} {label} this month. Upgrade to Pro for more.",
+                    "cta": "Upgrade to Pro",
+                    "target_tier": next_tier,
+                })
+    # Kling 3.0 / Veo gate (Pro-only)
+    if tier_id != "pro" and not plan.get("allow_video_cinematic", False):
+        hints.append({
+            "icon": "sparkles",
+            "text": "Unlock Kling 3.0 Pro / Veo cinematic quality on Pro.",
+            "cta": "See Pro features",
+            "target_tier": "pro",
+        })
+    return hints
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -24,6 +24,9 @@ from core.pricing import (
     estimate_credits,
     can_run_today,
     check_feature_access,
+    monthly_bucket_for,
+    utc_month_str,
+    utc_today_str,
 )
 
 _client = AsyncIOMotorClient(MONGO_URL)
@@ -39,16 +42,15 @@ async def preflight_and_reserve(
     shots: Optional[int] = None,
     face_swap: bool = False,
     lip_sync: bool = False,
+    quality_mode: Optional[str] = None,
 ) -> tuple[dict, int]:
-    """Validate credits + plan + daily quota BEFORE starting a job.
+    """Validate credits + plan + daily/monthly quota BEFORE starting a job.
 
     Returns (user_doc, cost_credits). Guest users in DEV bypass checks.
     """
-    # In BETA/PROD, require a valid JWT. In DEV, fall back to guest.
     strict = IS_BETA or (not IS_DEV)
     user = await get_current_user(request, strict=strict)
 
-    # Normalize: ensure `user_id` key exists (legacy endpoints reference `user["user_id"]`).
     if user and 'user_id' not in user:
         user['user_id'] = user.get('id') or 'guest'
 
@@ -56,14 +58,17 @@ async def preflight_and_reserve(
     if user.get('user_id') == 'guest' or user.get('id') in (None, 'guest_default'):
         return user, 0
 
-    # Plan-level feature access
+    # Plan-level feature access (session 34 — now passes quality_mode too)
     if feature:
-        ok, reason = check_feature_access(user, feature=feature, duration=duration, shots=shots)
+        ok, reason = check_feature_access(
+            user, feature=feature, duration=duration, shots=shots, quality_mode=quality_mode,
+        )
         if not ok:
             raise HTTPException(status_code=402, detail=reason)
 
-    # Daily quota
-    ok, reason = can_run_today(user)
+    # Daily quota (generic — image cap for Free is enforced via feature='image',
+    # but also check here as a defense-in-depth for legacy callers).
+    ok, reason = can_run_today(user, job_type=job_type)
     if not ok:
         raise HTTPException(status_code=429, detail=reason)
 
@@ -74,6 +79,7 @@ async def preflight_and_reserve(
         face_swap=face_swap,
         lip_sync=lip_sync,
         shots=shots or 0,
+        quality_mode=quality_mode,
     )
     balance = int(user.get('credits_balance', 0))
     if balance < cost:
@@ -92,14 +98,18 @@ async def settle_credits(
     project_id: Optional[str] = None,
     asset_kind: str = "video",
     background_tasks=None,
+    job_type: Optional[str] = None,
 ) -> None:
-    """Deduct credits + bump daily_usage. Optionally schedule Free-tier watermark.
+    """Deduct credits + bump daily/monthly counters. Optionally schedule Free-tier watermark.
 
-    If `background_tasks`, `project_id` and `user_tier` are provided, a watermark
-    job will be queued for Free-tier users. Non-free tiers will be a no-op inside
-    the watermark helper, but we skip scheduling to save an unused background task.
+    Session 34:
+      * If `job_type` is provided, bump the matching monthly bucket
+        (reels / lipsync / ai_videos / images) on the user doc and roll
+        over `monthly_usage` + `monthly_usage_month` on month change.
+      * For image jobs, also bump `daily_image_usage` to feed Free's
+        5-image/day cap in `can_run_today`.
     """
-    # Schedule watermark (best-effort, not blocking) -- imported lazily to avoid circular
+    # Schedule watermark (best-effort, not blocking)
     if background_tasks is not None and project_id and (user_tier or "").lower() == "free":
         try:
             from server import apply_watermark_if_free  # type: ignore
@@ -109,7 +119,9 @@ async def settle_credits(
 
     if not user_id or cost <= 0:
         return
+
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    month = utc_month_str()
 
     # Persist the spent amount on the project so refund_credits_on_failure can find it
     if project_id:
@@ -125,23 +137,49 @@ async def settle_credits(
         except Exception:
             pass
 
-    # If today is a new day, reset daily_usage to 1; else increment by 1.
-    user = await _db.users.find_one({'id': user_id}, {'daily_usage': 1, 'daily_usage_date': 1})
-    if not user:
+    # Read minimal state to detect roll-overs
+    u = await _db.users.find_one(
+        {'id': user_id},
+        {
+            'daily_usage': 1, 'daily_usage_date': 1,
+            'daily_image_usage': 1,
+            'monthly_usage': 1, 'monthly_usage_month': 1,
+        },
+    )
+    if not u:
         return
-    if user.get('daily_usage_date') != today:
-        await _db.users.update_one(
-            {'id': user_id},
-            {
-                '$inc': {'credits_balance': -cost},
-                '$set': {'daily_usage_date': today, 'daily_usage': 1},
-            },
-        )
+
+    set_ops: dict = {}
+    inc_ops: dict = {'credits_balance': -cost}
+
+    # Daily counters — reset on new day, else increment
+    if u.get('daily_usage_date') != today:
+        set_ops.update({
+            'daily_usage_date': today,
+            'daily_usage': 1,
+            'daily_image_usage': 1 if (monthly_bucket_for(job_type or '') == 'images') else 0,
+        })
     else:
-        await _db.users.update_one(
-            {'id': user_id},
-            {'$inc': {'credits_balance': -cost, 'daily_usage': 1}},
-        )
+        inc_ops['daily_usage'] = 1
+        if monthly_bucket_for(job_type or '') == 'images':
+            inc_ops['daily_image_usage'] = 1
+
+    # Monthly counters — reset on new month, else increment relevant bucket
+    bucket = monthly_bucket_for(job_type or '')
+    if u.get('monthly_usage_month') != month:
+        mu = {'reels': 0, 'lipsync': 0, 'ai_videos': 0, 'images': 0}
+        if bucket:
+            mu[bucket] = 1
+        set_ops['monthly_usage_month'] = month
+        set_ops['monthly_usage'] = mu
+    elif bucket:
+        inc_ops[f'monthly_usage.{bucket}'] = 1
+
+    update_doc: dict = {'$inc': inc_ops}
+    if set_ops:
+        update_doc['$set'] = set_ops
+
+    await _db.users.update_one({'id': user_id}, update_doc)
 
 
 async def refund_credits(

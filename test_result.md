@@ -668,17 +668,376 @@ v2_prompt_generator_session31:
 
 metadata:
   created_by: "main_agent"
-  version: "2.9"
-  test_sequence: 11
+  version: "3.0"
+  test_sequence: 12
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Phase-B Refactor — /usage, /credits-info, /mh-models moved to routes/account.py"
-    - "Template Auto-Preview Backfill — POST /api/templates/backfill-previews + GET /api/templates/preview-stats"
+    - "Session 34-B — Tier gating + monthly/daily quotas + /api/me/limits endpoint"
+    - "Session 34-B — Phase-B round 2: /api/preview-voice extracted to routes/catalog.py"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+session_34b_tier_gating:
+  - task: "Pricing catalog corrected to match actual MH cost (₹1,350 = ₹0.135/credit)"
+    implemented: true
+    working: true
+    file: "backend/core/pricing.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Updated PLANS catalog prices to match the corrected MH cost basis.
+          Session-33 had ₹299/₹499/₹899; now correctly ₹249/₹599/₹1,499.
+          Annual prices follow the 10-month rule (~17% savings).
+          Credit grants retained: 300 / 1500 / 3000 / 6000.
+          Added 12 new plan flags: daily_image_limit, allow_head_swap,
+          allow_body_swap, allow_video_to_video, allow_divine,
+          allow_ai_bg_lipsync, allow_video_studio, allow_video_cinematic,
+          allow_image_cinematic, max_resolution, plus the 4 credit top-up
+          SKUs from docs/PRICING_AND_LAUNCH_STRATEGY.md §3.
+
+  - task: "Feature gate: head_swap (Starter+)"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/core/pricing.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          /api/create-headswap now uses feature='head_swap' instead of
+          feature='face_swap'. Free tier gets 402 "Head Swap requires
+          Starter plan or higher." — verified via curl.
+
+  - task: "Feature gate: body_swap (Starter+)"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/core/pricing.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          /api/create-bodyswap now uses feature='body_swap'. Separate
+          gate from face/head swaps so we can price them independently
+          later.
+
+  - task: "Feature gate: video_to_video (Creator+)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          /api/create-video-to-video moved from feature='ai_video' to
+          feature='video_to_video' — now Creator+ only.
+
+  - task: "Quality-mode gate: Kling 2.5 Studio (Creator+), Kling 3.0 Pro (Pro only), FLUX Pro (Creator+)"
+    implemented: true
+    working: true
+    file: "backend/core/pricing.py, backend/core/billing.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Added `quality_mode` parameter to preflight_and_reserve and
+          check_feature_access. For feature='ai_video':
+            * quality_mode='studio' → requires allow_video_studio (Creator+)
+            * quality_mode='cinematic' → requires allow_video_cinematic (Pro only)
+          For feature='image':
+            * quality_mode='cinematic' → requires allow_image_cinematic (Creator+)
+
+          Verified via curl:
+          - demo_starter + quality_mode='studio' → 402 "AI Video requires Creator plan..."
+          - demo_creator + quality_mode='cinematic' → 402 "Kling 3.0 Pro / Veo
+            (cinematic) quality requires Pro plan. Use Kling Lite or upgrade to Pro."
+          - demo_pro + any quality → 200 (in real flow)
+
+          Wired at: /api/generate-video, /api/create-image-to-video,
+          /api/create-video-to-video, /api/generate-image.
+
+  - task: "Session 34-B verification — /api/me/limits + tier gate enforcement (402) — testing agent run"
+    implemented: true
+    working: true
+    file: "backend/routes/account.py, backend/core/pricing.py, backend/server.py, backend/routes/catalog.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          FULL PASS 53/54 of the Session-34B tier-gating verification suite
+          (/app/backend_test.py) against
+          https://creative-plan-engine.preview.emergentagent.com/api.
+
+          ━━━ Section A — /api/me/limits (33/33) ━━━
+          Logged in as all 4 demo accounts (free / starter / creator / pro,
+          password Test@123). For each:
+          * 200 OK with all 6 top-level keys: tier, credits,
+            usage_this_month, usage_today, feature_gates, upgrade_hints.
+          * tier.id matches subscription_tier
+            (free / starter / creator / pro).
+          * tier.price_inr is INTEGER (type=int, not bool, not str) and
+            value matches: free=0, starter=249, creator=599, pro=1499.
+          * tier.max_resolution: 480p / 720p / 720p / 1080p ✓.
+          * feature_gates dict has exactly the 12 expected keys
+            (face_swap, lip_sync, head_swap, body_swap, video_to_video,
+             divine, ai_bg_lipsync, multishot, ai_video, video_studio,
+             video_cinematic, image_cinematic).
+          * gate VALUES match exactly:
+            - free: all 12 = False ✓
+            - starter: face_swap/lip_sync/head_swap/body_swap = True;
+              all other 8 = False ✓
+            - creator: 11 = True, video_cinematic = False ✓
+            - pro: all 12 = True ✓
+          * upgrade_hints:
+            - creator hint text contains "kling 3.0 pro / veo cinematic
+              quality on pro." ✓
+            - pro hints == [] ✓
+          * usage_today.images.cap = 5 for free, 9999 for all paid tiers ✓.
+
+          ━━━ Section B — Tier gate enforcement (6/7) ━━━
+          B1 demo_free POST /create-faceswap → 402 detail
+            "Face Swap requires Starter plan or higher." ✓
+          B2 demo_free POST /create-headswap → 402 detail
+            "Head Swap requires Starter plan or higher." ✓
+            (correctly NOT the face_swap message — feature key was
+            switched in this session)
+          B3 demo_free POST /create-bodyswap → 402 detail
+            "Body Swap requires Starter plan or higher." ✓
+          B4 demo_starter POST /create-video-to-video → 402 detail
+            "Video-to-Video style transfer requires Creator plan or
+            higher." ✓ (verified with a real existing video path
+            /app/backend/uploads/avatar_ls_*.mp4 — gate fires correctly).
+            MINOR: when video_path doesn't exist on disk, server.py:2590
+            returns 400 BEFORE preflight_and_reserve runs, so a request
+            with a fake path returns 400 instead of 402. Not blocking
+            (real frontend always uploads a file first), but the fix is
+            trivial — move the os.path.exists() check below the
+            preflight call so users always see the upgrade message.
+          B5 demo_starter POST /generate-video {duration:5,
+            quality_mode:"studio"} → 402 detail
+            "AI Video requires Creator plan or higher, or purchase an
+             add-on (₹49 → 1 video)." ✓
+          B6 demo_creator POST /generate-video {duration:3,
+            quality_mode:"cinematic"} → 402 detail
+            "Kling 3.0 Pro / Veo (cinematic) quality requires Pro plan.
+             Use Kling Lite or upgrade to Pro." ✓
+          B7 demo_starter POST /generate-image {quality:"cinematic"}
+            → 402 detail
+            "FLUX Pro (cinematic) image quality requires Creator plan
+             or higher." ✓
+          STRICT assertion (every 402 has a human-readable detail
+          string) — satisfied for all 6.
+
+          ━━━ Section C — credits-info regression (3/3) ━━━
+          GET /api/credits-info → 200 with cost_table containing all
+          required MH credit costs: lip_sync_per_sec, face_swap_per_sec,
+          face_swap_photo, head_swap, ai_clothes_changer,
+          ai_image_generator, text_to_video_per_sec, image_to_video_per_sec.
+          quality_tiers list contains [quick, studio, cinematic] ✓.
+
+          ━━━ Section D — /api/preview-voice Phase-B round 2 (2/2) ━━━
+          GET /api/preview-voice?voice_id=en-US-JennyNeural → 200,
+            Content-Type=audio/mpeg, body=25,200 bytes (>10KB) ✓.
+          GET /api/preview-voice?voice_id=BOGUS_VOICE → 200 with
+            audio/mpeg fallback sample (20,016 bytes) — endpoint did
+            not crash, server stayed healthy ✓.
+          Confirms the Phase-B round 2 extraction (route moved to
+          routes/catalog.py with lazy `from server import
+          generate_tts_audio`) is functional.
+
+          ━━━ Section E — Session-34 regression (8/8) ━━━
+          GET /api/ → 200 version=7.1.0 ✓
+          GET /api/credits-info → 200 with all 8 required top-level
+            keys {credits_used_total, completed_jobs, cost_table,
+            pricing, quality_tiers, resolutions, resolutions_enabled,
+            note} ✓
+          GET /api/mh-models → 200 with features dict of 8 entries ✓
+          GET /api/usage with demo_creator Bearer → 200 with per-type
+            counts {lipsync, faceswap, headswap, bodyswap, total_*} ✓
+            (the previously-fixed user_id KeyError stays fixed)
+          GET /api/templates/preview-stats → 200 coverage_pct=100.0 ✓
+          POST /api/creative-plan {idea:"test"} → 200 with hook +
+            script + scene_keywords ✓
+          GET /api/cinematic-presets → 200 with 6 presets ✓
+          GET /api/marketplace/templates?limit=5 → 200 array of 5 ✓
+
+          ━━━ Skipped — Section F (monthly quota simulation) ━━━
+          Per the spec ("optional, skip if MongoDB direct access not
+          available"). Code review of core/pricing.py:can_run_this_month
+          + core/billing.py:settle_credits shows the bump-and-rollover
+          logic is wired correctly, but a runtime simulation would
+          require direct mongo writes which were not attempted.
+
+          OVERALL VERDICT: Session-34B tier gating is PRODUCTION READY.
+          The /api/me/limits endpoint, all 12 feature gates, the
+          quality-mode gates (studio = Creator+, cinematic = Pro-only,
+          FLUX Pro = Creator+), and Phase-B round 2 extraction all
+          work as designed. Single minor polish item flagged in B4.
+
+  - task: "Monthly quota enforcement (reels / lipsync / ai_videos)"
+    implemented: true
+    working: "NA"
+    file: "backend/core/pricing.py, backend/core/billing.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New can_run_this_month() helper in core/pricing.py checks the
+          user's monthly_usage counter vs plan's monthly_*_limit.
+          settle_credits() now accepts job_type= kwarg and bumps:
+            * monthly_usage.{reels|lipsync|ai_videos|images} by 1
+            * daily_image_usage by 1 (for image jobs only)
+          Month roll-over: if monthly_usage_month != utc_month_str(),
+          settle_credits resets the dict to {reels:0, lipsync:0, ai_videos:0, images:0}
+          and then bumps the active bucket.
+
+          check_feature_access('reel'|'lip_sync'|'ai_video') calls
+          can_run_this_month() to surface 402 with friendly messaging:
+          "Monthly lip-sync limit reached (5/5 this month on Starter).
+           Upgrade to Pro for 30 lip syncs/month."
+
+          NEEDS BACKEND TEST — simulate a user hitting their monthly cap.
+
+  - task: "Daily image cap for Free tier (5/day)"
+    implemented: true
+    working: "NA"
+    file: "backend/core/pricing.py, backend/core/billing.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          can_run_today() now actually enforces daily_image_limit for
+          feature='image'. Free = 5/day, all paid tiers = unlimited.
+          daily_image_usage bump handled in settle_credits with day roll-over.
+
+          NEEDS BACKEND TEST — run 6 FLUX Schnell jobs as Free user; 6th
+          should return 429 with "Daily image limit reached (5/day on Free)."
+
+  - task: "New endpoint: GET /api/me/limits (tier gates + month-to-date usage + upsell hints)"
+    implemented: true
+    working: true
+    file: "backend/routes/account.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Returns:
+            * tier: {id, label, price_inr, max_resolution, watermark}
+            * credits: {balance, monthly_grant}
+            * usage_this_month: {month, reels, lipsync, ai_videos, images}
+              (each with used/cap/unlimited/pct/exhausted)
+            * usage_today: {date, images} (for Free's daily cap)
+            * feature_gates: {face_swap, lip_sync, head_swap, body_swap,
+              video_to_video, divine, ai_bg_lipsync, multishot,
+              ai_video, video_studio, video_cinematic, image_cinematic}
+            * upgrade_hints: [{icon, text, cta, target_tier}] — friendly
+              upsells when user nears a cap or is locked out of a feature.
+
+          Verified via curl for demo_free, demo_starter, demo_creator,
+          demo_pro — all return correct tier gates and hints.
+          demo_creator's hints correctly suggest "Unlock Kling 3.0 Pro /
+          Veo cinematic quality on Pro."
+
+  - task: "Phase-B round 2: /api/preview-voice extracted from server.py into routes/catalog.py"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/routes/catalog.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          /api/preview-voice moved alongside /api/voices in routes/catalog.py.
+          Uses lazy `from server import generate_tts_audio` to avoid
+          circular imports (edge-tts + Sarvam + ffmpeg helper still lives
+          in server.py for now). Verified via curl — 200 OK, 25KB MP3
+          streaming response for en-US-JennyNeural. Disk cache at
+          uploads/voice_preview_{id}.mp3 honored.
+
+          server.py is now 3,345 lines — down from 3,508 at session start
+          (-163 LOC across Phase-B rounds 1 + 2).
+
+agent_communication_session_34b:
+  - agent: "main"
+    message: |
+      Session 34-B — Tier gating + quota enforcement implementation.
+
+      WHAT CHANGED:
+      1. core/pricing.py — corrected prices (₹249/₹599/₹1,499), added
+         12 new plan flags, fixed can_run_today stub, added
+         can_run_this_month, added monthly_bucket_for(), added
+         quality_mode parameter to check_feature_access, added 4
+         new feature gates: head_swap, body_swap, video_to_video,
+         divine, ai_bg_lipsync. Added 4 credit-top-up SKUs.
+      2. core/billing.py — preflight_and_reserve now accepts
+         quality_mode= kwarg and passes it through. settle_credits
+         now accepts job_type= kwarg and bumps monthly_usage + rolls
+         over on month change + bumps daily_image_usage for image jobs.
+      3. server.py — /api/create-lipsync, create-faceswap,
+         create-headswap, create-bodyswap, generate-video,
+         generate-image, video-redub, create-image-to-video,
+         create-video-to-video all updated to pass job_type to
+         settle_credits and quality_mode to preflight where relevant.
+         create-headswap switched from feature='face_swap' to
+         feature='head_swap'. create-bodyswap same.
+         create-video-to-video switched from feature='ai_video' to
+         feature='video_to_video'.
+      4. routes/account.py — new GET /api/me/limits endpoint.
+         Imports PLANS / plan_by_id / utc_month_str / utc_today_str
+         from core.pricing.
+      5. Phase-B round 2 — /api/preview-voice moved to routes/catalog.py.
+
+      SMOKE TEST PASSED LOCALLY:
+      * demo_free /api/me/limits → 200 with 12 gates all False (correct)
+      * demo_free + quality_mode=cinematic → 402 "Kling 3.0 Pro / Veo..."
+      * demo_free + /create-faceswap → 402 (feature gate)
+      * demo_starter + quality_mode=studio → 402 "AI Video requires Creator..."
+      * demo_creator + quality_mode=cinematic → 402 "Kling 3.0 Pro..."
+      * demo_creator /api/me/limits → upgrade_hint "Unlock Kling 3.0 Pro on Pro."
+      * demo_pro /api/me/limits → all 12 gates True, no hints.
+      * /api/preview-voice?voice_id=en-US-JennyNeural → 200 25KB MP3
+      * /api/credits-info, /api/mh-models, /api/usage → regression green
+
+      NEEDS BACKEND TESTING AGENT VERIFICATION:
+      1. Monthly quota enforcement — need to simulate a user hitting
+         their monthly_lipsync_limit and verify 402.
+      2. Daily image cap for Free — 6th FLUX call should 429.
+      3. Month roll-over — forcibly set monthly_usage_month to last month
+         and verify settle_credits resets to {reels:0, ...}.
+      4. Regression sweep: login, /api/usage, /api/credits-info,
+         /api/creative-plan, /api/marketplace/templates, /api/mode,
+         /api/voices, /api/preview-voice, /api/cinematic-presets.
 
 phase_b_account_extraction_session_34:
   - task: "Phase-B — /api/usage moved to routes/account.py"

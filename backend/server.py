@@ -1735,7 +1735,7 @@ async def create_lipsync(req: CreateLipSyncRequest, background_tasks: Background
     background_tasks.add_task(process_lipsync_multi, p.id, image_urls, req.dialogue_lines, req.voice_id, req.voice_ids, req.sound_effect, req.audio_url, req.ref_video_path, req.mode, req.voice_style, req.voice_rate, req.voice_pitch)
     background_tasks.add_task(apply_resolution_to_project, p.id, req.resolution or "720p", "video")
     background_tasks.add_task(apply_watermark_if_free, p.id, user.get('subscription_tier'), "video")
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks, job_type='lipsync')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 @api_router.post("/create-faceswap")
@@ -1751,12 +1751,13 @@ async def create_faceswap(req: CreateFaceSwapRequest, background_tasks: Backgrou
     else:
         background_tasks.add_task(process_faceswap_bg, p.id, req.source_image_paths, req.target_video_path, req.face_indices, req.trim_start, req.trim_end, req.video_duration)
     background_tasks.add_task(apply_resolution_to_project, p.id, req.resolution or "720p", "image" if target_type == "image" else "video")
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks, job_type='faceswap')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 @api_router.post("/create-headswap")
 async def create_headswap(req: CreateHeadSwapRequest, background_tasks: BackgroundTasks, request: Request = None):
-    user, cost = await preflight_and_reserve(request, job_type='headswap', feature='face_swap')
+    # Session 34 — dedicated head_swap tier gate (was grouped under face_swap)
+    user, cost = await preflight_and_reserve(request, job_type='headswap', feature='head_swap')
     provider = req.provider or "magichour"
     p = VideoProject(name=f"HeadSwap_{datetime.now(timezone.utc).strftime('%H%M%S')}", type="headswap", user_id=user["user_id"], input_payload=req.dict(), endpoint="/api/create-headswap")
     await db.video_projects.insert_one(p.dict())
@@ -1766,18 +1767,19 @@ async def create_headswap(req: CreateHeadSwapRequest, background_tasks: Backgrou
     else:
         background_tasks.add_task(process_headswap_bg, p.id, req.head_image_path, req.body_image_path)
     background_tasks.add_task(apply_resolution_to_project, p.id, req.resolution or "720p", "image")
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks, job_type='headswap')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 @api_router.post("/create-bodyswap")
 async def create_bodyswap(req: CreateBodySwapRequest, background_tasks: BackgroundTasks, request: Request = None):
-    user, cost = await preflight_and_reserve(request, job_type='bodyswap', feature='face_swap')
+    # Session 34 — dedicated body_swap tier gate (was grouped under face_swap)
+    user, cost = await preflight_and_reserve(request, job_type='bodyswap', feature='body_swap')
     p = VideoProject(name=f"BodySwap_{datetime.now(timezone.utc).strftime('%H%M%S')}", type="bodyswap", user_id=user["user_id"], input_payload=req.dict(), endpoint="/api/create-bodyswap")
     await db.video_projects.insert_one(p.dict())
     await _link_as_version(p.id, req.parent_id)
     background_tasks.add_task(process_bodyswap_bg, p.id, req.person_image_path, req.garment_image_path, req.garment_type or "entire_outfit")
     background_tasks.add_task(apply_resolution_to_project, p.id, req.resolution or "720p", "image")
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks, job_type='bodyswap')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 # NOTE: /api/project/{id}, /api/project/{id}/versions, /api/projects,
@@ -2082,25 +2084,34 @@ async def serve_file(filename: str):
 
 @api_router.post("/generate-image")
 async def generate_image(req: GenerateImageRequest, background_tasks: BackgroundTasks, request: Request = None):
-    user, cost = await preflight_and_reserve(request, job_type='image')
+    # Session 34 — enforce Free's 5-image/day cap + FLUX Pro quality gate (Creator+).
+    user, cost = await preflight_and_reserve(
+        request, job_type='image', feature='image',
+        quality_mode=(getattr(req, 'quality', None) or 'studio'),
+    )
     p = VideoProject(name=f"ImageGen_{datetime.now(timezone.utc).strftime('%H%M%S')}", type="imagegen", user_id=user["user_id"], aspect_ratio=req.aspect_ratio or "16:9", input_payload=req.dict(), endpoint="/api/generate-image")
     await db.video_projects.insert_one(p.dict())
     await _link_as_version(p.id, req.parent_id)
     background_tasks.add_task(process_image_gen_bg, p.id, req.prompt, req.aspect_ratio, req.quality, req.style)
     background_tasks.add_task(apply_resolution_to_project, p.id, req.resolution or "720p", "image")
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='image', background_tasks=background_tasks, job_type='image')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 @api_router.post("/generate-video")
 async def generate_video(req: GenerateVideoRequest, background_tasks: BackgroundTasks, request: Request = None):
     if req.duration and req.duration > 15:
         raise HTTPException(status_code=400, detail="Duration cannot exceed 15 seconds")
-    user, cost = await preflight_and_reserve(request, job_type='video', duration=int(req.duration or 5))
+    # Session 34 — enforce feature='ai_video' + quality_mode tier gate (Kling 2.5 Studio = Creator+, Kling 3.0 = Pro).
+    user, cost = await preflight_and_reserve(
+        request, job_type='video', feature='ai_video',
+        duration=int(req.duration or 5),
+        quality_mode=(req.quality_mode or 'studio'),
+    )
     p = VideoProject(name=f"VideoGen_{datetime.now(timezone.utc).strftime('%H%M%S')}", type="videogen", user_id=user["user_id"], aspect_ratio=req.aspect_ratio or "16:9", sound_effect=req.sound_effect, input_payload=req.dict(), endpoint="/api/generate-video")
     await db.video_projects.insert_one(p.dict())
     await _link_as_version(p.id, req.parent_id)
     background_tasks.add_task(process_video_gen_bg, p.id, req.prompt, req.aspect_ratio, req.duration, req.lyrics, req.voice_id, req.style, req.sound_effect, req.audio_path, req.quality_mode or "studio", req.resolution or "720p", req.voice_style, req.voice_rate, req.voice_pitch)
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks, job_type='video')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 @api_router.post("/video-redub")
@@ -2110,7 +2121,7 @@ async def video_redub(req: VideoRedubRequest, background_tasks: BackgroundTasks,
     await db.video_projects.insert_one(p.dict())
     background_tasks.add_task(process_video_redub_bg, p.id, req.video_url, req.script_text, req.voice_id)
     background_tasks.add_task(apply_resolution_to_project, p.id, req.resolution or "720p", "video")
-    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks)
+    await settle_credits(user.get('id'), cost, user_tier=user.get('subscription_tier'), project_id=p.id, asset_kind='video', background_tasks=background_tasks, job_type='lipsync')
     return {"project_id": p.id, "status": "processing", "credits_charged": cost}
 
 # Phase-B — /usage moved to routes/account.py
@@ -2525,6 +2536,7 @@ async def create_image_to_video(req: ImageToVideoRequest, background_tasks: Back
     # so free/starter → 402 with "AI Video requires Creator plan..." before credit reserve.
     user, cost_per_shot = await preflight_and_reserve(
         request, job_type='video', feature='ai_video', duration=int(req.duration or 5),
+        quality_mode=(req.quality_mode or 'studio'),
     )
     total_cost = cost_per_shot * shots
     # Re-check balance for multi-shot against total
@@ -2539,7 +2551,7 @@ async def create_image_to_video(req: ImageToVideoRequest, background_tasks: Back
         await db.video_projects.insert_one(pd)
         background_tasks.add_task(process_image_to_video, p.id, req.image_path, req.prompt, req.duration or 5, req.aspect_ratio or "9:16", req.quality_mode or "studio", req.resolution or "720p")
         project_ids.append(p.id)
-    await settle_credits(user.get('id'), total_cost)
+    await settle_credits(user.get('id'), total_cost, job_type='video')
     return {"project_ids": project_ids, "project_id": project_ids[0], "shots": shots, "credits_charged": total_cost}
 
 
@@ -2580,8 +2592,11 @@ async def create_video_to_video(req: VideoToVideoRequest, background_tasks: Back
     if req.duration and req.duration > 15:
         raise HTTPException(status_code=400, detail="Duration cannot exceed 15 seconds")
     shots = max(1, min(int(req.shot_count or 1), 4))
-    # Session 27e — tier gate: Video-to-Video is an AI video generation → gated
-    user, cost_per_shot = await preflight_and_reserve(request, job_type='video', feature='ai_video', duration=int(req.duration or 5))
+    # Session 34 — dedicated video_to_video tier gate (Creator+)
+    user, cost_per_shot = await preflight_and_reserve(
+        request, job_type='video-to-video', feature='video_to_video', duration=int(req.duration or 5),
+        quality_mode=(req.quality_mode or 'studio'),
+    )
     total_cost = cost_per_shot * shots
     if user.get('credits_balance') is not None and total_cost > user.get('credits_balance', 0):
         raise HTTPException(status_code=402, detail=f"Need {total_cost} credits for {shots} shots; you have {user.get('credits_balance')}.")
