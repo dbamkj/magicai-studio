@@ -2133,31 +2133,8 @@ MH_QUALITY_TIERS = _MH_QUALITY_TIERS
 # Phase-B — /mh-models    moved to routes/account.py
 
 
-@api_router.get("/preview-voice")
-async def preview_voice(voice_id: str):
-    """Stream a short MP3 sample of the given voice. Caches results to disk."""
-    # Sanitize cache key (replace special chars)
-    safe_key = voice_id.replace(':', '__').replace('/', '_')
-    cache_path = UPLOAD_DIR / f"voice_preview_{safe_key}.mp3"
-    # Find the voice and sample text
-    voice = next((v for v in VOICE_LIBRARY if v["id"] == voice_id), None)
-    sample_text = voice["preview_text"] if voice else "Hello, this is a voice preview sample."
-    # Use cache if present and non-empty
-    if not (cache_path.exists() and cache_path.stat().st_size > 500):
-        try:
-            await generate_tts_audio(sample_text, voice_id, cache_path, min_duration=1.5)
-        except Exception as e:
-            logger.warning(f"Preview voice failed for {voice_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Voice preview failed: {str(e)[:100]}")
-    if not cache_path.exists() or cache_path.stat().st_size < 500:
-        raise HTTPException(status_code=500, detail="Voice preview generation failed")
-    def _iter():
-        with open(cache_path, "rb") as f:
-            while True:
-                chunk = f.read(8192)
-                if not chunk: break
-                yield chunk
-    return StreamingResponse(_iter(), media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=3600"})
+# Phase-B round 2 — /preview-voice moved to routes/catalog.py
+
 
 # Full SFX catalog (Magic Hour–inspired, using royalty-free CDN URLs).
 # These get mixed into the final video via ffmpeg as a subtle background layer.
