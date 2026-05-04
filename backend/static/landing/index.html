@@ -47,11 +47,27 @@
   footer a{color:#7afcff;text-decoration:none;font-weight:600}
   footer a:hover{text-decoration:underline}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:rgba(255,215,120,.12);border:1px solid rgba(255,215,120,.3);border-radius:999px;font-size:13px;font-weight:700;color:#ffd17a;margin-bottom:18px}
+  /* ─── Beta v1 waitlist form ─── */
+  .waitlist{margin:32px auto 8px;max-width:520px;background:linear-gradient(135deg,rgba(255,93,177,.12),rgba(122,252,255,.08));border:1px solid rgba(255,140,220,.35);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:24px;padding:26px 22px;text-align:left}
+  .waitlist h3{font-size:18px;font-weight:800;letter-spacing:.3px;margin-bottom:6px;color:#fff;text-align:center}
+  .waitlist .sub2{font-size:13px;color:#a8b1cc;text-align:center;margin-bottom:16px}
+  .waitlist form{display:flex;gap:10px;flex-wrap:wrap}
+  .waitlist input[type="email"]{flex:1;min-width:200px;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.18);color:#fff;border-radius:14px;padding:14px 16px;font-size:15px;outline:none;transition:border-color .2s,background .2s}
+  .waitlist input[type="email"]:focus{border-color:rgba(255,140,220,.7);background:rgba(0,0,0,.5)}
+  .waitlist button{background:linear-gradient(90deg,#ff5db1 0%,#ff8a4c 100%);color:#fff;border:0;padding:14px 24px;font-weight:800;font-size:15px;border-radius:14px;cursor:pointer;box-shadow:0 6px 20px rgba(255,93,177,.4);transition:transform .15s ease,box-shadow .25s ease}
+  .waitlist button:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(255,93,177,.55)}
+  .waitlist button:disabled{opacity:.6;cursor:not-allowed}
+  .waitlist .msg{margin-top:14px;padding:12px 14px;border-radius:12px;font-size:14px;display:none}
+  .waitlist .msg.ok{display:block;background:rgba(80,255,170,.12);border:1px solid rgba(80,255,170,.35);color:#7affc7}
+  .waitlist .msg.err{display:block;background:rgba(255,80,120,.12);border:1px solid rgba(255,80,120,.35);color:#ffa1b3}
+  .waitlist .counter{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(122,252,255,.12);border:1px solid rgba(122,252,255,.32);border-radius:999px;font-size:12px;color:#7afcff;font-weight:700;margin-bottom:10px}
   @media(max-width:600px){
     main{padding:32px 18px 60px}
     .icon-wrap{width:140px;height:140px;border-radius:32px}
     .icon-wrap img{border-radius:32px}
     .btn{padding:14px 22px;font-size:15px}
+    .waitlist form{flex-direction:column}
+    .waitlist button{width:100%}
   }
 </style>
 </head>
@@ -70,9 +86,20 @@
   <p class="sub">A premium mobile-first AI creator suite. Type an idea — our Creative Plan Engine (GPT-4o-mini) structures the script, picks the voice, narrates it with Sarvam AI, finds matching scenes from Pixabay, and renders a cinematic vertical video. Built end-to-end on Emergent.</p>
 
   <div class="cta-row">
-    <a class="btn btn-primary" href="https://app.emergent.sh/share?app=creative-plan-engine" target="_blank" rel="noopener">▶ Try the App</a>
+    <a class="btn btn-primary" href="#waitlist">▶ Join the waitlist</a>
     <a class="btn btn-ghost" href="https://github.com/dbamkj/magicai-studio" target="_blank" rel="noopener">⌥ View Source</a>
     <a class="btn btn-ghost" href="https://app.emergent.sh/showcase/builder" target="_blank" rel="noopener">🗳️ Vote</a>
+  </div>
+
+  <div class="waitlist" id="waitlist">
+    <div style="text-align:center"><span class="counter" id="wl-counter">⏳ Loading…</span></div>
+    <h3>Get early access to Beta v1</h3>
+    <p class="sub2">First 20 invites go out to the earliest signups. Already have a beta seat? Drop it below and we'll skip the queue for you.</p>
+    <form id="waitlist-form" autocomplete="on" novalidate>
+      <input type="email" name="email" id="wl-email" placeholder="you@example.com" required aria-label="Your email" />
+      <button type="submit" id="wl-submit">Join the list</button>
+    </form>
+    <div class="msg" id="wl-msg" role="status" aria-live="polite"></div>
   </div>
 
   <div class="features">
@@ -107,5 +134,69 @@
     <a href="/api/">API status</a>
   </footer>
 </main>
+
+<script>
+(function(){
+  // Pull UTM params from URL once
+  function utm(){
+    var p = new URLSearchParams(window.location.search);
+    return {
+      utm_source:  p.get('utm_source')   || null,
+      utm_medium:  p.get('utm_medium')   || null,
+      utm_campaign:p.get('utm_campaign') || null,
+    };
+  }
+  // Live counter — calls /api/waitlist-stats once on load
+  fetch('/api/waitlist-stats').then(function(r){ return r.json(); }).then(function(d){
+    var el = document.getElementById('wl-counter');
+    if (el && typeof d.total === 'number') {
+      var seats = (typeof d.remaining_seats === 'number') ? d.remaining_seats : 20;
+      el.textContent = '✨ ' + d.total + ' creators waiting · ' + seats + ' beta seats left';
+    }
+  }).catch(function(){
+    var el = document.getElementById('wl-counter');
+    if (el) el.textContent = '✨ Beta v1 · invite-only';
+  });
+
+  var form = document.getElementById('waitlist-form');
+  var msg  = document.getElementById('wl-msg');
+  var btn  = document.getElementById('wl-submit');
+  if (!form) return;
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    var email = document.getElementById('wl-email').value.trim();
+    if (!email) return;
+    btn.disabled = true; var originalLabel = btn.textContent; btn.textContent = 'Submitting…';
+    msg.className = 'msg';
+    var u = utm();
+    fetch('/api/waitlist-signup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        email: email,
+        source: 'landing',
+        utm_source:   u.utm_source,
+        utm_medium:   u.utm_medium,
+        utm_campaign: u.utm_campaign,
+      }),
+    }).then(function(r){ return r.json().then(function(b){ return {status:r.status, body:b}; }); })
+      .then(function(res){
+        if (res.status === 200 && res.body.ok) {
+          msg.className = 'msg ok';
+          msg.textContent = res.body.message || ("You're #" + res.body.position + " on the list!");
+          form.reset();
+        } else {
+          msg.className = 'msg err';
+          msg.textContent = (res.body && (res.body.detail || res.body.message)) || 'Something went wrong. Please try again.';
+        }
+      }).catch(function(){
+        msg.className = 'msg err';
+        msg.textContent = 'Network error. Please try again.';
+      }).then(function(){
+        btn.disabled = false; btn.textContent = originalLabel;
+      });
+  });
+})();
+</script>
 </body>
 </html>

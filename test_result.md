@@ -668,17 +668,100 @@ v2_prompt_generator_session31:
 
 metadata:
   created_by: "main_agent"
-  version: "3.0"
-  test_sequence: 12
+  version: "3.1"
+  test_sequence: 13
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Session 34-B — Tier gating + monthly/daily quotas + /api/me/limits endpoint"
-    - "Session 34-B — Phase-B round 2: /api/preview-voice extracted to routes/catalog.py"
+    - "Session 34-D — /api/me/limits frontend wiring (UsageCard + UpgradeBanner on Subscription)"
+    - "Session 34-D — POST /api/waitlist-signup + GET /api/waitlist-stats + landing email form"
+    - "Session 34-D — plan_tier backfill on legacy templates collection (idempotent startup task)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+session_34d_polish_and_waitlist:
+  - task: "plan_tier backfill on templates collection (idempotent + auto on startup)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          marketplace_templates (42 docs) was already 100% tagged
+          (18 free + 8 starter + 8 creator + 8 pro). The legacy
+          templates collection (26 docs) used `tier` field instead
+          of `plan_tier`. Migrated all 26 (matched=26, modified=26)
+          via aggregation pipeline `[{$set:{plan_tier:$tier}}]`.
+          Added the same migration as a startup task in server.py
+          right after the dialogues seed so it runs every boot —
+          $set is idempotent, no-op when already populated.
+          Final state: 68/68 templates tagged with plan_tier.
+
+  - task: "POST /api/waitlist-signup + waitlist-stats + admin/waitlist endpoints"
+    implemented: true
+    working: true
+    file: "backend/routes/waitlist.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          New routes/waitlist.py with 3 endpoints. Verified via curl:
+          POST first time -> 200 already_signed_up:false position:1
+          POST same email -> 200 already_signed_up:true (idempotent)
+          GET /api/waitlist-stats -> 200 total/invited/remaining_seats
+
+  - task: "Landing page email-capture form"
+    implemented: true
+    working: "NA"
+    file: "backend/static/landing/index.html"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Replaced "Try the App" CTA with #waitlist anchor + glassmorphism
+          card: live counter pill (fetches /waitlist-stats), email input,
+          gradient submit, JS handler with UTM extraction + success/error
+          messaging. Mobile-responsive. Needs browser verification.
+
+  - task: "Frontend useMyLimits hook + UsageCard + UpgradeBanner on Subscription"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/useMyLimits.ts, frontend/src/components/UsageCard.tsx, frontend/app/subscription.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New typed hook around GET /api/me/limits + 3 components
+          (UsageCard, UpgradeBanner, LockBadge). Wired into
+          subscription.tsx between GlassHeader and legacy usage
+          ribbon. Pull-to-refresh now refetches /api/me/limits too.
+          Web bundle compiled clean (1336 modules / 6131ms).
+          Visual verification pending — ngrok tunnel was flaky.
+
+agent_communication_session_34d:
+  - agent: "main"
+    message: |
+      Delivered 4/5 of user's requested items.
+      ✅ /api/me/limits wired into Subscription screen
+      ✅ Marketplace plan_tier reseed (now 68/68 tagged)
+      ✅ Watermark pipeline (already implemented — no-op)
+      ✅ /api/waitlist-signup + landing form
+      ⏸ DEFERRED: 12-screen UI redesign (own session)
 
 session_34b_tier_gating:
   - task: "Pricing catalog corrected to match actual MH cost (₹1,350 = ₹0.135/credit)"

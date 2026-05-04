@@ -9,13 +9,51 @@ Versioning: [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Planned (V2.0 — Mar–Apr 2026)
-- Marketplace template `plan_tier` reseed (Free / Creator / Pro tags)
-- Premium Neon Glass UI rollout to remaining admin / legal / lipsync / redub screens
+- 12-screen Premium Neon Glass UI redesign (handoff at `memory/HANDOFF_NEXT_SESSION_v2.md`)
 - Light Mode theme with `useColorScheme()` + AsyncStorage persistence
 - Low-res 3-second draft preview before full generation
-- Watermark FFmpeg pipeline for free tier
-- `/api/waitlist-signup` + landing-page email capture
 - Hindi UI localisation (Phase 1)
+
+---
+
+## [1.0.0-beta.34d] — 2026-05-04
+
+### Added
+- **`POST /api/waitlist-signup`** — public email-capture endpoint with EmailStr validation, UTM extraction, IP/UA spam triage, and idempotent re-submits.
+- **`GET /api/waitlist-stats`** — public counter for the landing-page banner ("X creators waiting · Y seats left").
+- **`GET /api/admin/waitlist`** — admin-only export with filter on uninvited users for batch invitation flow.
+- **Landing page email-capture form** — glassmorphism waitlist card with live counter pill, gradient submit button, JS handler with success/error messaging, and mobile-responsive layout.
+- **`useMyLimits` hook + UsageCard / UpgradeBanner / LockBadge components** — reusable building blocks driven by `GET /api/me/limits` for tier-aware UI throughout the app.
+- **Subscription screen** now shows `<UsageCard>` with progress bars for reels/lipsync/AI videos/daily images plus upgrade-hint banners that route to `/subscription?focus=<tier>`.
+
+### Changed
+- `templates` collection now uses `plan_tier` field (was `tier`) — backfilled all 26 docs via aggregation pipeline. Idempotent migration runs on every backend startup so it stays consistent. Final state: 68/68 templates tagged across both collections.
+- Landing page CTAs updated: "Try the App" → "Join the waitlist".
+
+### Verified
+- Watermark FFmpeg pipeline (drawtext overlay + image stamp + DB updates) — already implemented in `apply_watermark_if_free()`. No-op task.
+
+---
+
+## [1.0.0-beta.34b] — 2026-05-04
+
+### Added
+- **Tier gating enforcement** — backend now properly 402s users who exceed plan limits:
+  - New feature gates: `head_swap`, `body_swap`, `video_to_video`, `divine`, `ai_bg_lipsync` (split out from generic `face_swap`)
+  - Quality-mode gates: Kling 2.5 Studio = Creator+, Kling 3.0 Pro / Veo = Pro-only, FLUX Pro = Creator+
+  - Monthly quota enforcement via `can_run_this_month()` + automatic month-rollover in `settle_credits()`
+  - Free tier daily image cap (5 FLUX Schnell / day) via `can_run_today()` + `daily_image_usage` counter
+- **`GET /api/me/limits`** — one-shot read of tier + month-to-date usage + 12 feature gates + contextual upsell hints.
+- **Corrected pricing in catalog** — ₹249 / ₹599 / ₹1,499 (was stale ₹299/499/899). Added 4 credit top-up SKUs (₹99 / ₹249 / ₹799 / ₹1,499).
+
+### Changed
+- `preflight_and_reserve()` now accepts `quality_mode=` kwarg.
+- `settle_credits()` now accepts `job_type=` kwarg and bumps monthly/daily counters with automatic roll-over.
+- All 9 MH-touching endpoints in `server.py` updated with correct `feature=`, `job_type=`, `quality_mode=` kwargs.
+- `/api/create-video-to-video` now runs preflight BEFORE file-exists check so upgrade 402 surfaces before 400.
+
+### Fixed
+- `routes/account.py` — `KeyError 'user_id'` regression in `/api/usage` (now falls through `user_id → id → email`).
 
 ---
 

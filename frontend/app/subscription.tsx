@@ -9,6 +9,8 @@ import { useAuth } from '../src/AuthContext';
 import { useTheme } from '../src/ThemeContext';
 import AuroraBackground from '../src/AuroraBackground';
 import GlassHeader from '../src/components/GlassHeader';
+import { useMyLimits } from '../src/useMyLimits';
+import { UsageCard, UpgradeBanner } from '../src/components/UsageCard';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
@@ -72,6 +74,7 @@ export default function SubscriptionScreen() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const { limits: myLimits, refetch: refetchLimits } = useMyLimits();
 
   const load = useCallback(async () => {
     try {
@@ -166,6 +169,7 @@ export default function SubscriptionScreen() {
     setRefreshing(true);
     await refresh();
     await load();
+    await refetchLimits();
     setRefreshing(false);
   };
 
@@ -202,6 +206,20 @@ export default function SubscriptionScreen() {
             onBack={() => router.back()}
             style={{ marginBottom: 14, paddingHorizontal: 0 }}
           />
+
+          {/* Session 34-D — /api/me/limits driven usage card + upsell hints */}
+          {myLimits && (
+            <View style={{ marginBottom: 14 }}>
+              <UsageCard limits={myLimits} />
+              {myLimits.upgrade_hints.length > 0 && (
+                <View style={{ marginTop: 10 }}>
+                  {myLimits.upgrade_hints.map((h, i) => (
+                    <UpgradeBanner key={i} hint={h} />
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
 
           {/* Current usage ribbon (authenticated only) */}
           {usage && user && (

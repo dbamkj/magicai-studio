@@ -3258,6 +3258,10 @@ app.include_router(_creative_plan_router)
 from routes.account import router as _account_router
 app.include_router(_account_router)
 
+# Beta v1 waitlist — /api/waitlist-signup + /waitlist-stats + admin export
+from routes.waitlist import router as _waitlist_router
+app.include_router(_waitlist_router)
+
 # V2.0 — ChatGPT-style Prompt Selection (POST /api/generate-prompts)
 from routes.prompts import router as _prompts_router
 app.include_router(_prompts_router)
@@ -3326,6 +3330,19 @@ async def _startup_scheduler():
                 asyncio.create_task(_mp_enrich2(_mp_db, force=False))
         except Exception as e:
             logger.warning("dialogues/funny templates seed skipped: %s", e)
+        # Session 34-C — backfill plan_tier on legacy templates collection (idempotent).
+        # `templates` historically stored the tier in `tier`, while
+        # `marketplace_templates` uses `plan_tier`. Unify so the same field name
+        # works across both for the frontend lock-badge pipeline.
+        try:
+            res_pt = await _mp_db.templates.update_many(
+                {"plan_tier": None, "tier": {"$in": ["free", "starter", "creator", "pro"]}},
+                [{"$set": {"plan_tier": "$tier"}}],
+            )
+            if res_pt.modified_count:
+                logger.info("plan_tier backfill: matched=%d modified=%d", res_pt.matched_count, res_pt.modified_count)
+        except Exception as e:
+            logger.warning("plan_tier backfill skipped: %s", e)
         # Round 11 — generate procedural BGM tracks if missing.
         # Idempotent: skips files that already exist on disk.
         try:
