@@ -2587,16 +2587,18 @@ async def process_video_to_video(project_id: str, video_path: str, prompt: str, 
 
 @api_router.post("/create-video-to-video")
 async def create_video_to_video(req: VideoToVideoRequest, background_tasks: BackgroundTasks, request: Request = None):
-    if not os.path.exists(req.video_path):
-        raise HTTPException(status_code=400, detail=f"Video not found: {req.video_path}")
     if req.duration and req.duration > 15:
         raise HTTPException(status_code=400, detail="Duration cannot exceed 15 seconds")
     shots = max(1, min(int(req.shot_count or 1), 4))
-    # Session 34 — dedicated video_to_video tier gate (Creator+)
+    # Session 34 — dedicated video_to_video tier gate (Creator+).
+    # Gate BEFORE the file-exists check so free/starter users see the
+    # upgrade upsell (402) instead of a misleading "file not found" (400).
     user, cost_per_shot = await preflight_and_reserve(
         request, job_type='video-to-video', feature='video_to_video', duration=int(req.duration or 5),
         quality_mode=(req.quality_mode or 'studio'),
     )
+    if not os.path.exists(req.video_path):
+        raise HTTPException(status_code=400, detail=f"Video not found: {req.video_path}")
     total_cost = cost_per_shot * shots
     if user.get('credits_balance') is not None and total_cost > user.get('credits_balance', 0):
         raise HTTPException(status_code=402, detail=f"Need {total_cost} credits for {shots} shots; you have {user.get('credits_balance')}.")
