@@ -377,3 +377,133 @@ async def rate_template(template_id: str, request: Request):
         {"$inc": {"rating_sum": stars, "rating_count": 1}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
     )
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Auto-Preview Backfill (user request — Session 33 r8)
+#
+# 53 of our seed templates have `thumbnail_url` but no `preview_url`.
+# The marketplace UI shows a dead placeholder for these, hurting
+# discovery. This endpoint scans the templates collection, picks
+# everything that has a valid thumbnail but no preview, and renders
+# a 5-second zoompan MP4 with "PREVIEW" watermark per row in the
+# background.
+#
+# Safe to call repeatedly — only processes templates that actually
+# need a preview, so double-clicks cost nothing. Returns immediately
+# with the count of templates queued so the admin UI / CLI can show
+# progress while the background task runs.
+# ══════════════════════════════════════════════════════════════════════
+
+@router.post("/backfill-previews")
+async def backfill_template_previews(
+    background_tasks: BackgroundTasks,
+    limit: int = 200,
+    force: bool = False,
+):
+    """Render preview MP4s for every template that has a thumbnail
+    but no preview_url. Background task — returns immediately.
+
+    Query params:
+      - limit  (default 200) — max templates to process in this run.
+      - force  (default False) — when true, RE-render previews even
+               if the template already has one. Useful after the
+               _generate_preview_video filter chain has changed.
+    """
+    # Select templates that qualify.
+    q: dict = {
+        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
+    }
+    if not force:
+        q["$or"] = [
+            {"preview_url": {"$exists": False}},
+            {"preview_url": None},
+            {"preview_url": ""},
+        ]
+
+    cursor = db.templates.find(q, {"_id": 0}).limit(limit)
+    todo = await cursor.to_list(length=limit)
+    if not todo:
+        return {"ok": True, "queued": 0, "message": "No templates need previews."}
+
+    async def _bg():
+        ok_count = 0
+        fail_count = 0
+        for t in todo:
+            tid = t.get("id")
+            thumb_url = t.get("thumbnail_url") or ""
+            if not tid or not thumb_url:
+                continue
+            try:
+                raw = thumb_url.replace("/api/serve-file/", "").replace("/uploads/", "")
+                thumb = UPLOAD_DIR / raw.lstrip("/")
+                if not thumb.exists():
+                    logger.warning(f"backfill: thumbnail missing for {tid}: {thumb}")
+                    fail_count += 1
+                    continue
+                # Pick the best overlay text for the thumbnail.
+                # Devotional templates skip it (their thumbnails are
+                # already iconic deities — text would look cluttered).
+                text_overlay = None
+                if t.get("category") != "devotional":
+                    text_overlay = t.get("hook_text") or t.get("title")
+                out = _generate_preview_video(
+                    template_id=tid,
+                    thumbnail_path=thumb,
+                    motion_id=t.get("motion"),
+                    text_overlay=text_overlay,
+                    duration=float(t.get("duration") or 5),
+                )
+                if out and out.exists():
+                    url = f"/api/serve-file/{out.name}"
+                    await db.templates.update_one(
+                        {"id": tid},
+                        {"$set": {
+                            "preview_url": url,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                    )
+                    ok_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                logger.warning(f"backfill: {tid} failed: {e}")
+                fail_count += 1
+        logger.info(
+            f"backfill: done — {ok_count} previews generated, {fail_count} failed "
+            f"(out of {len(todo)} queued)"
+        )
+
+    background_tasks.add_task(_bg)
+    return {
+        "ok": True,
+        "queued": len(todo),
+        "message": f"Queued {len(todo)} templates for preview generation. Check back in ~{len(todo)*2}s.",
+    }
+
+
+@router.get("/preview-stats")
+async def preview_stats():
+    """Quick observability helper — how many templates have previews?"""
+    total = await db.templates.count_documents({})
+    with_thumb = await db.templates.count_documents({
+        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
+    })
+    with_preview = await db.templates.count_documents({
+        "preview_url": {"$exists": True, "$nin": [None, ""]},
+    })
+    missing = await db.templates.count_documents({
+        "thumbnail_url": {"$exists": True, "$nin": [None, ""]},
+        "$or": [
+            {"preview_url": {"$exists": False}},
+            {"preview_url": None},
+            {"preview_url": ""},
+        ],
+    })
+    return {
+        "total": total,
+        "with_thumbnail": with_thumb,
+        "with_preview": with_preview,
+        "needs_preview": missing,
+        "coverage_pct": round(100 * with_preview / max(1, total), 1),
+    }
