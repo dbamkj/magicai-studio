@@ -1721,7 +1721,7 @@ async def process_video_redub_bg(project_id, video_url, script_text, voice_id):
 
 @api_router.get("/")
 async def root():
-    return {"message": "MagiCAi Studio API", "version": "7.1.0"}
+    return {"message": "MagiCAi Studio API", "version": "7.1.1"}
 
 @api_router.post("/create-lipsync")
 async def create_lipsync(req: CreateLipSyncRequest, background_tasks: BackgroundTasks, request: Request = None):
@@ -3270,7 +3270,7 @@ app.include_router(_prompts_router)
 from core.config import ENV as _ENV, IS_BETA as _IS_BETA, IS_DEV as _IS_DEV, IS_PROD as _IS_PROD
 @app.get("/api/mode")
 async def get_mode():
-    return {"env": _ENV, "is_beta": _IS_BETA, "is_dev": _IS_DEV, "is_prod": _IS_PROD, "version": "v1.0-beta" if _IS_BETA else ("v1.0-dev" if _IS_DEV else "v1.0-prod")}
+    return {"env": _ENV, "is_beta": _IS_BETA, "is_dev": _IS_DEV, "is_prod": _IS_PROD, "version": "v1.1-beta" if _IS_BETA else ("v1.1-dev" if _IS_DEV else "v1.1-prod")}
 
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 

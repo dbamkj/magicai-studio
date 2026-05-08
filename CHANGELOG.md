@@ -8,13 +8,92 @@ Versioning: [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-### Planned (V2.0 — Mar–Apr 2026)
-- 12-screen Premium Neon Glass UI redesign (handoff at `memory/HANDOFF_NEXT_SESSION_v2.md`)
-- Light Mode theme with `useColorScheme()` + AsyncStorage persistence
-- Low-res 3-second draft preview before full generation
-- Hindi UI localisation (Phase 1)
+### Planned (V1.2 — Phase 2 Production rollout)
+- Lip Sync (MH) — Starter+
+- Face Swap Photo (MH) — Starter+
+- Procedural Dual Lipsync (LOCAL)
+- Image-to-Video Kling Lite (MH)
+- 7 Sarvam Premium voices (Creator)
+- 2 Cinematic Presets in production UI
+- Marketplace plan_tier lock badges in UI
+- Trending feed + Pattern Lab flagging public-facing
 
 ---
+
+## [1.1.0] — 2026-05-08 · 🏷️ **Beta v1.1 release tag**
+
+> **First fully-shippable release.** Backend tier-gating + waitlist + monetization-ready economics. Suitable for Phase 1 production rollout (20-user cap).
+
+### 🎯 Highlights
+- **Real backend tier enforcement** across 12 feature gates + 3 quality modes
+- **Monthly + daily quota tracking** with auto-rollover and friendly upsell messaging
+- **`GET /api/me/limits`** powering progress bars + lock badges in the UI
+- **Waitlist email-capture** with public counter + admin batch-invite tooling
+- **Corrected pricing** to match actual MH cost basis (₹1,350/mo = ₹0.135/credit) with healthy 55–79% net margins
+- **Phase-B refactor** trimmed `server.py` from 3,508 → 3,335 LOC with `account.py` + `catalog.py` + `waitlist.py` extracted
+- **CI/CD** — GitHub Actions workflow with backend lint + import smoke + critical-route registration check
+- **Docs** — comprehensive 5-phase rollout plan, feature comparison matrix, and Beta v1 launch checklist in `docs/PRICING_AND_LAUNCH_STRATEGY.md`
+
+### Added
+- **Tier gating enforcement** — backend now properly 402s users who exceed plan limits:
+  - New feature gates: `head_swap`, `body_swap`, `video_to_video`, `divine`, `ai_bg_lipsync` (split out from generic `face_swap`)
+  - Quality-mode gates: Kling 2.5 Studio = Creator+, Kling 3.0 Pro / Veo = Pro-only, FLUX Pro = Creator+
+  - Monthly quota enforcement via `can_run_this_month()` + automatic month-rollover in `settle_credits()`
+  - Free tier daily image cap (5 FLUX Schnell / day) via `can_run_today()` + `daily_image_usage` counter
+- **`GET /api/me/limits`** — one-shot read of tier + month-to-date usage + 12 feature gates + contextual upsell hints.
+- **Phase-B refactor** — extracted `/api/usage`, `/api/credits-info`, `/api/mh-models` into `routes/account.py`; `/api/preview-voice` extracted to `routes/catalog.py`.
+- **`POST /api/waitlist-signup`** — public email-capture with EmailStr validation, UTM extraction, IP/UA spam triage, idempotent re-submits.
+- **`GET /api/waitlist-stats`** — public counter for the landing-page banner.
+- **`GET /api/admin/waitlist`** — admin-only export with uninvited filter for batch invitations.
+- **Landing page** — glassmorphism waitlist card with live counter pill, gradient submit button, JS form handler with success/error messaging, mobile-responsive layout.
+- **`useMyLimits` hook + UsageCard / UpgradeBanner / LockBadge components** — reusable typed React Native building blocks for tier-aware UI.
+- **Subscription screen** now shows `<UsageCard>` with progress bars + upgrade-hint banners.
+- **Template auto-preview backfill** — `POST /api/templates/backfill-previews` (BackgroundTask) + `GET /api/templates/preview-stats` observability.
+- **GitHub Actions CI** workflow (`.github/workflows/ci.yml`) — backend ruff lint + critical-route registration smoke test + frontend TypeScript typecheck.
+- **MIT LICENSE** + `CHANGELOG.md` + `docs/PRICING_AND_LAUNCH_STRATEGY.md` shipped publicly.
+
+### Changed
+- **Pricing catalog corrected** to actual MH cost basis: Starter ₹249, Creator ₹599, Pro ₹1,499 (was stale ₹299/₹499/₹899). Credit grants: 300 / 1,500 / 3,000 / 6,000.
+- **Add-on credit packs** added (₹99/500, ₹249/1,500, ₹799/5,000, ₹1,499/10,000).
+- `templates` collection unified to use `plan_tier` field (was `tier`) — idempotent startup migration ensures consistency. **68/68 templates tagged**.
+- All 9 MH-touching endpoints in `server.py` updated with correct `feature=`, `job_type=`, `quality_mode=` kwargs.
+- `/api/create-video-to-video` runs preflight BEFORE file-exists check so upgrade 402 surfaces before 400.
+- Landing page CTAs: "Try the App" → "Join the waitlist".
+- Backend version: `7.1.0` → `7.1.1`. Mode endpoint: `v1.0-beta` → `v1.1-beta`. Frontend `app.json`: `1.0.0` → `1.1.0`.
+
+### Fixed
+- `routes/account.py` — `KeyError 'user_id'` in `/api/usage` (now falls through `user_id → id → email`).
+- FastAPI signature: `Optional[Request]` is not a valid response field type → changed to `request: Request = None`.
+- `routes/templates.py` path-order: `GET /preview-stats` was being shadowed by `/{template_id}` → moved above the catch-all.
+
+### Verified (32/32 backend tests via `deep_testing_backend_v2`)
+- ✅ All 10 waitlist endpoint assertions (idempotency, validation, admin auth, meta-stripping)
+- ✅ plan_tier migration distribution matches spec exactly
+- ✅ All 16 regression sweep assertions (root, auth, /me/limits with 12 gates + Kling 3.0 hint, 4 tier 402s, credits-info, mh-models, usage, preview-stats, creative-plan, cinematic-presets, preview-voice, voices, mode)
+
+---
+
+## [1.0.0] — 2026-05-04 · 🏷️ Initial public release
+
+### Highlights
+- 4-phase Cinematic Avatar Engine (presets / emotions / camera FX / remix)
+- Procedural solo + dual-character lipsync (zero-MH)
+- Creative Plan Engine (`POST /api/creative-plan`)
+- 4-tier subscription model (Free / Starter / Creator / Pro)
+- 26 marketplace templates with 100% MP4 preview coverage
+- 43 voices (36 edge-tts + 7 Sarvam Premium)
+- Premium Aurora + Glassmorphism UI on hero screens
+- Razorpay test-mode integration
+
+---
+
+## [0.x] — Pre-release work history (collapsed)
+
+The following sections document the build history during private development.
+Kept for reference; not relevant for downstream consumers.
+
+<details>
+<summary>Click to expand pre-release changelog</summary>
 
 ## [1.0.0-beta.34d] — 2026-05-04
 
@@ -162,6 +241,8 @@ Versioning: [SemVer](https://semver.org/).
 - Pixabay scene/image/music search.
 - 4-tier subscription model (Free / Starter / Creator / Pro).
 - 4 demo accounts pre-seeded + 10 beta users.
+
+</details>
 
 ---
 

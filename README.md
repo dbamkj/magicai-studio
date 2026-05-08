@@ -6,7 +6,7 @@ MagiCAi Studio is a premium, mobile-first AI creator suite that combines a **Cre
 
 Built as an Emergent Labs *Builders Contest* V1.0 submission.
 
-[![CI](https://github.com/dbamkj/magicai-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/dbamkj/magicai-studio/actions/workflows/ci.yml) [![Status](https://img.shields.io/badge/status-beta--v1-purple)]() [![Backend](https://img.shields.io/badge/backend-FastAPI-009688)]() [![Frontend](https://img.shields.io/badge/frontend-Expo%20SDK%2053-000020)]() [![Python](https://img.shields.io/badge/python-3.11-blue)]() [![Node](https://img.shields.io/badge/node-20-green)]() [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Changelog](https://img.shields.io/badge/changelog-keep%20a%20changelog-orange)](CHANGELOG.md)
+[![CI](https://github.com/dbamkj/magicai-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/dbamkj/magicai-studio/actions/workflows/ci.yml) [![Release](https://img.shields.io/badge/release-v1.1-purple)]() [![Status](https://img.shields.io/badge/status-beta--v1.1-9f7aea)]() [![Backend](https://img.shields.io/badge/backend-FastAPI-009688)]() [![Frontend](https://img.shields.io/badge/frontend-Expo%20SDK%2053-000020)]() [![Python](https://img.shields.io/badge/python-3.11-blue)]() [![Node](https://img.shields.io/badge/node-20-green)]() [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Changelog](https://img.shields.io/badge/changelog-keep%20a%20changelog-orange)](CHANGELOG.md)
 
 ---
 
