@@ -12853,3 +12853,121 @@ agent_communication:
       Do NOT touch:
         - subscription.tsx / pricing.tsx (frontend, not in scope for backend test).
         - The migration script (already run; idempotent).
+
+sprint1_pricing_and_ionicons_fix:
+  - task: "Sprint 1 — Ionicons font preload fix (_layout.tsx useFonts)"
+    implemented: true
+    working: true
+    file: "frontend/app/_layout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. Mobile viewport (iPhone 13 390x844 + Galaxy S21 360x800).
+          Across full test run on /, /pricing, /login, /subscription: ZERO
+          font/Ionicons console errors detected. No "ExpoFontLoader.loadAsync
+          rejected" or "Font file for ionicons is empty" anywhere. Home
+          screen screenshot confirms all Ionicons render correctly: hamburger
+          menu, login pill icon, sparkles (✨), plus (+) FAB, chevron-forward
+          on quick-access cards, mic icon on Voice card. Only console error
+          observed is an unrelated 401 (expected for /me when guest).
+
+  - task: "Sprint 1 — Public /pricing page"
+    implemented: true
+    working: true
+    file: "frontend/app/pricing.tsx, frontend/app/_layout.tsx (PUBLIC_ROUTES)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          FULL PASS 8/8 logged-out at iPhone 13 390x844 + Galaxy S21
+          360x800.
+
+          (1) Hero — "Create cinematic AI videos in minutes" tagline +
+            "Start 7-day free trial" gradient CTA present. ✓
+          (2) Plan cards — exactly 3 in order Trial → Basic → Creator
+            (string positions 338 < 449 < 605 in DOM). ✓
+          (3) Creator card has "BEST VALUE" pink/magenta badge. ✓
+          (4) CTAs read exactly "Start free trial" / "Get Basic" /
+            "Choose Creator". ✓
+          (5) Billing toggle — Monthly → Annual switches prices to
+            ₹X/yr AND shows "billed yearly" sub-text. ✓
+          (6) Feature matrix — all 11 required rows render and the
+            table is horizontally scrollable: Credits, No watermark,
+            Max resolution, Reels / month, Lip sync / month, AI Videos
+            / month, Face Swap, Talking Avatar, Video-to-Video,
+            Dynamic Camera FX, Cinematic image mode. ✓
+          (7) FAQ — all 5 questions render; clicking "Do you offer
+            refunds?" expands the answer "You can request a refund
+            within 24 hours of purchase…". ✓
+          (8) "Start 7-day free trial" CTA → routes to /login when
+            logged out. ✓
+
+          Galaxy S21 360x800 spot-check: hero + BEST VALUE + Get Basic
+          + Choose Creator all render correctly. No cards overflow, no
+          text clipping observed.
+
+          NOTE for main agent: First visit to /pricing as a brand-new
+          user (no AsyncStorage flag) was redirected to /onboarding
+          because RouteGuard in _layout.tsx only allows /onboarding
+          and /login through the first-run check (lines 44-47), even
+          though PUBLIC_ROUTES includes "pricing". Workaround in test
+          was to pre-set localStorage 'magicai.onboarded'='1'. If the
+          intent is for /pricing to be a true marketing landing for
+          un-onboarded visitors, RouteGuard should also exempt routes
+          in PUBLIC_ROUTES from the onboarding redirect — change
+          `first !== 'onboarding' && first !== 'login'` to also check
+          `!PUBLIC_ROUTES.has(first)`.
+
+  - task: "Sprint 1 — Login regression + credits=1200 verification"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/login.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: |
+          PARTIAL. CTA-to-/login routing verified PASS (Pricing "Start
+          7-day free trial" button → /login). However, on the /login
+          page Playwright found 0 standard <input> elements
+          (page.query_selector_all("input") returned []). This is
+          likely because react-native-web renders TextInputs as
+          contenteditable spans or non-<input> elements on this app —
+          so the test could not type demo_creator credentials and
+          could not assert credits_balance=1200 on the home screen.
+          Backend was already verified by another testing run today
+          to return credits_balance=1200 for demo_creator (see
+          Session 34-D regression in agent_communication). Re-test
+          recommended with a selector strategy that targets
+          [placeholder="Email"]/[placeholder="Password"] or
+          data-testid attributes if present.
+
+  - task: "Sprint 1 — Subscription page regression (no crash)"
+    implemented: true
+    working: true
+    file: "frontend/app/subscription.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS. Navigated to /subscription at 390x844 — page rendered
+          2223 chars of content, no "Something went wrong" / "Application
+          error" / red-screen exception. Screenshot shows the
+          "Plans & Pricing" account screen with TEST MODE banner,
+          Monthly/Annual/Credits ribbon, 7-Day Trial card (Free, 50
+          credits, refilled monthly, Unlimited templates, 5 reels/month,
+          2 lip sync/month, 5 AI images/month, No watermark, Upgrade
+          ₹0/mo button) and Basic ₹99 card visible. UsageCards section
+          implicit in scroll. No regression from Sprint 1.
