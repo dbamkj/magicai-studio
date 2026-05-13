@@ -3,6 +3,8 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { View, StyleSheet, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { Ionicons } from '@expo/vector-icons';
 import { AuthProvider, useAuth } from '../src/AuthContext';
 import { ThemeProvider } from '../src/ThemeContext';
 import BetaChrome from '../src/BetaChrome';
@@ -57,6 +59,14 @@ export default function RootLayout() {
   const [splashDone, setSplashDone] = useState(false);
   const [soundsEnabled, setSoundsEnabled] = useState<boolean | null>(null);
 
+  // Pre-load Ionicons font BEFORE any screen renders.
+  // This fixes the "ExpoFontLoader.loadAsync rejected — Font file for ionicons is empty"
+  // crash that occurred when @expo/vector-icons tried to lazy-load Ionicons.ttf
+  // mid-render on real Android devices.
+  const [fontsLoaded, fontsError] = useFonts({
+    ...Ionicons.font,
+  });
+
   useEffect(() => {
     (async () => {
       try {
@@ -67,6 +77,16 @@ export default function RootLayout() {
       }
     })();
   }, []);
+
+  // Block first paint until fonts are ready (or error — fall through after error so
+  // users aren't stuck on a black screen if font network fetch fails).
+  if (!fontsLoaded && !fontsError) {
+    return (
+      <SafeAreaProvider>
+        <View style={{ flex: 1, backgroundColor: '#070314' }} />
+      </SafeAreaProvider>
+    );
+  }
 
   return (
     <SafeAreaProvider>
