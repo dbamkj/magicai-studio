@@ -259,3 +259,107 @@ async def pattern_lab_moderate(template_id: str, request: Request):
     else:
         await db.templates.update_one({'id': template_id}, {'$set': {'is_active': False}})
     return {'ok': True, 'action': action}
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Session 35 — Feature Flags & Plan Visibility (Sprint 1)
+# ═══════════════════════════════════════════════════════════════════
+
+class FeatureFlagUpsert(BaseModel):
+    key: str
+    enabled: bool
+    description: str = ''
+    rollout_pct: int = 100  # 0..100 — percentage of users this flag applies to
+
+
+class PlanVisibilityToggle(BaseModel):
+    visible: bool
+
+
+@router.get('/feature-flags')
+async def list_feature_flags(request: Request):
+    """List all dynamic feature flags. Admin-only.
+
+    Flags live in the `feature_flags` Mongo collection and override or
+    extend behavior of statically-defined features in code. Useful for
+    gradual rollouts and emergency kills.
+    """
+    await require_admin(request)
+    flags = await db.feature_flags.find({}, {'_id': 0}).to_list(length=500)
+    # Also report current plan visibility (computed from PLANS + overrides)
+    plan_overrides = await db.feature_flags.find_one(
+        {'key': '__plan_visibility_overrides__'}, {'_id': 0}
+    ) or {}
+    overrides = (plan_overrides.get('value') or {})
+    plans_status = []
+    for pid, plan in PLANS.items():
+        default_vis = bool(plan.get('is_visible_in_pricing_page', False))
+        plans_status.append({
+            'id': pid,
+            'label': plan.get('label'),
+            'price_inr': plan.get('price_inr'),
+            'default_visible': default_vis,
+            'override_visible': overrides.get(pid),  # None | True | False
+            'effective_visible': overrides.get(pid, default_vis),
+        })
+    return {'flags': flags, 'plans': plans_status, 'env': ENV}
+
+
+@router.post('/feature-flags')
+async def upsert_feature_flag(req: FeatureFlagUpsert, request: Request):
+    """Create or update a feature flag. Admin-only."""
+    await require_admin(request)
+    key = (req.key or '').strip()
+    if not key:
+        raise HTTPException(status_code=400, detail='key required')
+    if key.startswith('__'):
+        raise HTTPException(status_code=400, detail='Reserved key prefix')
+    if not (0 <= req.rollout_pct <= 100):
+        raise HTTPException(status_code=400, detail='rollout_pct must be 0..100')
+    doc = {
+        'key': key,
+        'enabled': bool(req.enabled),
+        'description': req.description,
+        'rollout_pct': int(req.rollout_pct),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.feature_flags.update_one(
+        {'key': key}, {'$set': doc, '$setOnInsert': {'created_at': doc['updated_at']}},
+        upsert=True,
+    )
+    return {'ok': True, 'flag': doc}
+
+
+@router.delete('/feature-flags/{key}')
+async def delete_feature_flag(key: str, request: Request):
+    """Delete a feature flag override. Admin-only."""
+    await require_admin(request)
+    r = await db.feature_flags.delete_one({'key': key})
+    return {'ok': True, 'deleted': r.deleted_count}
+
+
+@router.post('/plans/{plan_id}/toggle-visibility')
+async def toggle_plan_visibility(plan_id: str, req: PlanVisibilityToggle, request: Request):
+    """Override `is_visible_in_pricing_page` for a plan at runtime.
+
+    The override is stored under the reserved key `__plan_visibility_overrides__`.
+    Pass {visible: null} to clear the override and fall back to PLANS default.
+    """
+    await require_admin(request)
+    if plan_id not in PLANS:
+        raise HTTPException(status_code=404, detail=f'Unknown plan {plan_id}')
+    existing = await db.feature_flags.find_one(
+        {'key': '__plan_visibility_overrides__'}
+    ) or {'key': '__plan_visibility_overrides__', 'value': {}}
+    overrides = existing.get('value') or {}
+    overrides[plan_id] = bool(req.visible)
+    await db.feature_flags.update_one(
+        {'key': '__plan_visibility_overrides__'},
+        {'$set': {
+            'value': overrides,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {'ok': True, 'plan_id': plan_id, 'visible': bool(req.visible), 'overrides': overrides}

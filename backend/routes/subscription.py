@@ -14,6 +14,7 @@ from core.auth import get_current_user
 from core.pricing import (
     PLANS, ADDONS, plan_by_id, addon_by_sku, utc_month_str,
     TRIAL_PRICE_INR, TRIAL_DAYS, ANNUAL_MULTIPLIER, trial_savings_pct_annual,
+    visible_plans,
 )
 
 _client = AsyncIOMotorClient(MONGO_URL)
@@ -42,9 +43,35 @@ def _compute_price(plan: dict, billing_cycle: str) -> int:
 
 
 @router.get('/plans')
-async def list_plans():
+async def list_plans(include_hidden: bool = False):
+    """Return plan catalog. By default, Starter/Pro/Free are hidden from
+    the public pricing page. Admin tools pass ?include_hidden=1.
+
+    Session 35: replaces flat `PLANS.values()` dump with the ordered
+    visible_plans() helper so Trial → Basic → Creator come first.
+    Now also honors runtime overrides in feature_flags collection.
+    """
+    # Apply runtime visibility overrides (if admin toggled any plan)
+    overrides_doc = await db.feature_flags.find_one(
+        {'key': '__plan_visibility_overrides__'}, {'_id': 0, 'value': 1}
+    ) or {}
+    overrides = overrides_doc.get('value') or {}
+
+    if include_hidden:
+        plans_out = visible_plans(include_hidden=True)
+    else:
+        plans_out = []
+        # Build effective visibility per plan
+        for pid, plan in PLANS.items():
+            default_vis = bool(plan.get('is_visible_in_pricing_page', False))
+            effective = overrides.get(pid, default_vis)
+            if effective:
+                plans_out.append({**plan})
+        order = {'trial': 0, 'basic': 1, 'creator': 2, 'starter': 3, 'pro': 4, 'free': 5}
+        plans_out.sort(key=lambda p: order.get(p.get('id', ''), 99))
+
     return {
-        'plans': list(PLANS.values()),
+        'plans': plans_out,
         'addons': ADDONS,
         'trial': {
             'price_inr': TRIAL_PRICE_INR,

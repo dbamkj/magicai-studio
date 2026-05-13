@@ -1,16 +1,20 @@
 """Plan catalog, credit cost calculator, add-on SKUs, tier-gating helpers.
 
 Session 27c (2026-04-24): 4-tier model.
-Session 34   (2026-05-04): Corrected pricing to match your MH cost
-  basis (₹1,350/mo = ₹0.135/credit). Added quality-mode gates,
-  head/body/ai_bg_lipsync/divine/video_to_video feature gates, monthly
-  quota enforcement, and a real `can_run_today`.
+Session 34   (2026-05-04): Corrected pricing to match MH cost basis.
+Session 35   (2026-05-13): SPRINT-1 PRICING LIVE
+  * Added 7-day **Trial** tier (50 cr, watermark, auto on signup).
+  * Added **Basic ₹99/mo** tier (100 cr, lightweight protected scope).
+  * Creator slashed 3000 → **1,200 cr**; monthly_ai_videos: 3 → 4.
+  * Starter & Pro hidden from public pricing page (architecturally supported).
+  * Added `is_visible_in_pricing_page`, `trial_days`, `auto_downgrade_to`.
 
-Tiers (revised prices match docs/PRICING_AND_LAUNCH_STRATEGY.md §1.1):
-  * Free    ₹0       — 300 credits · watermark · 5 FLUX images/day · 3 templates/day
-  * Starter ₹249     — 1,500 credits · 30 reels/mo · 5 lip syncs/mo
-  * Creator ₹599     — 3,000 credits · 60 reels/mo · 15 lip syncs/mo · 3 AI videos/mo (≤3s) · Kling 2.5 Studio
-  * Pro     ₹1,499   — 6,000 credits · unlimited reels · 30 lip syncs/mo · 8 AI videos/mo (≤5s) · Kling 3.0 Pro / Veo
+Tiers (current — see docs/PRICING_AND_LAUNCH_STRATEGY.md §1.1):
+  * Trial   ₹0   (7 days)  — 50 credits · watermark · 480p · auto on signup → Basic
+  * Basic   ₹99/mo         — 100 credits · watermark · 480p · wizard / templates / AI images
+  * Creator ₹599/mo        — 1,200 credits · 60 reels/mo · 15 lipsync · 4 AI videos (≤3s) · Kling 2.5 Studio
+  * Starter ₹249/mo        — HIDDEN. 1,500 cr · 30 reels · 5 lipsync (legacy, architectural only)
+  * Pro     ₹1,499/mo      — HIDDEN. 6,000 cr · unlimited reels · 30 lipsync · 8 AI videos · Kling 3.0 Pro / Veo
 
 Add-ons (one-time IAP):
   * ₹49  → 1 AI video (3s)
@@ -22,13 +26,86 @@ from typing import Optional
 
 
 # ===== Plan catalog =====
+# `is_visible_in_pricing_page` controls public marketing surface (`/api/plans`).
+# Plans set to False remain architecturally supported (legacy users, admin force-assign, A/B tests)
+# but are filtered from the public Pricing page response unless ?include_hidden=1.
 PLANS = {
+    'trial': {
+        'id': 'trial', 'label': '7-Day Trial', 'price_inr': 0, 'price_annual_inr': 0,
+        'credits': 50,
+        'trial_days': 7,
+        'auto_downgrade_to': 'basic',   # after trial expires
+        'max_videos': 0, 'max_video_seconds': 0, 'max_images': 5,
+        'daily_template_limit': 3,
+        'daily_image_limit': 5,
+        'monthly_reels_limit': 5,
+        'monthly_lipsync_limit': 2,
+        'monthly_ai_videos_limit': 0,
+        'ai_video_max_seconds': 0,
+        'watermark': True, 'allow_face_swap': False, 'allow_lip_sync': True,
+        'allow_head_swap': False, 'allow_body_swap': False,
+        'allow_video_to_video': False, 'allow_divine': False, 'allow_ai_bg_lipsync': False,
+        'allow_multishot': False, 'max_multishot_shots': 0,
+        'allow_ai_video': False,
+        'allow_video_studio': False,
+        'allow_video_cinematic': False,
+        'allow_image_cinematic': False,
+        'allow_talking_avatar': False,
+        'allow_dynamic_camera': False,
+        'allow_remix_dialogue': True,
+        'allow_procedural_animation': True,
+        'allow_templates': True,
+        'allow_basic_avatar': True,
+        'max_resolution': '480p',
+        'daily_job_limit': 30,
+        'trial_eligible': False,         # Trial is a once-per-user state, not assignable as upgrade
+        'is_visible_in_pricing_page': True,
+        'highlight': False,
+    },
+    'basic': {
+        'id': 'basic', 'label': 'Basic', 'price_inr': 99, 'price_annual_inr': 990,
+        'credits': 100,
+        'max_videos': 0, 'max_video_seconds': 0, 'max_images': 10,
+        'daily_template_limit': 9999,
+        'daily_image_limit': 9999,
+        'monthly_reels_limit': 10,
+        'monthly_lipsync_limit': 5,
+        'monthly_ai_videos_limit': 0,
+        'ai_video_max_seconds': 0,
+        # Basic = lightweight protected scope. Watermark stays ON.
+        'watermark': True,
+        'allow_face_swap': False,             # NOT in Basic
+        'allow_lip_sync': True,               # basic lipsync
+        'allow_head_swap': False,             # NOT in Basic
+        'allow_body_swap': False,             # NOT in Basic
+        'allow_video_to_video': False,        # NOT in Basic
+        'allow_divine': False,
+        'allow_ai_bg_lipsync': False,
+        'allow_multishot': False, 'max_multishot_shots': 0,
+        'allow_ai_video': False,              # NOT in Basic
+        'allow_video_studio': False,
+        'allow_video_cinematic': False,       # NOT in Basic — cinematic mode
+        'allow_image_cinematic': False,
+        'allow_talking_avatar': False,        # NOT in Basic
+        'allow_dynamic_camera': False,        # NOT in Basic
+        'allow_remix_dialogue': True,         # YES
+        'allow_procedural_animation': True,   # YES
+        'allow_templates': True,              # YES
+        'allow_basic_avatar': True,           # YES (basic avatar only)
+        'max_resolution': '480p',             # 480p only
+        'daily_job_limit': 999,
+        'trial_eligible': False,
+        'is_visible_in_pricing_page': True,
+        'highlight': False,
+    },
     'free': {
-        'id': 'free', 'label': 'Free', 'price_inr': 0, 'price_annual_inr': 0,
+        # Kept for legacy users only. New signups never land here (they get Trial).
+        # NOT visible on pricing page.
+        'id': 'free', 'label': 'Free (Legacy)', 'price_inr': 0, 'price_annual_inr': 0,
         'credits': 300,
         'max_videos': 0, 'max_video_seconds': 0, 'max_images': 5,
         'daily_template_limit': 3,
-        'daily_image_limit': 5,           # session 34 — enforced in can_run_today
+        'daily_image_limit': 5,
         'monthly_reels_limit': 0,
         'monthly_lipsync_limit': 0,
         'monthly_ai_videos_limit': 0,
@@ -38,12 +115,20 @@ PLANS = {
         'allow_video_to_video': False, 'allow_divine': False, 'allow_ai_bg_lipsync': False,
         'allow_multishot': False, 'max_multishot_shots': 0,
         'allow_ai_video': False,
-        'allow_video_studio': False,   # Kling 2.5 Studio requires Creator+
-        'allow_video_cinematic': False, # Kling 3.0 Pro requires Pro
-        'allow_image_cinematic': False, # FLUX Pro requires Creator+
+        'allow_video_studio': False,
+        'allow_video_cinematic': False,
+        'allow_image_cinematic': False,
+        'allow_talking_avatar': False,
+        'allow_dynamic_camera': False,
+        'allow_remix_dialogue': False,
+        'allow_procedural_animation': False,
+        'allow_templates': True,
+        'allow_basic_avatar': True,
         'max_resolution': '480p',
         'daily_job_limit': 999,
         'trial_eligible': False,
+        'is_visible_in_pricing_page': False,  # HIDDEN — legacy only
+        'highlight': False,
     },
     'starter': {
         'id': 'starter', 'label': 'Starter', 'price_inr': 249, 'price_annual_inr': 2490,
@@ -63,33 +148,47 @@ PLANS = {
         'allow_video_studio': False,
         'allow_video_cinematic': False,
         'allow_image_cinematic': False,
+        'allow_talking_avatar': True,
+        'allow_dynamic_camera': False,
+        'allow_remix_dialogue': True,
+        'allow_procedural_animation': True,
+        'allow_templates': True,
+        'allow_basic_avatar': True,
         'max_resolution': '720p',
         'daily_job_limit': 999,
         'trial_eligible': True,
+        'is_visible_in_pricing_page': False,  # HIDDEN at launch — architectural only
         'highlight': False,
     },
     'creator': {
         'id': 'creator', 'label': 'Creator', 'price_inr': 599, 'price_annual_inr': 5990,
-        'credits': 3000,
+        'credits': 1200,                       # SLASHED: 3000 → 1200 (Session 35)
         'max_videos': 60, 'max_video_seconds': 10, 'max_images': 50,
         'daily_template_limit': 9999,
         'daily_image_limit': 9999,
         'monthly_reels_limit': 60,
         'monthly_lipsync_limit': 15,
-        'monthly_ai_videos_limit': 3,
+        'monthly_ai_videos_limit': 4,          # BUMPED: 3 → 4 (Session 35)
         'ai_video_max_seconds': 3,
         'watermark': False, 'allow_face_swap': True, 'allow_lip_sync': True,
         'allow_head_swap': True, 'allow_body_swap': True,
         'allow_video_to_video': True, 'allow_divine': True, 'allow_ai_bg_lipsync': True,
         'allow_multishot': True, 'max_multishot_shots': 2,
         'allow_ai_video': True,
-        'allow_video_studio': True,   # Kling 2.5 Studio
-        'allow_video_cinematic': False, # Kling 3.0 Pro still Pro-only
-        'allow_image_cinematic': True,  # FLUX Pro
+        'allow_video_studio': True,
+        'allow_video_cinematic': False,
+        'allow_image_cinematic': True,
+        'allow_talking_avatar': True,
+        'allow_dynamic_camera': True,
+        'allow_remix_dialogue': True,
+        'allow_procedural_animation': True,
+        'allow_templates': True,
+        'allow_basic_avatar': True,
         'max_resolution': '720p',
         'daily_job_limit': 999,
         'trial_eligible': True,
-        'highlight': True,
+        'is_visible_in_pricing_page': True,
+        'highlight': True,                     # Hero card on pricing page
     },
     'pro': {
         'id': 'pro', 'label': 'Pro', 'price_inr': 1499, 'price_annual_inr': 14990,
@@ -107,14 +206,25 @@ PLANS = {
         'allow_multishot': True, 'max_multishot_shots': 4,
         'allow_ai_video': True,
         'allow_video_studio': True,
-        'allow_video_cinematic': True,  # Kling 3.0 Pro / Veo
+        'allow_video_cinematic': True,
         'allow_image_cinematic': True,
+        'allow_talking_avatar': True,
+        'allow_dynamic_camera': True,
+        'allow_remix_dialogue': True,
+        'allow_procedural_animation': True,
+        'allow_templates': True,
+        'allow_basic_avatar': True,
         'max_resolution': '1080p',
         'daily_job_limit': 999,
         'trial_eligible': True,
+        'is_visible_in_pricing_page': False,  # HIDDEN at launch — architectural only
         'highlight': False,
     },
 }
+
+
+# Default tier assigned to all NEW signups (Session 35).
+SIGNUP_DEFAULT_TIER = 'trial'
 
 
 # ===== Add-on SKUs (one-time in-app purchases) =====
@@ -314,14 +424,21 @@ def check_feature_access(
 
     # ——— Boolean feature switches ———
     gate_map = {
-        'face_swap':     ('allow_face_swap',     'Face Swap requires Starter plan or higher.'),
-        'lip_sync':      ('allow_lip_sync',      'Lip Sync requires Starter plan or higher.'),
-        'head_swap':     ('allow_head_swap',     'Head Swap requires Starter plan or higher.'),
-        'body_swap':     ('allow_body_swap',     'Body Swap requires Starter plan or higher.'),
-        'video_to_video':('allow_video_to_video','Video-to-Video style transfer requires Creator plan or higher.'),
-        'divine':        ('allow_divine',        'Divine Transform requires Creator plan or higher.'),
-        'ai_bg_lipsync': ('allow_ai_bg_lipsync', 'AI BG Lipsync (character + scene + dialogue) requires Creator plan or higher.'),
-        'multishot':     ('allow_multishot',     'Multi-shot requires Creator plan or higher.'),
+        'face_swap':       ('allow_face_swap',       'Face Swap requires Creator plan or higher.'),
+        'lip_sync':        ('allow_lip_sync',        'Lip Sync requires Basic plan or higher.'),
+        'head_swap':       ('allow_head_swap',       'Head Swap requires Creator plan or higher.'),
+        'body_swap':       ('allow_body_swap',       'Body Swap requires Creator plan or higher.'),
+        'video_to_video':  ('allow_video_to_video',  'Video-to-Video style transfer requires Creator plan or higher.'),
+        'divine':          ('allow_divine',          'Divine Transform requires Creator plan or higher.'),
+        'ai_bg_lipsync':   ('allow_ai_bg_lipsync',   'AI BG Lipsync (character + scene + dialogue) requires Creator plan or higher.'),
+        'multishot':       ('allow_multishot',       'Multi-shot requires Creator plan or higher.'),
+        # Session 35 — Basic-tier protections
+        'talking_avatar':  ('allow_talking_avatar',  'Talking Avatar requires Creator plan or higher.'),
+        'dynamic_camera':  ('allow_dynamic_camera',  'Dynamic Camera FX requires Creator plan or higher.'),
+        'remix_dialogue':  ('allow_remix_dialogue',  'Remix Dialogue requires Basic plan or higher.'),
+        'procedural_anim': ('allow_procedural_animation', 'Procedural Animation requires Basic plan or higher.'),
+        'templates':       ('allow_templates',       'Templates require Basic plan or higher.'),
+        'basic_avatar':    ('allow_basic_avatar',    'Avatar generation requires Basic plan or higher.'),
     }
     if feature in gate_map:
         key, msg = gate_map[feature]
@@ -378,7 +495,76 @@ def check_feature_access(
     if duration is not None and feature != 'ai_video':
         if duration > 10 and plan['id'] not in ('pro', 'creator'):
             return False, 'Videos > 10s require Creator or Pro plan.'
-        if duration > 5 and plan['id'] == 'free':
-            return False, 'Videos > 5s require Starter plan or higher.'
+        if duration > 5 and plan['id'] in ('free', 'trial', 'basic'):
+            return False, 'Videos > 5s require Creator plan or higher.'
 
     return True, 'ok'
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Session 35 — Visibility, Trial & Migration helpers
+# ═══════════════════════════════════════════════════════════════════
+
+def visible_plans(include_hidden: bool = False) -> list[dict]:
+    """Return plans for the public /api/plans endpoint.
+
+    By default, only plans with `is_visible_in_pricing_page=True` are returned.
+    Admin tools pass `include_hidden=True` to see Starter/Pro/Free legacy plans.
+    """
+    out = []
+    for pid, plan in PLANS.items():
+        if include_hidden or plan.get('is_visible_in_pricing_page', False):
+            out.append({**plan})
+    # Order: Trial → Basic → Creator → (Starter → Pro) when visible
+    order = {'trial': 0, 'basic': 1, 'creator': 2, 'starter': 3, 'pro': 4, 'free': 5}
+    out.sort(key=lambda p: order.get(p.get('id', ''), 99))
+    return out
+
+
+def is_trial_active(user: dict) -> bool:
+    """True if the user is on the Trial tier AND has not yet expired."""
+    if (user.get('subscription_tier') or '').lower() != 'trial':
+        return False
+    exp = user.get('trial_expires_at')
+    if not exp:
+        return False
+    try:
+        if isinstance(exp, str):
+            exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+        else:
+            exp_dt = exp
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < exp_dt
+    except Exception:
+        return False
+
+
+def is_trial_expired(user: dict) -> bool:
+    """True if user is on Trial tier and trial_expires_at has passed."""
+    if (user.get('subscription_tier') or '').lower() != 'trial':
+        return False
+    exp = user.get('trial_expires_at')
+    if not exp:
+        return False
+    try:
+        if isinstance(exp, str):
+            exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+        else:
+            exp_dt = exp
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= exp_dt
+    except Exception:
+        return False
+
+
+def trial_expiry_payload() -> dict:
+    """Returns the timestamp 7 days from now in UTC (used at signup)."""
+    from datetime import timedelta
+    plan = PLANS['trial']
+    days = int(plan.get('trial_days', 7))
+    return {
+        'trial_expires_at': datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=days),
+        'trial_started_at': datetime.now(timezone.utc).replace(microsecond=0),
+    }

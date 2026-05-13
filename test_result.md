@@ -12550,3 +12550,306 @@ agent_communication:
       33 changes are functional and ready.
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
+
+# ───────────────────────────────────────────────────────────
+# Session 35 — Sprint 1 (Phase-1 Pricing Live) (2026-05-13)
+# ───────────────────────────────────────────────────────────
+
+backend:
+  - task: "Pricing catalog v35: Trial + Basic tiers, Creator slashed to 1200 cr"
+    implemented: true
+    working: true
+    file: "backend/core/pricing.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Added Trial (50 cr, 7d, watermark, auto on signup), Basic (₹99, 100 cr,
+          protected lightweight scope), slashed Creator 3000→1200 cr,
+          monthly_ai_videos 3→4. Hidden Starter/Pro/Free from public pricing via
+          is_visible_in_pricing_page flag. Updated check_feature_access gate_map
+          with talking_avatar, dynamic_camera, remix_dialogue, procedural_anim,
+          templates, basic_avatar gates.
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 35 Sprint-1 verification PASS 14/14 (catalog block).
+          GET /api/subscription/plans → default returns EXACTLY
+          [trial, basic, creator] in that order. All 3 have
+          is_visible_in_pricing_page=True. Creator.credits=1200,
+          Creator.monthly_ai_videos_limit=4. Basic credits=100,
+          price_inr=99, watermark=True, allow_face_swap=False,
+          allow_talking_avatar=False. Trial credits=50, trial_days=7,
+          watermark=True, auto_downgrade_to='basic'. ?include_hidden=1
+          returns ALL 6 plans (trial/basic/creator/starter/pro/free).
+
+  - task: "Auto-enroll signups into 7-day Trial"
+    implemented: true
+    working: true
+    file: "backend/routes/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          POST /api/auth/register now defaults to subscription_tier='trial' with
+          trial_expires_at=now+7d. Google /api/auth/google-finish also auto-enrolls
+          new users into Trial. Existing users unaffected.
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 7/7. POST /api/auth/register {new email, Test@123} →
+          200; user.subscription_tier='trial', credits_balance=50,
+          trial_started_at present, trial_expires_at present and
+          exactly 7.000 days in the future (parsed from ISO). Re-
+          registering the same email returns 409 with detail
+          "Email already registered". Existing demo logins
+          unaffected (demo_creator/basic/trial/free/admin all 200).
+
+  - task: "Trial-expiry cron downgrades to Basic (not Free)"
+    implemented: true
+    working: true
+    file: "backend/core/scheduler.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          _expire_trials() now handles BOTH legacy paid-plan trials (trial_active=true)
+          AND Session 35 auto-enrolled Trial tier (subscription_tier='trial' +
+          trial_expires_at). Both flows downgrade to BASIC with credits=0 and
+          requires_upgrade=true (force conversion).
+      - working: true
+        agent: "testing"
+        comment: |
+          Scheduler module loads without errors on startup.
+          /var/log/supervisor/backend.err.log shows
+          'scheduler: started 6h trial-expiry loop' immediately after
+          'scheduler: started nightly trending loop'. No runtime
+          downgrade simulation attempted (would require time-travel
+          or direct mongo edit) — but the loop is active.
+
+  - task: "Feature Flags admin endpoints"
+    implemented: true
+    working: true
+    file: "backend/routes/admin.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW endpoints (admin-only, require_admin):
+            - GET    /api/admin/feature-flags
+            - POST   /api/admin/feature-flags    (upsert key/enabled/rollout_pct)
+            - DELETE /api/admin/feature-flags/{key}
+            - POST   /api/admin/plans/{plan_id}/toggle-visibility
+          Backed by db.feature_flags collection. Plan visibility overrides stored
+          under reserved key __plan_visibility_overrides__.
+      - working: true
+        agent: "testing"
+        comment: |
+          PASS 15/15. Logged in as admin@magicai.test.
+          GET /admin/feature-flags → 200 {flags:[…], plans:[6 entries
+          each with id/label/default_visible/override_visible/
+          effective_visible], env:'BETA'}.
+          POST /admin/feature-flags {key:'test_flag_v35', enabled:true,
+          description:'sprint1 test', rollout_pct:50} → 200 ok:true +
+          flag echoed (key/enabled/description/rollout_pct/updated_at).
+          Subsequent GET listed test_flag_v35 in flags[].
+          POST /admin/plans/starter/toggle-visibility {visible:true}
+          → 200 ok:true plan_id='starter' visible=true overrides={
+          starter:true}. Public (no-auth) GET /subscription/plans then
+          included 'starter' in ids=[trial,basic,creator,starter].
+          Toggling back {visible:false} → 200; public GET excluded
+          'starter' again.
+          POST /admin/plans/nonexistent_plan/toggle-visibility →
+          404 detail='Unknown plan nonexistent_plan'.
+          DELETE /admin/feature-flags/test_flag_v35 → 200 ok:true
+          deleted:1.
+          Non-admin (demo_creator Bearer) attempts on all three admin
+          endpoints (GET flags, POST flags, POST toggle-visibility) →
+          403 across the board.
+
+  - task: "Public /api/subscription/plans honors visibility + overrides"
+    implemented: true
+    working: true
+    file: "backend/routes/subscription.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Replaced flat PLANS.values() dump with ordered visible_plans() helper.
+          Reads db.feature_flags __plan_visibility_overrides__ to allow admin
+          runtime toggling. Default returns Trial→Basic→Creator only.
+          ?include_hidden=1 returns full catalog (admin tooling).
+          Confirmed via curl: GET /api/subscription/plans returns
+          ['trial','basic','creator'] with creator credits=1200.
+      - working: true
+        agent: "testing"
+        comment: |
+          End-to-end verified — see feature-flag admin task above for
+          the override round-trip. Default GET returns trial/basic/
+          creator in that order; ?include_hidden=1 returns the full
+          set of 6 plans (trial, basic, creator, starter, pro, free).
+
+agent_communication_session_35_sprint1:
+  - agent: "testing"
+    message: |
+      Sprint 1 (Phase-1 Pricing Live) backend regression — FULL PASS
+      59/59 (/app/backend_test.py) against
+      https://creative-plan-engine.preview.emergentagent.com.
+
+      A) Pricing catalog (16/16): /api/subscription/plans default
+         returns ['trial','basic','creator'] in order with all three
+         is_visible_in_pricing_page=True. Creator credits=1200,
+         monthly_ai_videos_limit=4. Basic credits=100, price_inr=99,
+         watermark=True, allow_face_swap=False, allow_talking_avatar
+         =False. Trial credits=50, trial_days=7, watermark=True,
+         auto_downgrade_to='basic'. ?include_hidden=1 → all 6
+         plans (trial/basic/creator/starter/pro/free).
+
+      B) Auto-enroll signup (7/7): POST /auth/register {new email,
+         Test@123} → 200 user.subscription_tier='trial', credits=50,
+         trial_started_at present, trial_expires_at exactly 7.000 days
+         from now. Re-register same email → 409.
+
+      C) Existing creds regression (11/11): demo_creator/basic/trial
+         logins all return their canonical tier+credits (1200/100/50
+         respectively). demo_free legacy and admin@magicai.test still
+         work.
+
+      D) Feature Flags admin (15/15): admin can list flags + plans,
+         upsert/delete a flag, toggle plan visibility (override flows
+         to public GET /subscription/plans), 404 on unknown plan, all
+         three endpoints return 403 to non-admin (demo_creator). Plan
+         status array has all 6 expected fields per entry.
+
+      E) Tier gating regression (4/4): demo_trial → /create-faceswap
+         → 402 "Face Swap requires Creator plan or higher." (trial
+         lacks allow_face_swap). demo_basic → same 402. demo_basic →
+         GET /marketplace/templates 200. demo_creator → /create-faceswap
+         200 with project_id+credits_charged (gate did NOT fire).
+
+      F) Smoke (5/5): /marketplace/templates?limit=3 200 with 3 items.
+         /me/limits 200 for trial/basic/creator. Backend log shows
+         'scheduler: started 6h trial-expiry loop' on startup.
+
+      Note: 'talking_avatar' gate exists in the gate_map but is not
+      currently wired to any endpoint via preflight_and_reserve
+      (talking.py uses feature='lip_sync'); used face_swap which IS
+      wired (/create-faceswap) to verify the trial/basic block — the
+      review request allowed either. Not a regression — flag for
+      future wiring if talking_avatar needs an enforcement surface.
+
+      Sprint-1 (Phase-1 Pricing Live) is PRODUCTION READY from the
+      backend regression standpoint. No blockers.
+
+  - task: "Sprint 1 migration script (cap creators, seed trial/basic demos)"
+    implemented: true
+    working: true
+    file: "backend/scripts/migrate_sprint1.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Ran successfully on magicai_beta DB.
+            - 0 creator users needed capping (demo_creator was at 3000, now 1200).
+            - Created demo_trial@test.com (trial, 50 cr, 7d expiry).
+            - Created demo_basic@test.com (basic, 100 cr).
+            - Refreshed demo_creator@test.com to canonical 1200 cr.
+          Idempotent — safe to re-run.
+
+frontend:
+  - task: "Pre-load Ionicons font to fix 'empty font file' crash"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/_layout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          User-reported crash on Android device:
+            ExpoFontLoader.loadAsync rejected — Font file for ionicons is empty.
+          Fixed by pre-loading Ionicons.font via useFonts in RootLayout BEFORE
+          any screen renders. App now gates first paint behind font ready.
+
+  - task: "Public /pricing page (Pollo AI / MagicHour style)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/pricing.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW marketing/conversion page with:
+            - Hero w/ gradient bg + 'Start 7-day free trial' CTA
+            - Monthly/Annual billing toggle
+            - 3 plan cards (Trial / Basic / Creator-highlighted)
+            - Horizontal-scroll feature matrix (11 rows)
+            - 5-item FAQ accordion
+          Loads from public /api/subscription/plans.
+          Trial → /login; Basic/Creator → /subscription with upgradeTo param.
+
+test_plan:
+  current_focus:
+    - "Sprint 1 backend regression: /api/subscription/plans (default + ?include_hidden=1)"
+    - "POST /api/auth/register auto-enrolls into trial with trial_expires_at"
+    - "Feature flag admin CRUD + plan visibility toggle persists & affects public plans response"
+    - "Tier-gating still works: trial/basic blocked from face_swap, talking_avatar, ai_video etc."
+    - "Existing demo_creator login + /api/me/limits unchanged"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Session 35 — Sprint 1 (Phase-1 Pricing Live) implementation complete.
+      Please run backend regression with focus on:
+        1. GET /api/subscription/plans → default returns ONLY trial/basic/creator
+           (Starter/Pro hidden). Creator must have credits=1200 (was 3000).
+        2. ?include_hidden=1 returns all 6 plans incl. starter/pro/free legacy.
+        3. POST /api/auth/register {email,password} → response.user.subscription_tier
+           = 'trial', credits=50, trial_expires_at set ~7d future.
+           Test that existing email returns 409 as before.
+        4. POST /api/auth/login with demo_creator@test.com/Test@123 still works,
+           returns subscription_tier='creator' and credits_balance=1200.
+        5. NEW demo accounts: demo_trial@test.com (trial, 50 cr) and
+           demo_basic@test.com (basic, 100 cr) login + /api/auth/me work.
+        6. ADMIN endpoints (login as admin@magicai.test/Test@123 first):
+           - GET  /api/admin/feature-flags → returns flags[] + plans[] status array
+           - POST /api/admin/feature-flags {key:"test_flag",enabled:true,rollout_pct:50}
+             returns ok:true
+           - POST /api/admin/plans/starter/toggle-visibility {visible:true}
+             then GET /api/subscription/plans should now include 'starter'.
+             Toggle back {visible:false} and confirm starter is hidden again.
+           - DELETE /api/admin/feature-flags/test_flag → ok:true
+        7. Tier-gating regression: ensure existing /api/wizard, /api/avatar, etc.
+           still respond. Trial tier should be blocked from face_swap, talking_avatar,
+           video_to_video. Basic tier should NOT have face_swap or talking_avatar.
+
+      Do NOT touch:
+        - subscription.tsx / pricing.tsx (frontend, not in scope for backend test).
+        - The migration script (already run; idempotent).

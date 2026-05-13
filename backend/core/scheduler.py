@@ -60,37 +60,71 @@ _trial_task = None
 
 
 async def _expire_trials(db) -> int:
-    """Downgrade users whose trial has ended back to free tier.
+    """Downgrade users whose trial has ended.
 
-    Session 27d: MOCK trials — we simply flip trial_active→false and move
-    subscription_tier→free + credits→300 when trial_end < now. A real payment
-    gateway would instead charge the card and convert to paid.
+    Session 27d: legacy paid-plan trial (trial_active=true, trial_end set).
+    Session 35: new auto-enrolled 7-day Trial tier (subscription_tier='trial',
+                trial_expires_at set).
+
+    Both flows now downgrade to **basic** (Session 35 decision: no permanent
+    free tier). User must purchase Basic ₹99 to continue, or stay locked.
 
     Returns the number of users downgraded.
     """
-    now = datetime.now(timezone.utc).isoformat()
-    # Find all trial_active users whose trial has ended.
+    from core.pricing import plan_by_id
+    basic_plan = plan_by_id('basic')
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    count = 0
+
+    # ── Flow 1: Legacy paid-plan trial conversions ──
     cursor = db.users.find({
         'trial_active': True,
         'trial_end': {'$lt': now},
     })
-    count = 0
     async for u in cursor:
         try:
             await db.users.update_one({'id': u['id']}, {
                 '$set': {
-                    'subscription_tier': 'free',
+                    'subscription_tier': 'basic',
                     'subscription_cycle': 'expired',
                     'subscription_price_inr': 0,
-                    'credits_balance': 300,
+                    'credits_balance': basic_plan['credits'],
                     'trial_active': False,
                     'trial_expired_at': now,
                 },
             })
             count += 1
-            logger.info(f"trial_cron: expired user_id={u.get('id')} email={u.get('email','?')} plan_was={u.get('trial_plan')}")
+            logger.info(f"trial_cron[legacy]: expired user_id={u.get('id')} email={u.get('email','?')} plan_was={u.get('trial_plan')}")
         except Exception as e:
-            logger.error(f"trial_cron: failed to expire {u.get('id')}: {e}")
+            logger.error(f"trial_cron[legacy]: failed to expire {u.get('id')}: {e}")
+
+    # ── Flow 2: Session 35 auto-enrolled Trial-tier users ──
+    cursor2 = db.users.find({
+        'subscription_tier': 'trial',
+        'trial_expires_at': {'$lt': now_dt},
+    })
+    async for u in cursor2:
+        try:
+            await db.users.update_one({'id': u['id']}, {
+                '$set': {
+                    'subscription_tier': 'basic',
+                    'subscription_cycle': 'trial_ended',
+                    'subscription_price_inr': 0,
+                    # Force-upgrade: zero credits so they MUST buy Basic to use
+                    # the app. (Alt strategy: gift Basic's 100 credits to soften
+                    # the wall. We pick the firm wall to drive conversion.)
+                    'credits_balance': 0,
+                    'trial_active': False,
+                    'trial_expired_at': now,
+                    'requires_upgrade': True,
+                },
+            })
+            count += 1
+            logger.info(f"trial_cron[v35]: trial→basic user_id={u.get('id')} email={u.get('email','?')}")
+        except Exception as e:
+            logger.error(f"trial_cron[v35]: failed to expire {u.get('id')}: {e}")
+
     return count
 
 

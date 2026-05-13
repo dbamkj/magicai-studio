@@ -15,7 +15,7 @@ export const APP_SOUNDS_KEY = 'magicai.appSoundsEnabled';
 const ONBOARD_KEY = 'magicai.onboarded';
 
 // Routes that are always accessible (no auth required), even in BETA mode
-const PUBLIC_ROUTES = new Set(['login', 'onboarding']);
+const PUBLIC_ROUTES = new Set(['login', 'onboarding', 'pricing']);
 
 function RouteGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();

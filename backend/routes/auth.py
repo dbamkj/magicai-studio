@@ -9,7 +9,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from core.config import MONGO_URL, DB_NAME, ADMIN_EMAIL, ENV, IS_BETA, IS_DEV
 from core.auth import hash_password, verify_password, create_token, get_current_user
-from core.pricing import plan_by_id
+from core.pricing import plan_by_id, PLANS, SIGNUP_DEFAULT_TIER, trial_expiry_payload
 
 _client = AsyncIOMotorClient(MONGO_URL)
 db = _client[DB_NAME]
@@ -21,7 +21,9 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     name: str = ''
-    plan: Optional[str] = 'free'  # 'free' | 'starter' | 'pro' — Batch 1.5
+    # Session 35: default is 'trial' (auto-enrol funnel). Paid plans still
+    # supported but typically arrive via /api/checkout after payment.
+    plan: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -39,12 +41,11 @@ async def register(req: RegisterRequest):
     if await db.users.find_one({'email': email}):
         raise HTTPException(status_code=409, detail='Email already registered')
     is_admin = (email == ADMIN_EMAIL)
-    # Batch 1.5: allow signup to pick a plan. Paid plans still route through
-    # /subscription mock-checkout on the client; we just seed the tier so
-    # the profile reflects the chosen plan immediately.
-    chosen = (req.plan or 'free').lower()
-    if chosen not in ('free', 'starter', 'creator', 'pro'):
-        chosen = 'free'
+    # Session 35: auto-enrol new users into 7-day Trial (50 cr, watermark).
+    # Existing plan-pick on signup form still works for explicit upgrades.
+    chosen = (req.plan or SIGNUP_DEFAULT_TIER).lower()
+    if chosen not in PLANS:
+        chosen = SIGNUP_DEFAULT_TIER
     plan_meta = plan_by_id(chosen)
     user = {
         'id': str(uuid.uuid4()),
@@ -60,10 +61,17 @@ async def register(req: RegisterRequest):
         'env': ENV,
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
+    # Attach trial expiry if user landed on Trial tier
+    if chosen == 'trial':
+        user.update(trial_expiry_payload())
     await db.users.insert_one(user)
     token = create_token(user['id'], user['email'])
     user.pop('password_hash', None)
     user.pop('_id', None)
+    # Serialize datetime fields for JSON response
+    for k in ('trial_expires_at', 'trial_started_at'):
+        if k in user and hasattr(user[k], 'isoformat'):
+            user[k] = user[k].isoformat()
     return {'token': token, 'user': user, 'env': ENV}
 
 
@@ -133,6 +141,9 @@ async def google_finish(req: GoogleSSORequest):
 
     user = await db.users.find_one({'email': email}, {'password_hash': 0})
     if not user:
+        # Session 35: new Google users also auto-enrol into Trial.
+        trial_meta = trial_expiry_payload()
+        plan_meta = plan_by_id(SIGNUP_DEFAULT_TIER)
         user = {
             'id': str(uuid.uuid4()),
             'email': email,
@@ -140,12 +151,13 @@ async def google_finish(req: GoogleSSORequest):
             'picture': picture,
             'auth_provider': 'google',
             'password_hash': '',  # no password for google users
-            'subscription_tier': 'free',
-            'credits_balance': 30,
+            'subscription_tier': SIGNUP_DEFAULT_TIER,
+            'credits_balance': plan_meta['credits'],
             'daily_usage': 0,
             'daily_usage_date': '',
             'is_admin': False,
             'created_at': datetime.now(timezone.utc).isoformat(),
+            **trial_meta,
         }
         await db.users.insert_one(user.copy())
         user.pop('password_hash', None)
