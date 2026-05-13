@@ -21,14 +21,20 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Request
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from core.auth import get_current_user
 from core.db import db
+from core.config import MONGO_URL, DB_NAME as AUTH_DB_NAME
 from core.constants import MH_CREDIT_COSTS, MH_QUALITY_TIERS
 from core.pricing import (
     MH_PER_SEC, MH_MIN_BILLED_SECONDS,
     PLANS, plan_by_id, utc_month_str, utc_today_str,
 )
+
+# DSAR/audit must hit the SAME database where auth stores users
+# (magicai_beta), not the legacy core.db default (videoai_database).
+_auth_db = AsyncIOMotorClient(MONGO_URL)[AUTH_DB_NAME]
 
 log = logging.getLogger("routes.account")
 router = APIRouter(prefix="/api", tags=["account"])
@@ -342,4 +348,152 @@ async def get_mh_models():
             },
         },
         "notice": "MH enforces 5-second minimum billing. Videos under 5s are still charged for 5s.",
+    }
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Session 36 — DPDPA Sprint 2 — DSAR (Data Subject Access Request)
+# ══════════════════════════════════════════════════════════════════════
+#
+# DPDPA Article 11 / GDPR Art. 15 + 17: users have a right to obtain
+# a copy of all personal data we hold about them, and to request its
+# deletion. We implement both as self-service endpoints.
+#
+
+@router.get("/account/export-data")
+async def dsar_export_data(request: Request):
+    """Return a JSON dump of all personal data we hold about the user.
+
+    Includes: user profile, video projects, audit log entries,
+    waitlist signups, notifications. Excludes: hashed password
+    (security), marketplace_templates (not user-owned).
+
+    DPDPA Article 11: must be provided within 30 days. We do it inline.
+    """
+    user = await get_current_user(request, strict=True)
+    uid = user.get("id") or user.get("user_id") or user.get("email")
+    email = (user.get("email") or "").lower()
+
+    # User profile (drop sensitive fields)
+    profile = await _auth_db.users.find_one({"id": uid}, {"_id": 0, "password_hash": 0}) or {}
+
+    # All video projects (any kind) — these live in legacy `db`
+    projects = await db.video_projects.find(
+        {"$or": [{"user_id": uid}, {"user_email": email}]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(length=5000)
+
+    # Audit-log entries for this user (audit collection in auth DB)
+    audit = await _auth_db.audit_logs.find(
+        {"user_id": uid}, {"_id": 0}
+    ).sort("timestamp", -1).to_list(length=10000)
+
+    # Waitlist signups (if any)
+    waitlist = await _auth_db.waitlist.find(
+        {"email": email}, {"_id": 0}
+    ).to_list(length=10)
+
+    # Notifications (legacy db)
+    notifs = await db.notifications.find(
+        {"user_id": uid}, {"_id": 0}
+    ).sort("created_at", -1).to_list(length=1000)
+
+    # Audit the export itself (DPDPA Article 7(f))
+    try:
+        from core.audit import log_audit
+        await log_audit("dsar.export", user_id=uid,
+                        meta={"projects": len(projects), "audit_rows": len(audit)},
+                        request=request)
+    except Exception:
+        pass
+
+    from datetime import datetime, timezone
+    return {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "user_id": uid,
+        "regulation": "DPDPA 2023 / GDPR Article 15",
+        "data": {
+            "profile": profile,
+            "video_projects": projects,
+            "audit_logs": audit,
+            "waitlist_entries": waitlist,
+            "notifications": notifs,
+        },
+        "counts": {
+            "projects": len(projects),
+            "audit_logs": len(audit),
+            "waitlist_entries": len(waitlist),
+            "notifications": len(notifs),
+        },
+    }
+
+
+@router.post("/account/delete-account")
+async def dsar_delete_account(request: Request):
+    """Soft-delete the user account and scrub PII.
+
+    Strategy: we do NOT hard-delete because:
+      - We need to retain audit logs for compliance (DPDPA Art. 7(f)).
+      - Outstanding subscriptions / refund obligations need user_id traceability.
+    Instead, we:
+      - Anonymize email → `deleted-<uuid>@deleted.local`
+      - Wipe name, picture, password_hash, push_tokens
+      - Set deleted_at + is_deleted=true
+      - Subscription tier → 'free'
+      - Mark all video_projects with redacted=true
+      - Append final audit log entry
+
+    DPDPA Article 12: right to erasure. Must be completed within 30 days.
+    This endpoint completes synchronously.
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    user = await get_current_user(request, strict=True)
+    uid = user.get("id") or user.get("user_id")
+    email = (user.get("email") or "").lower()
+
+    if not uid:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="User id missing")
+
+    redaction_email = f"deleted-{uuid.uuid4().hex[:12]}@deleted.local"
+    now = datetime.now(timezone.utc).isoformat()
+
+    await _auth_db.users.update_one(
+        {"id": uid},
+        {"$set": {
+            "email": redaction_email,
+            "name": "[deleted]",
+            "picture": "",
+            "password_hash": "",
+            "push_tokens": [],
+            "google_email": "",
+            "is_deleted": True,
+            "deleted_at": now,
+            "subscription_tier": "free",
+            "credits_balance": 0,
+            "requires_upgrade": False,
+        }},
+    )
+
+    # Optionally redact project metadata that could re-identify the user
+    await db.video_projects.update_many(
+        {"$or": [{"user_id": uid}, {"user_email": email}]},
+        {"$set": {"user_email": redaction_email, "redacted": True, "redacted_at": now}},
+    )
+
+    try:
+        from core.audit import log_audit
+        await log_audit("dsar.deletion_completed", user_id=uid,
+                        meta={"redaction_email": redaction_email}, request=request)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "deleted_at": now,
+        "redaction_email": redaction_email,
+        "message": "Account has been deleted. You will be logged out.",
     }

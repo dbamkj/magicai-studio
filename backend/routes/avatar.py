@@ -1307,13 +1307,13 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
             pass
 
     # Session 33 r4 — Procedural dual lipsync runs entirely locally
-    # with no MagicHour cost, so it shouldn't trigger the
-    # `lip_sync_dual` premium feature gate. This is also our cartoon
-    # default flow — gating it would block the main UX.
+    # with no MagicHour cost — no paywall.
+    # Non-procedural dual talking-avatar uses MagicHour AI lipsync —
+    # gated to Creator+ via 'talking_avatar' (Session 35).
     is_procedural = bool(getattr(req, 'use_procedural_lipsync', False))
     user, cost = await preflight_and_reserve(
         request, job_type='lipsync',
-        feature=None if is_procedural else 'lip_sync_dual',
+        feature=None if is_procedural else 'talking_avatar',
     )
 
     # Phase-3 — Apply cinematic preset overrides (motion + voice + bgm)

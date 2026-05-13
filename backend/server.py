@@ -2048,10 +2048,32 @@ async def process_multi_swap_bg(project_id, swap_type, swaps):
         await db.video_projects.update_one({"id": project_id}, {"$set": {"status": "failed", "error_message": str(e), "updated_at": datetime.now(timezone.utc).isoformat()}})
 
 @api_router.get("/serve-file/{filename}")
-async def serve_file(filename: str):
-    # Allow serving from /app/backend/uploads (default) OR /app/backend/static/bgm
-    # OR /app/backend/static/previews (curated inspiration sample MP4s)
-    # so we can ship locally-hosted royalty-free music + preview clips.
+async def serve_file(filename: str, request: Request, sig: Optional[str] = None, exp: Optional[int] = None):
+    # Session 36 — DPDPA Sprint 2: optional HMAC signature verification.
+    # When REQUIRE_SIGNED_URLS=1 in env, unsigned/expired requests are 403.
+    # In all modes, valid signatures are honored. Unsigned requests are
+    # logged as deprecation breadcrumbs so we can measure callsites
+    # before flipping enforcement on.
+    require_signed = os.environ.get('REQUIRE_SIGNED_URLS', '0') == '1'
+    has_sig = bool(sig and exp)
+    if has_sig:
+        from core.signed_urls import verify_signature
+        if not verify_signature(filename, sig=sig, exp=exp):
+            raise HTTPException(status_code=403, detail='Invalid or expired signed URL')
+    elif require_signed:
+        # Preview/BGM static assets are still public (no PII) — only PII-bearing
+        # paths (avatars, generated user content) need signatures. Detect by
+        # filename prefix: preview_/bgm_ are public, everything else requires sig.
+        is_public_static = filename.startswith(('preview_', 'bgm_', 'demo_'))
+        if not is_public_static:
+            raise HTTPException(status_code=403, detail='Signed URL required')
+    elif not has_sig:
+        # Log unsigned access for future enforcement decision
+        try:
+            logger.debug("serve-file unsigned access: %s", filename)
+        except Exception:
+            pass
+
     fp = UPLOAD_DIR / filename
     if not fp.exists():
         # Phase D2: also allow Pixabay/AI scene images cached inside /ai_scene/ subdir.

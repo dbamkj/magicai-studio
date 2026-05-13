@@ -261,8 +261,8 @@ export default function LandingScreen() {
                 <View style={s.card}>
                   {authMode === null ? (
                     <>
-                      <Text style={s.cardHeading}>Get started free</Text>
-                      <Text style={s.cardSubheading}>Sign up for 300 free credits · no card needed</Text>
+                      <Text style={s.cardHeading}>Start your 7-day free trial</Text>
+                      <Text style={s.cardSubheading}>50 credits · no card needed</Text>
 
                       <TouchableOpacity onPress={() => setAuthMode('register')} activeOpacity={0.85}>
                         <LinearGradient
@@ -277,6 +277,16 @@ export default function LandingScreen() {
 
                       <TouchableOpacity onPress={() => setAuthMode('login')} style={s.secondaryCta}>
                         <Text style={s.secondaryCtaText}>I already have an account · Log in</Text>
+                      </TouchableOpacity>
+
+                      {/* See pricing — opens public marketing page (Session 35) */}
+                      <TouchableOpacity
+                        onPress={() => router.push('/pricing' as any)}
+                        style={{ marginTop: 10, alignItems: 'center' }}
+                      >
+                        <Text style={{ color: '#A78BFA', fontSize: 13, fontWeight: '600' }}>
+                          See plans & pricing →
+                        </Text>
                       </TouchableOpacity>
 
                       <View style={s.divider}>

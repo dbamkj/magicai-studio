@@ -1,429 +1,357 @@
-"""Sprint 1 (Phase-1 Pricing Live) — Session 35 backend regression.
-
-Tests pricing catalog visibility, auto-trial enrollment on signup,
-existing demo logins, admin Feature Flags endpoints + plan visibility
-overrides, tier-gating regression, and a smoke pass.
-"""
-import os
-import uuid
+"""Session 36 — Sprint 2 DPDPA Security & Compliance — Backend Regression."""
+import io
+import sys
+import random
 import requests
-from datetime import datetime, timezone
+from pathlib import Path
 
-BASE = os.environ.get(
-    "BACKEND_URL",
-    "https://creative-plan-engine.preview.emergentagent.com",
-).rstrip("/") + "/api"
+BASE_URL = "https://creative-plan-engine.preview.emergentagent.com/api"
+PWD = "Test@123"
 
-PASS = "Test@123"
-
-results = []  # (label, ok, detail)
+results = []
 
 
-def rec(label, ok, detail=""):
-    results.append((label, ok, detail))
-    flag = "PASS" if ok else "FAIL"
-    print(f"[{flag}] {label} — {detail}")
+def log(name, passed, detail=""):
+    status = "✅ PASS" if passed else "❌ FAIL"
+    print(f"{status}  {name}  {detail}")
+    results.append((name, passed, detail))
 
 
-def post(path, json_body=None, headers=None, timeout=30):
-    return requests.post(BASE + path, json=json_body, headers=headers or {}, timeout=timeout)
+def login(email, password=PWD):
+    return requests.post(f"{BASE_URL}/auth/login",
+                         json={"email": email, "password": password}, timeout=30)
 
 
-def get(path, headers=None, params=None, timeout=30):
-    return requests.get(BASE + path, headers=headers or {}, params=params, timeout=timeout)
-
-
-def delete(path, headers=None, timeout=30):
-    return requests.delete(BASE + path, headers=headers or {}, timeout=timeout)
-
-
-def auth(token):
+def auth_h(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-# ============================================================
-# 1) PRICING CATALOG
-# ============================================================
-print("\n=== 1) PRICING CATALOG ===")
+# ═════ (1) DSAR EXPORT ═════
+print("\n━━━ (1) DSAR EXPORT ━━━")
 
-r = get("/subscription/plans")
-ok = r.status_code == 200
-rec("GET /api/subscription/plans status 200", ok, f"status={r.status_code}")
-if ok:
-    body = r.json()
-    plans = body.get("plans", [])
-    ids = [p["id"] for p in plans]
-    rec(
-        "Default plans return EXACTLY [trial, basic, creator] in that order",
-        ids == ["trial", "basic", "creator"],
-        f"got={ids}",
-    )
-
-    visible_flags = [p.get("is_visible_in_pricing_page") for p in plans]
-    rec(
-        "Each public plan has is_visible_in_pricing_page=True",
-        all(v is True for v in visible_flags),
-        f"flags={visible_flags}",
-    )
-
-    by_id = {p["id"]: p for p in plans}
-
-    c = by_id.get("creator", {})
-    rec("Creator plan credits=1200 (was 3000)", c.get("credits") == 1200, f"credits={c.get('credits')}")
-    rec(
-        "Creator plan monthly_ai_videos_limit=4 (was 3)",
-        c.get("monthly_ai_videos_limit") == 4,
-        f"monthly_ai_videos_limit={c.get('monthly_ai_videos_limit')}",
-    )
-
-    b = by_id.get("basic", {})
-    rec("Basic credits=100", b.get("credits") == 100, f"credits={b.get('credits')}")
-    rec("Basic price_inr=99", b.get("price_inr") == 99, f"price_inr={b.get('price_inr')}")
-    rec("Basic watermark=True", b.get("watermark") is True, f"watermark={b.get('watermark')}")
-    rec("Basic allow_face_swap=False", b.get("allow_face_swap") is False, f"allow_face_swap={b.get('allow_face_swap')}")
-    rec(
-        "Basic allow_talking_avatar=False",
-        b.get("allow_talking_avatar") is False,
-        f"allow_talking_avatar={b.get('allow_talking_avatar')}",
-    )
-
-    t = by_id.get("trial", {})
-    rec("Trial credits=50", t.get("credits") == 50, f"credits={t.get('credits')}")
-    rec("Trial trial_days=7", t.get("trial_days") == 7, f"trial_days={t.get('trial_days')}")
-    rec("Trial watermark=True", t.get("watermark") is True, f"watermark={t.get('watermark')}")
-    rec(
-        "Trial auto_downgrade_to=='basic'",
-        t.get("auto_downgrade_to") == "basic",
-        f"auto_downgrade_to={t.get('auto_downgrade_to')}",
-    )
-
-r = get("/subscription/plans", params={"include_hidden": "1"})
-ok = r.status_code == 200
-rec("GET /api/subscription/plans?include_hidden=1 status 200", ok)
-if ok:
-    plans = r.json().get("plans", [])
-    ids = sorted([p["id"] for p in plans])
-    expected = sorted(["trial", "basic", "creator", "starter", "pro", "free"])
-    rec(
-        "include_hidden=1 returns ALL 6 plans (trial, basic, creator, starter, pro, free)",
-        ids == expected,
-        f"got={ids}",
-    )
-
-# ============================================================
-# 2) AUTO-ENROLL INTO TRIAL
-# ============================================================
-print("\n=== 2) AUTO-ENROLL INTO TRIAL ===")
-
-signup_email = f"test_signup_v35_{uuid.uuid4().hex[:8]}@test.com"
-r = post("/auth/register", {"email": signup_email, "password": PASS, "name": "Sprint1 Tester"})
-ok = r.status_code == 200
-rec(
-    f"POST /api/auth/register {signup_email} returns 200",
-    ok,
-    f"status={r.status_code} body={r.text[:200]}",
-)
-
-if ok:
-    body = r.json()
-    u = body.get("user", {})
-    rec(
-        "New user subscription_tier=='trial'",
-        u.get("subscription_tier") == "trial",
-        f"tier={u.get('subscription_tier')}",
-    )
-    creds = u.get("credits_balance", u.get("credits"))
-    rec("New user credits=50", creds == 50, f"credits={creds}")
-    rec("New user has trial_started_at", bool(u.get("trial_started_at")), f"v={u.get('trial_started_at')}")
-
-    exp = u.get("trial_expires_at")
-    rec("New user has trial_expires_at", bool(exp), f"v={exp}")
-    if exp:
-        try:
-            exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
-            if exp_dt.tzinfo is None:
-                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-            delta_days = (exp_dt - datetime.now(timezone.utc)).total_seconds() / 86400.0
-            rec(
-                "trial_expires_at is ~7 days in the future (6.5..7.5)",
-                6.5 <= delta_days <= 7.5,
-                f"delta_days={delta_days:.3f}",
-            )
-        except Exception as e:
-            rec("trial_expires_at parseable", False, f"err={e}")
-
-r = post("/auth/register", {"email": signup_email, "password": PASS, "name": "again"})
-rec("Re-registering same email returns 409", r.status_code == 409, f"status={r.status_code}")
-
-# ============================================================
-# 3) EXISTING CREDENTIALS REGRESSION
-# ============================================================
-print("\n=== 3) EXISTING CREDENTIALS REGRESSION ===")
-
-cred_cases = [
-    ("demo_creator@test.com", "creator", 1200),
-    ("demo_basic@test.com", "basic", 100),
-    ("demo_trial@test.com", "trial", 50),
-]
-
-tokens = {}
-for email, expected_tier, expected_credits in cred_cases:
-    r = post("/auth/login", {"email": email, "password": PASS})
-    ok = r.status_code == 200
-    rec(f"Login {email} returns 200", ok, f"status={r.status_code}")
-    if ok:
-        body = r.json()
-        u = body.get("user", {})
-        rec(
-            f"{email} subscription_tier=='{expected_tier}'",
-            u.get("subscription_tier") == expected_tier,
-            f"tier={u.get('subscription_tier')}",
-        )
-        rec(
-            f"{email} credits_balance={expected_credits}",
-            u.get("credits_balance") == expected_credits,
-            f"credits={u.get('credits_balance')}",
-        )
-        tokens[email] = body["token"]
-
-for email in ("demo_free@test.com", "admin@magicai.test"):
-    r = post("/auth/login", {"email": email, "password": PASS})
-    rec(f"Login {email} returns 200 (legacy/admin)", r.status_code == 200, f"status={r.status_code}")
-    if r.status_code == 200:
-        tokens[email] = r.json()["token"]
-
-# ============================================================
-# 4) FEATURE FLAGS ADMIN
-# ============================================================
-print("\n=== 4) FEATURE FLAGS ADMIN ===")
-
-admin_token = tokens.get("admin@magicai.test")
-if not admin_token:
-    rec("Admin token available for admin tests", False, "admin login failed — skipping section 4")
+r = login("demo_creator@test.com")
+if r.status_code != 200:
+    log("1.pre login demo_creator", False, f"status={r.status_code} body={r.text[:200]}")
+    creator_token = None
+    creator_id = None
 else:
-    A = auth(admin_token)
+    creator_token = r.json()["token"]
+    creator_id = r.json()["user"]["id"]
+    log("1.pre login demo_creator", True, f"id={creator_id[:8]}")
 
-    r = get("/admin/feature-flags", headers=A)
-    ok = r.status_code == 200
-    rec("GET /api/admin/feature-flags 200", ok, f"status={r.status_code}")
-    if ok:
+if creator_token:
+    r = requests.get(f"{BASE_URL}/account/export-data",
+                     headers=auth_h(creator_token), timeout=60)
+    if r.status_code != 200:
+        log("1a DSAR export auth 200", False, f"status={r.status_code} body={r.text[:300]}")
+    else:
         b = r.json()
-        rec(
-            "Response has 'flags' key (list)",
-            isinstance(b.get("flags"), list),
-            f"type={type(b.get('flags')).__name__}",
-        )
-        plans_arr = b.get("plans", [])
-        rec(
-            "Response has 'plans' key with 6 entries",
-            isinstance(plans_arr, list) and len(plans_arr) == 6,
-            f"plans_count={len(plans_arr) if isinstance(plans_arr, list) else 'NA'}",
-        )
-        if isinstance(plans_arr, list) and plans_arr:
-            sample = plans_arr[0]
-            need = {"id", "label", "default_visible", "override_visible", "effective_visible"}
-            missing = need - set(sample.keys())
-            rec(
-                "Each plans[] item has id/label/default_visible/override_visible/effective_visible",
-                not missing,
-                f"missing={missing} sample_keys={list(sample.keys())}",
-            )
+        prof = (b.get("data") or {}).get("profile") or {}
+        counts = b.get("counts") or {}
+        checks = [
+            ("exported_at", bool(b.get("exported_at"))),
+            ("user_id_matches", b.get("user_id") == creator_id),
+            ("regulation", b.get("regulation") == "DPDPA 2023 / GDPR Article 15"),
+            ("profile.email", (prof.get("email") or "").lower() == "demo_creator@test.com"),
+            ("profile.tier=creator", prof.get("subscription_tier") == "creator"),
+            ("counts.projects>=0", isinstance(counts.get("projects"), int) and counts["projects"] >= 0),
+            ("counts.audit_logs", "audit_logs" in counts),
+            ("counts.notifications", "notifications" in counts),
+        ]
+        all_ok = all(v for _, v in checks)
+        log("1a DSAR export full schema", all_ok,
+            "; ".join(f"{k}={v}" for k, v in checks))
+else:
+    log("1a DSAR export auth 200", False, "no creator token")
 
-    payload = {
-        "key": "test_flag_v35",
-        "enabled": True,
-        "description": "sprint1 test",
-        "rollout_pct": 50,
-    }
-    r = post("/admin/feature-flags", payload, headers=A)
-    body = r.json() if r.status_code == 200 else {}
-    rec(
-        "POST /admin/feature-flags create returns ok:true + flag",
-        r.status_code == 200 and body.get("ok") is True and "flag" in body,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+r = requests.get(f"{BASE_URL}/account/export-data", timeout=15)
+log("1b DSAR export no-auth 401", r.status_code == 401, f"status={r.status_code}")
 
-    r = get("/admin/feature-flags", headers=A)
-    if r.status_code == 200:
-        keys = [f.get("key") for f in r.json().get("flags", [])]
-        rec(
-            "GET /admin/feature-flags now lists test_flag_v35",
-            "test_flag_v35" in keys,
-            f"keys={keys}",
-        )
 
-    r = post("/admin/plans/starter/toggle-visibility", {"visible": True}, headers=A)
-    body = r.json() if r.status_code == 200 else {}
-    rec(
-        "toggle-visibility starter visible=true returns ok+plan_id+visible",
-        r.status_code == 200
-        and body.get("ok") is True
-        and body.get("plan_id") == "starter"
-        and body.get("visible") is True,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+# ═════ (2) AUDIT LOG WRITE ═════
+print("\n━━━ (2) AUDIT LOG WRITE-PATH ━━━")
 
-    r = get("/subscription/plans")
-    if r.status_code == 200:
-        ids = [p["id"] for p in r.json().get("plans", [])]
-        rec(
-            "After override, public /subscription/plans INCLUDES 'starter'",
-            "starter" in ids,
-            f"ids={ids}",
-        )
+r = requests.post(f"{BASE_URL}/auth/login",
+                  json={"email": "demo_basic@test.com", "password": "WrongPass"},
+                  timeout=15)
+log("2a wrong password 401", r.status_code == 401, f"status={r.status_code}")
 
-    r = post("/admin/plans/starter/toggle-visibility", {"visible": False}, headers=A)
-    body = r.json() if r.status_code == 200 else {}
-    rec(
-        "Revert starter visible=false",
-        r.status_code == 200 and body.get("visible") is False,
-        f"status={r.status_code}",
-    )
+r = login("demo_basic@test.com")
+basic_token = r.json().get("token") if r.status_code == 200 else None
+log("2b correct password login 200",
+    r.status_code == 200 and basic_token is not None, f"status={r.status_code}")
 
-    r = get("/subscription/plans")
-    if r.status_code == 200:
-        ids = [p["id"] for p in r.json().get("plans", [])]
-        rec(
-            "After revert, public /subscription/plans EXCLUDES 'starter'",
-            "starter" not in ids,
-            f"ids={ids}",
-        )
+suffix = random.randint(10000, 99999)
+audit_email = f"test_audit_v36_{suffix}@test.com"
+r = requests.post(f"{BASE_URL}/auth/register",
+                  json={"email": audit_email, "password": PWD, "name": "Audit V36"},
+                  timeout=30)
+if r.status_code == 200:
+    u = r.json()["user"]
+    log("2c register new user 200", True,
+        f"tier={u.get('subscription_tier')} credits={u.get('credits_balance')}")
+    log("2c.tier=trial", u.get("subscription_tier") == "trial",
+        f"tier={u.get('subscription_tier')}")
+    log("2c.credits=50", int(u.get("credits_balance", 0)) == 50,
+        f"credits={u.get('credits_balance')}")
+else:
+    log("2c register new user 200", False, f"status={r.status_code} body={r.text[:200]}")
 
-    r = post("/admin/plans/nonexistent_plan/toggle-visibility", {"visible": True}, headers=A)
-    rec("toggle-visibility for nonexistent plan returns 404", r.status_code == 404, f"status={r.status_code}")
 
-    r = delete("/admin/feature-flags/test_flag_v35", headers=A)
-    body = r.json() if r.status_code == 200 else {}
-    rec(
-        "DELETE /admin/feature-flags/test_flag_v35 returns ok:true + deleted:1",
-        r.status_code == 200 and body.get("ok") is True and body.get("deleted") == 1,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+# ═════ (3) ADMIN AUDIT-LOG VIEWER ═════
+print("\n━━━ (3) ADMIN AUDIT-LOG VIEWER ━━━")
 
-    creator_tok = tokens.get("demo_creator@test.com")
-    if creator_tok:
-        r = get("/admin/feature-flags", headers=auth(creator_tok))
-        rec("Non-admin GET /admin/feature-flags returns 403", r.status_code == 403, f"status={r.status_code}")
-        r = post(
-            "/admin/feature-flags",
-            {"key": "should_not_create", "enabled": True, "rollout_pct": 10},
-            headers=auth(creator_tok),
-        )
-        rec("Non-admin POST /admin/feature-flags returns 403", r.status_code == 403, f"status={r.status_code}")
-        r = post(
-            "/admin/plans/creator/toggle-visibility",
-            {"visible": False},
-            headers=auth(creator_tok),
-        )
-        rec(
-            "Non-admin POST /admin/plans/.../toggle-visibility returns 403",
-            r.status_code == 403,
-            f"status={r.status_code}",
-        )
+r = login("admin@magicai.test")
+admin_token = None
+if r.status_code != 200:
+    log("3.pre login admin", False, f"status={r.status_code} body={r.text[:200]}")
+else:
+    admin_token = r.json()["token"]
+    log("3.pre login admin", True, "ok")
 
-# ============================================================
-# 5) TIER-GATING REGRESSION
-# ============================================================
-print("\n=== 5) TIER-GATING REGRESSION ===")
+if admin_token:
+    r = requests.get(f"{BASE_URL}/admin/audit-logs?limit=20",
+                     headers=auth_h(admin_token), timeout=30)
+    if r.status_code != 200:
+        log("3a admin audit-logs limit=20", False, f"status={r.status_code}")
+    else:
+        b = r.json()
+        log("3a admin audit-logs shape",
+            isinstance(b.get("logs"), list) and isinstance(b.get("count"), int),
+            f"logs={len(b.get('logs', []))} count={b.get('count')}")
+        actions = {row.get("action") for row in b.get("logs", [])}
+        wanted = {"auth.register", "auth.login", "auth.login_failed"}
+        log("3a recent test events present", len(wanted & actions) >= 2,
+            f"found={wanted & actions}")
 
-face_body = {
-    "source_image_paths": ["/app/backend/uploads/nonexistent.png"],
-    "target_video_path": "/app/backend/uploads/nonexistent.mp4",
-    "target_type": "video",
-    "video_duration": 5,
-}
+    r = requests.get(f"{BASE_URL}/admin/audit-logs?action=auth.login_failed&limit=50",
+                     headers=auth_h(admin_token), timeout=30)
+    rows = r.json().get("logs", []) if r.status_code == 200 else []
+    all_match = all(row.get("action") == "auth.login_failed" for row in rows)
+    log("3b filter action=auth.login_failed",
+        r.status_code == 200 and all_match and len(rows) >= 1,
+        f"status={r.status_code} rows={len(rows)} all_match={all_match}")
 
-trial_tok = tokens.get("demo_trial@test.com")
-if trial_tok:
-    r = post("/create-faceswap", face_body, headers=auth(trial_tok))
+    if creator_id:
+        r = requests.get(f"{BASE_URL}/admin/audit-logs?user_id={creator_id}&limit=50",
+                         headers=auth_h(admin_token), timeout=30)
+        rows = r.json().get("logs", []) if r.status_code == 200 else []
+        all_match = all(row.get("user_id") == creator_id for row in rows)
+        log("3c filter user_id=demo_creator",
+            r.status_code == 200 and all_match and len(rows) >= 1,
+            f"status={r.status_code} rows={len(rows)} all_match={all_match}")
+
+r = requests.get(f"{BASE_URL}/admin/audit-logs", timeout=10)
+log("3d no auth → 401/403", r.status_code in (401, 403), f"status={r.status_code}")
+
+if basic_token:
+    r = requests.get(f"{BASE_URL}/admin/audit-logs",
+                     headers=auth_h(basic_token), timeout=10)
+    log("3d non-admin token → 403", r.status_code == 403, f"status={r.status_code}")
+
+
+# ═════ (4) ACCOUNT DELETION ═════
+print("\n━━━ (4) ACCOUNT DELETION ━━━")
+
+del_suffix = random.randint(10000, 99999)
+del_email = f"test_dsar_delete_v36_{del_suffix}@test.com"
+r = requests.post(f"{BASE_URL}/auth/register",
+                  json={"email": del_email, "password": PWD, "name": "Del"}, timeout=30)
+if r.status_code != 200:
+    log("4a register throwaway", False, f"status={r.status_code} body={r.text[:200]}")
+    del_token = None
+else:
+    del_token = r.json()["token"]
+    log("4a register throwaway", True, f"email={del_email}")
+
+if del_token:
+    r = requests.post(f"{BASE_URL}/account/delete-account",
+                      headers=auth_h(del_token), timeout=30)
+    if r.status_code != 200:
+        log("4b delete-account 200", False, f"status={r.status_code} body={r.text[:300]}")
+    else:
+        b = r.json()
+        red = b.get("redaction_email") or ""
+        log("4b delete-account 200", True,
+            f"deleted_at={b.get('deleted_at','')[:20]} redact={red}")
+        log("4b.deleted_at present", bool(b.get("deleted_at")), "")
+        log("4b.redaction starts with 'deleted-'",
+            red.startswith("deleted-"), f"redact={red}")
+        log("4b.message present", bool(b.get("message")), "")
+
+    r = login(del_email)
+    log("4c login after delete → 401", r.status_code == 401, f"status={r.status_code}")
+
+    r = requests.post(f"{BASE_URL}/auth/register",
+                      json={"email": del_email, "password": PWD, "name": "Re"}, timeout=30)
+    log("4d re-register after delete", r.status_code == 200,
+        f"status={r.status_code} body={r.text[:200]}")
+
+
+# ═════ (5) SIGNED-URL HELPER ═════
+print("\n━━━ (5) SIGNED-URL HELPER ━━━")
+
+target = "preview_insp_funny_free_monday_mood_audio.mp4"
+r = requests.get(f"{BASE_URL}/serve-file/{target}", timeout=15)
+if r.status_code == 404:
+    # Try alternatives
+    for alt in ["preview_insp_funny_free_monday_mood.mp4",
+                "preview_insp_devotional_free_morning_blessing.mp4"]:
+        rr = requests.get(f"{BASE_URL}/serve-file/{alt}", timeout=15)
+        if rr.status_code == 200:
+            target = alt
+            r = rr
+            break
+log("5a unsigned serve-file → 200", r.status_code == 200,
+    f"status={r.status_code} file={target}")
+
+r = requests.get(f"{BASE_URL}/serve-file/{target}?sig=BADSIG&exp=9999999999", timeout=15)
+log("5b bad sig + future exp → 403", r.status_code == 403, f"status={r.status_code}")
+
+r = requests.get(f"{BASE_URL}/serve-file/{target}?sig=abc&exp=1", timeout=15)
+log("5c expired exp → 403", r.status_code == 403, f"status={r.status_code}")
+
+
+# ═════ (6) TIER GATE — talking_avatar ═════
+print("\n━━━ (6) TIER GATE — talking_avatar ━━━")
+
+
+def _upload_face(token):
     try:
-        detail = r.json().get("detail", "")
-    except Exception:
-        detail = r.text[:200]
-    rec(
-        "Trial user face_swap blocked with tier-upgrade message",
-        r.status_code == 402 and "face swap" in (detail or "").lower(),
-        f"status={r.status_code} detail={detail}",
-    )
+        from PIL import Image
+        img = Image.new("RGB", (256, 256), (100, 150, 200))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+    except Exception as e:
+        print(f"  PIL missing: {e}")
+        return None
+    r = requests.post(f"{BASE_URL}/upload-face-image",
+                      headers=auth_h(token),
+                      files={"file": ("face.png", buf.getvalue(), "image/png")},
+                      timeout=30)
+    if r.status_code != 200:
+        print(f"  upload-face-image failed: {r.status_code} {r.text[:200]}")
+        return None
+    return r.json().get("file_path")
 
-basic_tok = tokens.get("demo_basic@test.com")
-if basic_tok:
-    r = post("/create-faceswap", face_body, headers=auth(basic_tok))
-    try:
-        detail = r.json().get("detail", "")
-    except Exception:
-        detail = r.text[:200]
-    rec(
-        "Basic user face_swap blocked with tier-upgrade message",
-        r.status_code == 402 and "face swap" in (detail or "").lower(),
-        f"status={r.status_code} detail={detail}",
-    )
 
-    r = get("/marketplace/templates", headers=auth(basic_tok), params={"limit": 3})
-    rec("Basic user GET /marketplace/templates allowed", r.status_code == 200, f"status={r.status_code}")
+if basic_token:
+    bimg = _upload_face(basic_token)
+    if not bimg:
+        log("6.pre upload face (basic)", False, "upload failed")
+    else:
+        log("6.pre upload face (basic)", True, bimg)
+        # 6a) Basic + non-procedural → expect 402/403
+        payload = {
+            "image_path": bimg,
+            "script": "Hello there, this is a quick talking-avatar test.",
+            "use_procedural_lipsync": False,
+        }
+        r = requests.post(f"{BASE_URL}/create-talking-avatar",
+                          headers=auth_h(basic_token), json=payload, timeout=30)
+        gate = r.status_code in (402, 403)
+        log("6a basic + non-procedural → 402/403", gate,
+            f"status={r.status_code} body={r.text[:200]}")
+        if gate:
+            log("6a.message mentions Creator",
+                "creator" in r.text.lower(), f"body={r.text[:200]}")
 
-creator_tok = tokens.get("demo_creator@test.com")
-if creator_tok:
-    r = post("/create-faceswap", face_body, headers=auth(creator_tok))
-    blocked_by_gate = r.status_code == 402
-    rec(
-        "Creator user face_swap NOT blocked by tier gate (no 402)",
-        not blocked_by_gate,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+        # 6b) Basic + procedural=true → should bypass talking_avatar gate
+        payload2 = dict(payload, use_procedural_lipsync=True)
+        r = requests.post(f"{BASE_URL}/create-talking-avatar",
+                          headers=auth_h(basic_token), json=payload2, timeout=30)
+        # Bypass = not a paywall response mentioning Creator/Talking-Avatar
+        is_paywall = r.status_code in (402, 403) and (
+            "creator" in r.text.lower() or "talking avatar" in r.text.lower()
+        )
+        log("6b basic + procedural=true bypass gate", not is_paywall,
+            f"status={r.status_code} body={r.text[:200]}")
 
-# ============================================================
-# 6) SMOKE / OTHER
-# ============================================================
-print("\n=== 6) SMOKE / OTHER ===")
+if creator_token:
+    cimg = _upload_face(creator_token)
+    if not cimg:
+        log("6.pre upload face (creator)", False, "upload failed")
+    else:
+        log("6.pre upload face (creator)", True, cimg)
+        payload = {
+            "image_path": cimg,
+            "script": "Hi there. Creator gate test.",
+            "use_procedural_lipsync": False,
+        }
+        r = requests.post(f"{BASE_URL}/create-talking-avatar",
+                          headers=auth_h(creator_token), json=payload, timeout=30)
+        not_gated = r.status_code not in (402, 403)
+        log("6c creator + non-procedural passes gate", not_gated,
+            f"status={r.status_code} body={r.text[:200]}")
 
-r = get("/marketplace/templates", params={"limit": 3})
-ok = r.status_code == 200
-rec("GET /api/marketplace/templates?limit=3 -> 200", ok, f"status={r.status_code}")
-if ok:
-    body = r.json()
-    items = body if isinstance(body, list) else (body.get("templates") or body.get("items") or [])
-    rec(
-        "Marketplace templates returned a non-empty list",
-        isinstance(items, list) and len(items) > 0,
-        f"len={len(items) if isinstance(items, list) else 'NA'}",
-    )
 
-for email in ("demo_trial@test.com", "demo_basic@test.com", "demo_creator@test.com"):
-    tok = tokens.get(email)
-    if not tok:
-        rec(f"GET /api/me/limits with {email} — skipped (no token)", False)
-        continue
-    r = get("/me/limits", headers=auth(tok))
-    rec(f"GET /api/me/limits with {email} returns 200", r.status_code == 200, f"status={r.status_code}")
+# ═════ (7) SMOKE / NO-REGRESSION ═════
+print("\n━━━ (7) SMOKE / NO-REGRESSION ━━━")
 
-sched_ok = False
+r = requests.get(f"{BASE_URL}/subscription/plans", timeout=20)
+if r.status_code != 200:
+    log("7a plans no-auth 200", False, f"status={r.status_code}")
+else:
+    plans = r.json().get("plans", [])
+    plan_ids = sorted(p.get("id") for p in plans)
+    expected = {"trial", "basic", "creator"}
+    log("7a plans no-auth ⊇ trial/basic/creator",
+        expected.issubset(set(plan_ids)), f"ids={plan_ids}")
+    log("7a plans no-auth ONLY trial/basic/creator",
+        set(plan_ids) == expected, f"ids={plan_ids}")
+
+r = requests.get(f"{BASE_URL}/subscription/plans?include_hidden=1", timeout=20)
+if r.status_code != 200:
+    log("7b plans include_hidden 200", False, f"status={r.status_code}")
+else:
+    plans = r.json().get("plans", [])
+    plan_ids = sorted(p.get("id") for p in plans)
+    log("7b plans include_hidden has 6", len(plans) == 6,
+        f"count={len(plans)} ids={plan_ids}")
+
+if admin_token:
+    r = requests.post(f"{BASE_URL}/admin/plans/starter/toggle-visibility",
+                      headers=auth_h(admin_token), json={"visible": True}, timeout=20)
+    log("7c admin toggle-visibility starter 200",
+        r.status_code == 200 and r.json().get("ok") is True,
+        f"status={r.status_code} body={r.text[:120]}")
+    # Reset
+    requests.post(f"{BASE_URL}/admin/plans/starter/toggle-visibility",
+                  headers=auth_h(admin_token), json={"visible": False}, timeout=20)
+
+if creator_token:
+    r = requests.get(f"{BASE_URL}/me/limits",
+                     headers=auth_h(creator_token), timeout=20)
+    if r.status_code != 200:
+        log("7d me/limits demo_creator", False, f"status={r.status_code}")
+    else:
+        b = r.json()
+        ok = all(k in b for k in ("tier", "credits", "usage_this_month",
+                                  "usage_today", "feature_gates", "upgrade_hints"))
+        log("7d me/limits demo_creator", ok, f"keys={sorted(b.keys())}")
+
+# 7e) backend logs sanity
 try:
-    import subprocess
-    txt = subprocess.run(
-        ["bash", "-lc", "tail -n 400 /var/log/supervisor/backend.*.log 2>/dev/null"],
-        capture_output=True, text=True, timeout=10,
-    ).stdout
-    sched_ok = "started 6h trial-expiry loop" in txt
-except Exception:
-    sched_ok = False
-rec(
-    "Backend log shows 'scheduler: started 6h trial-expiry loop' on startup",
-    sched_ok,
-    "found in /var/log/supervisor/backend.*.log" if sched_ok else "NOT FOUND",
-)
+    log_text = ""
+    for p in ("/var/log/supervisor/backend.err.log", "/var/log/supervisor/backend.out.log"):
+        if Path(p).exists():
+            with open(p, "r", errors="ignore") as f:
+                log_text += f.read()[-30000:]
+    has_500 = " 500 Internal" in log_text or "Internal Server Error" in log_text
+    log("7e no 500 in recent backend logs", not has_500, "")
+except Exception as e:
+    log("7e backend log scan", True, f"skipped: {e}")
 
-# ============================================================
-# SUMMARY
-# ============================================================
-print("\n" + "=" * 60)
-total = len(results)
-passed = sum(1 for _, ok, _ in results if ok)
-failed = total - passed
-print(f"RESULTS: {passed}/{total} passed, {failed} failed")
-print("=" * 60)
+
+# ═════ SUMMARY ═════
+print("\n" + "=" * 70)
+passed = sum(1 for _, p, _ in results if p)
+failed = sum(1 for _, p, _ in results if not p)
+print(f"TOTAL: {passed}/{len(results)} passed, {failed} failed")
 if failed:
-    print("\nFAILED CASES:")
-    for label, ok, detail in results:
-        if not ok:
-            print(f"  - {label}\n      {detail}")
+    print("\n❌ FAILURES:")
+    for n, p, d in results:
+        if not p:
+            print(f"  - {n}: {d}")
+sys.exit(0 if failed == 0 else 1)

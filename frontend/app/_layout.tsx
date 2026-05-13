@@ -39,15 +39,19 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading || onboarded === null) return;
     const first = (segments[0] as string) || '';
-    // First-run users see Onboarding before login.
-    // Skip onboarding if already on it OR already on a public route AND user has been here.
-    if (!onboarded && !user && first !== 'onboarding' && first !== 'login') {
-      router.replace('/onboarding' as any);
+    // Public routes (pricing, login, onboarding) are always reachable — never
+    // force-redirect first-time visitors away from these.
+    if (PUBLIC_ROUTES.has(first)) {
+      // But if a logged-in user lands on /login, push them to home.
+      if (user && first === 'login') {
+        router.replace('/');
+      }
       return;
     }
-    // Guest-friendly landing — home is default. /login redirect for logged-in users.
-    if (user && first === 'login') {
-      router.replace('/');
+    // First-run users see Onboarding before login.
+    if (!onboarded && !user) {
+      router.replace('/onboarding' as any);
+      return;
     }
   }, [user, mode, segments, loading, onboarded]);
 

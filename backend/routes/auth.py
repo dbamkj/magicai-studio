@@ -10,6 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from core.config import MONGO_URL, DB_NAME, ADMIN_EMAIL, ENV, IS_BETA, IS_DEV
 from core.auth import hash_password, verify_password, create_token, get_current_user
 from core.pricing import plan_by_id, PLANS, SIGNUP_DEFAULT_TIER, trial_expiry_payload
+from core.audit import log_audit
 
 _client = AsyncIOMotorClient(MONGO_URL)
 db = _client[DB_NAME]
@@ -32,7 +33,7 @@ class LoginRequest(BaseModel):
 
 
 @router.post('/register')
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, request: Request):
     email = (req.email or '').strip().lower()
     if not email or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
         raise HTTPException(status_code=400, detail='Invalid email')
@@ -72,14 +73,18 @@ async def register(req: RegisterRequest):
     for k in ('trial_expires_at', 'trial_started_at'):
         if k in user and hasattr(user[k], 'isoformat'):
             user[k] = user[k].isoformat()
+    # Session 36 — Audit: register event
+    await log_audit('auth.register', user_id=user['id'],
+                    meta={'tier': chosen, 'provider': 'email'}, request=request)
     return {'token': token, 'user': user, 'env': ENV}
 
 
 @router.post('/login')
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
     email = (req.email or '').strip().lower()
     u = await db.users.find_one({'email': email})
     if not u or not verify_password(req.password, u.get('password_hash', '')):
+        await log_audit('auth.login_failed', meta={'email': email}, request=request)
         raise HTTPException(status_code=401, detail='Invalid email or password')
     # Legacy/DEV DB safety: older docs may miss `id`. Auto-heal.
     if not u.get('id'):
@@ -92,6 +97,8 @@ async def login(req: LoginRequest):
     token = create_token(u['id'], u['email'])
     u.pop('password_hash', None)
     u.pop('_id', None)
+    await log_audit('auth.login', user_id=u['id'],
+                    meta={'tier': u.get('subscription_tier')}, request=request)
     return {'token': token, 'user': u, 'env': ENV}
 
 

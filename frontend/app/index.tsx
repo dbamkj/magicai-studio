@@ -1284,11 +1284,18 @@ export default function Index() {
                 </View>
 
                 <View style={s.profileActions}>
-                  <TouchableOpacity style={s.actionBtn} onPress={() => { closeProfile(); router.push('/subscription'); }} activeOpacity={0.7}>
+                  <TouchableOpacity style={s.actionBtn} onPress={() => { closeProfile(); router.push('/pricing' as any); }} activeOpacity={0.7}>
                     <Ionicons name="pricetags-outline" size={20} color="#FBBF24" />
                     <Text style={s.actionBtnText}>Plans & Pricing</Text>
                     <Ionicons name="chevron-forward" size={18} color="#475569" />
                   </TouchableOpacity>
+                  {user && (
+                    <TouchableOpacity style={s.actionBtn} onPress={() => { closeProfile(); router.push('/subscription'); }} activeOpacity={0.7}>
+                      <Ionicons name="card-outline" size={20} color="#7afcff" />
+                      <Text style={s.actionBtnText}>My Subscription</Text>
+                      <Ionicons name="chevron-forward" size={18} color="#475569" />
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity style={s.actionBtn} onPress={() => { closeProfile(); router.push('/projects'); }} activeOpacity={0.7}>
                     <Ionicons name="folder-outline" size={20} color="#60A5FA" />
                     <Text style={s.actionBtnText}>My Projects</Text>
@@ -1307,6 +1314,13 @@ export default function Index() {
                     <Text style={s.actionBtnText}>Share App</Text>
                     <Ionicons name="chevron-forward" size={18} color="#475569" />
                   </TouchableOpacity>
+                  {user && (
+                    <TouchableOpacity style={s.actionBtn} onPress={() => { closeProfile(); router.push('/privacy' as any); }} activeOpacity={0.7}>
+                      <Ionicons name="shield-half-outline" size={20} color="#7afcff" />
+                      <Text style={s.actionBtnText}>Privacy & My Data</Text>
+                      <Ionicons name="chevron-forward" size={18} color="#475569" />
+                    </TouchableOpacity>
+                  )}
                   {user && (
                     <TouchableOpacity testID="logout-btn" style={[s.actionBtn, s.logoutAction]} onPress={handleLogout} activeOpacity={0.7}>
                       <Ionicons name="log-out-outline" size={20} color="#EF4444" />

@@ -150,16 +150,16 @@ async def create_talking_avatar(
         log.warning("talking: ffprobe failed on %s: %s", img_abs, _probe_err)
 
     # Procedural cartoon lipsync runs entirely locally (OpenCV + ffmpeg)
-    # with no MagicHour cost, so it shouldn't trigger the lip_sync
-    # feature gate (which requires Starter plan +). The cartoon-solo
-    # flow on free tier MUST be able to render — that's literally the
-    # main funnel. Premium upsell still happens via the Cinematic
-    # preset paywall + watermark + 480p cap.
+    # with no MagicHour cost, so it shouldn't trigger any paywall.
+    # Non-procedural ("real") talking-avatar uses MagicHour AI lipsync —
+    # this is the premium Talking Avatar feature gated to Creator+.
+    # (Session 35 — was 'lip_sync' which let Basic users in; now properly
+    # gates to Creator-only.)
     is_procedural = bool(getattr(req, 'use_procedural_lipsync', False))
     user, cost = await preflight_and_reserve(
         request,
         job_type='lipsync',
-        feature=None if is_procedural else 'lip_sync',
+        feature=None if is_procedural else 'talking_avatar',
     )
 
     # Phase-1 — Cinematic preset resolution. If client sent preset_id,

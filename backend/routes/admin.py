@@ -339,6 +339,25 @@ async def delete_feature_flag(key: str, request: Request):
     return {'ok': True, 'deleted': r.deleted_count}
 
 
+@router.get('/audit-logs')
+async def admin_audit_logs(
+    request: Request,
+    user_id: str = None,
+    action: str = None,
+    limit: int = 200,
+):
+    """View audit-log entries. Admin-only. Session 36 — DPDPA Sprint 2."""
+    await require_admin(request)
+    q: dict = {}
+    if user_id:
+        q['user_id'] = user_id
+    if action:
+        q['action'] = action
+    limit = max(1, min(int(limit or 200), 2000))
+    rows = await db.audit_logs.find(q, {'_id': 0}).sort('timestamp', -1).to_list(length=limit)
+    return {'logs': rows, 'count': len(rows)}
+
+
 @router.post('/plans/{plan_id}/toggle-visibility')
 async def toggle_plan_visibility(plan_id: str, req: PlanVisibilityToggle, request: Request):
     """Override `is_visible_in_pricing_page` for a plan at runtime.
