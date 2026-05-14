@@ -220,6 +220,218 @@ def raise_if_blocked(res: ModerationResult, *, status_code: int = 400) -> None:
 
 
 # =====================================================================
+# 5. PERSISTENCE + STRIKES (Sprint 3 v2 — Session 37)
+# =====================================================================
+# Every blocked decision is persisted to db.moderation_records so:
+#   • admin can audit + override decisions
+#   • repeat-offender strike system can count violations
+#   • compliance teams can produce reports
+#
+# Strike thresholds (tunable via env):
+#   STRIKE_BAN_THRESHOLD (default 3)  — auto-ban after N strikes
+#   STRIKE_DECAY_DAYS (default 30)    — strikes older than N days don't count
+#
+
+from datetime import datetime, timezone
+
+STRIKE_BAN_THRESHOLD = int(os.environ.get("STRIKE_BAN_THRESHOLD", "3"))
+STRIKE_DECAY_DAYS = int(os.environ.get("STRIKE_DECAY_DAYS", "30"))
+
+
+def _severity_for(categories: list[str]) -> int:
+    """Return strike severity 1-3 based on category.
+
+    1 = mild (profanity), 2 = standard (hate, sexual, violence), 3 = severe
+        (CSAM, terrorism, real-person deepfake).
+    """
+    if not categories:
+        return 1
+    cat = (categories[0] or "").lower()
+    if cat in ("csam", "minors_sexual", "child_sexual", "terrorism", "real_person_deepfake"):
+        return 3
+    if cat in ("hate", "sexual", "violence", "self_harm", "graphic_violence", "nudity"):
+        return 2
+    return 1
+
+
+async def record_moderation_decision(
+    res: ModerationResult,
+    *,
+    user_id: Optional[str],
+    source: str,
+    content_preview: str = "",
+    raw_meta: Optional[dict] = None,
+) -> Optional[str]:
+    """Persist a moderation decision to db.moderation_records.
+
+    Only persists BLOCKED decisions by default (allowed ones would balloon
+    the collection). Returns the inserted record_id or None.
+    """
+    if res is None or res.allowed:
+        return None
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from core.config import MONGO_URL, DB_NAME, ENV
+        import uuid
+        rec_id = str(uuid.uuid4())
+        doc = {
+            "id": rec_id,
+            "user_id": user_id,
+            "source": source,                  # e.g. 'wizard.idea', 'avatar.upload'
+            "kind": "text" if "_frame" not in source else "video_frame",
+            "content_preview": (content_preview or "")[:280],
+            "categories": res.categories,
+            "confidence": res.confidence,
+            "reason": res.reason,
+            "detail": res.detail,
+            "severity": _severity_for(res.categories),
+            "status": "blocked",              # 'blocked' | 'overridden_allow' | 'confirmed_block'
+            "admin_note": "",
+            "reviewed_by": None,
+            "reviewed_at": None,
+            "env": ENV,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        client = AsyncIOMotorClient(MONGO_URL)
+        await client[DB_NAME].moderation_records.insert_one(doc)
+        return rec_id
+    except Exception as e:
+        log.warning("record_moderation_decision failed: %s", e)
+        return None
+
+
+async def apply_strike(
+    user_id: Optional[str],
+    *,
+    severity: int = 1,
+    reason: str = "",
+    record_id: Optional[str] = None,
+) -> dict:
+    """Increment a user's strike count. Auto-bans at STRIKE_BAN_THRESHOLD.
+
+    Returns:
+        {strike_count, banned, ban_reason}
+    """
+    if not user_id:
+        return {"strike_count": 0, "banned": False, "ban_reason": ""}
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from core.config import MONGO_URL, DB_NAME
+        client = AsyncIOMotorClient(MONGO_URL)
+        db = client[DB_NAME]
+
+        now = datetime.now(timezone.utc).isoformat()
+        # Decay-aware count: only strikes within last STRIKE_DECAY_DAYS count.
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=STRIKE_DECAY_DAYS)).isoformat()
+
+        u = await db.users.find_one({"id": user_id}, {"strikes": 1, "is_banned": 1, "is_admin": 1})
+        if not u:
+            return {"strike_count": 0, "banned": False, "ban_reason": ""}
+        if u.get("is_admin"):
+            # never strike admins
+            return {"strike_count": 0, "banned": False, "ban_reason": ""}
+
+        strikes = u.get("strikes") or []
+        # Drop old strikes
+        strikes = [s for s in strikes if (s.get("created_at") or "") >= cutoff]
+        strikes.append({
+            "severity": int(max(1, min(3, severity))),
+            "reason": (reason or "")[:140],
+            "record_id": record_id,
+            "created_at": now,
+        })
+
+        # Severity-weighted score: 1-strike-of-severity-3 = 3 points
+        score = sum(int(s.get("severity") or 1) for s in strikes)
+        banned = score >= STRIKE_BAN_THRESHOLD
+
+        update = {
+            "strikes": strikes,
+            "strike_count": len(strikes),
+            "strike_score": score,
+            "last_strike_at": now,
+        }
+        if banned:
+            update.update({
+                "is_banned": True,
+                "banned_at": now,
+                "ban_reason": f"Automatic ban — strike score {score} ≥ {STRIKE_BAN_THRESHOLD}. Last: {reason[:80]}",
+            })
+
+        await db.users.update_one({"id": user_id}, {"$set": update})
+
+        # Audit
+        try:
+            from core.audit import log_audit
+            await log_audit(
+                "moderation.strike" if not banned else "moderation.banned",
+                user_id=user_id,
+                meta={
+                    "severity": severity,
+                    "reason": reason,
+                    "record_id": record_id,
+                    "strike_count": len(strikes),
+                    "strike_score": score,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "strike_count": len(strikes),
+            "strike_score": score,
+            "banned": banned,
+            "ban_reason": update.get("ban_reason", ""),
+        }
+    except Exception as e:
+        log.warning("apply_strike failed: %s", e)
+        return {"strike_count": 0, "banned": False, "ban_reason": ""}
+
+
+async def moderate_and_enforce(
+    text: Optional[str],
+    *,
+    user_id: Optional[str] = None,
+    request=None,
+    source: str,
+) -> ModerationResult:
+    """One-call helper: moderate_text → persist if blocked → strike user → raise.
+
+    Pass either `user_id` (if you already have it) OR `request` (we'll
+    decode the JWT from the Authorization header).
+
+        from core.moderation import moderate_and_enforce
+        await moderate_and_enforce(req.idea, request=request, source='wizard.idea')
+    """
+    # Resolve user_id from request JWT if not explicitly provided
+    if not user_id and request is not None:
+        try:
+            from core.auth import decode_token
+            auth_header = request.headers.get('authorization') or request.headers.get('Authorization', '')
+            if auth_header.lower().startswith('bearer '):
+                tok = auth_header.split(' ', 1)[1].strip()
+                data = decode_token(tok)
+                if data and data.get('sub'):
+                    user_id = data['sub']
+        except Exception:
+            pass
+
+    res = await moderate_text(text, source=source)
+    if res.allowed:
+        return res
+    rec_id = await record_moderation_decision(
+        res, user_id=user_id, source=source,
+        content_preview=(text or "")[:280],
+    )
+    sev = _severity_for(res.categories)
+    if user_id:
+        await apply_strike(user_id, severity=sev, reason=res.reason, record_id=rec_id)
+    raise_if_blocked(res)
+    return res  # unreachable, but keeps type-checkers happy
+
+
+# =====================================================================
 # 4. LLM HELPERS (use Emergent LLM key)
 # =====================================================================
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()

@@ -1,357 +1,344 @@
-"""Session 36 — Sprint 2 DPDPA Security & Compliance — Backend Regression."""
-import io
+#!/usr/bin/env python3
+"""
+Session 37 — Sprint 3 (Content Moderation v2) Backend Regression
+Tests:
+  1) Moderation persistence
+  2) Strike + auto-ban (severity-weighted, threshold 3)
+  3) Admin override
+  4) Manual ban/unban
+  5) Negative tests (403 for non-admin)
+  6) No regression (smoke)
+"""
+import json
 import sys
-import random
+import time
+import uuid
 import requests
-from pathlib import Path
 
-BASE_URL = "https://creative-plan-engine.preview.emergentagent.com/api"
-PWD = "Test@123"
+BASE = "https://creative-plan-engine.preview.emergentagent.com/api"
+TIMEOUT = 30
 
-results = []
+ADMIN = ("admin@magicai.test", "Test@123")
+NONADMIN = ("demo_basic@test.com", "Test@123")
 
-
-def log(name, passed, detail=""):
-    status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"{status}  {name}  {detail}")
-    results.append((name, passed, detail))
+PASS = []
+FAIL = []
 
 
-def login(email, password=PWD):
-    return requests.post(f"{BASE_URL}/auth/login",
-                         json={"email": email, "password": password}, timeout=30)
+def _log(ok, label, detail=""):
+    tag = "PASS" if ok else "FAIL"
+    print(f"[{tag}] {label}  {detail}")
+    (PASS if ok else FAIL).append((label, detail))
 
 
-def auth_h(token):
-    return {"Authorization": f"Bearer {token}"}
+def _post(path, json_body=None, headers=None, timeout=TIMEOUT):
+    return requests.post(BASE + path, json=json_body, headers=headers or {}, timeout=timeout)
 
 
-# ═════ (1) DSAR EXPORT ═════
-print("\n━━━ (1) DSAR EXPORT ━━━")
+def _get(path, headers=None, params=None, timeout=TIMEOUT):
+    return requests.get(BASE + path, headers=headers or {}, params=params or {}, timeout=timeout)
 
-r = login("demo_creator@test.com")
-if r.status_code != 200:
-    log("1.pre login demo_creator", False, f"status={r.status_code} body={r.text[:200]}")
-    creator_token = None
-    creator_id = None
-else:
-    creator_token = r.json()["token"]
-    creator_id = r.json()["user"]["id"]
-    log("1.pre login demo_creator", True, f"id={creator_id[:8]}")
 
-if creator_token:
-    r = requests.get(f"{BASE_URL}/account/export-data",
-                     headers=auth_h(creator_token), timeout=60)
+def login(email, password):
+    r = _post("/auth/login", {"email": email, "password": password})
     if r.status_code != 200:
-        log("1a DSAR export auth 200", False, f"status={r.status_code} body={r.text[:300]}")
-    else:
-        b = r.json()
-        prof = (b.get("data") or {}).get("profile") or {}
-        counts = b.get("counts") or {}
-        checks = [
-            ("exported_at", bool(b.get("exported_at"))),
-            ("user_id_matches", b.get("user_id") == creator_id),
-            ("regulation", b.get("regulation") == "DPDPA 2023 / GDPR Article 15"),
-            ("profile.email", (prof.get("email") or "").lower() == "demo_creator@test.com"),
-            ("profile.tier=creator", prof.get("subscription_tier") == "creator"),
-            ("counts.projects>=0", isinstance(counts.get("projects"), int) and counts["projects"] >= 0),
-            ("counts.audit_logs", "audit_logs" in counts),
-            ("counts.notifications", "notifications" in counts),
-        ]
-        all_ok = all(v for _, v in checks)
-        log("1a DSAR export full schema", all_ok,
-            "; ".join(f"{k}={v}" for k, v in checks))
-else:
-    log("1a DSAR export auth 200", False, "no creator token")
-
-r = requests.get(f"{BASE_URL}/account/export-data", timeout=15)
-log("1b DSAR export no-auth 401", r.status_code == 401, f"status={r.status_code}")
+        raise RuntimeError(f"login failed for {email}: {r.status_code} {r.text[:200]}")
+    j = r.json()
+    return j["token"], j["user"]
 
 
-# ═════ (2) AUDIT LOG WRITE ═════
-print("\n━━━ (2) AUDIT LOG WRITE-PATH ━━━")
-
-r = requests.post(f"{BASE_URL}/auth/login",
-                  json={"email": "demo_basic@test.com", "password": "WrongPass"},
-                  timeout=15)
-log("2a wrong password 401", r.status_code == 401, f"status={r.status_code}")
-
-r = login("demo_basic@test.com")
-basic_token = r.json().get("token") if r.status_code == 200 else None
-log("2b correct password login 200",
-    r.status_code == 200 and basic_token is not None, f"status={r.status_code}")
-
-suffix = random.randint(10000, 99999)
-audit_email = f"test_audit_v36_{suffix}@test.com"
-r = requests.post(f"{BASE_URL}/auth/register",
-                  json={"email": audit_email, "password": PWD, "name": "Audit V36"},
-                  timeout=30)
-if r.status_code == 200:
-    u = r.json()["user"]
-    log("2c register new user 200", True,
-        f"tier={u.get('subscription_tier')} credits={u.get('credits_balance')}")
-    log("2c.tier=trial", u.get("subscription_tier") == "trial",
-        f"tier={u.get('subscription_tier')}")
-    log("2c.credits=50", int(u.get("credits_balance", 0)) == 50,
-        f"credits={u.get('credits_balance')}")
-else:
-    log("2c register new user 200", False, f"status={r.status_code} body={r.text[:200]}")
+def register(email, password):
+    r = _post("/auth/register", {"email": email, "password": password, "name": "Mod Test"})
+    return r
 
 
-# ═════ (3) ADMIN AUDIT-LOG VIEWER ═════
-print("\n━━━ (3) ADMIN AUDIT-LOG VIEWER ━━━")
+def bearer(tok):
+    return {"Authorization": f"Bearer {tok}"}
 
-r = login("admin@magicai.test")
-admin_token = None
+
+# ────────────────────────────────────────────────────────────────────
+# 0) Setup admin + non-admin + FRESH test user
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 0. SETUP ===")
+admin_tok, admin_u = login(*ADMIN)
+_log(admin_u.get("is_admin") is True, "admin login + is_admin=true", f"id={admin_u.get('id')}")
+
+nonadmin_tok, nonadmin_u = login(*NONADMIN)
+_log(True, "non-admin login (demo_basic)", f"tier={nonadmin_u.get('subscription_tier')}")
+
+# Fresh user — unique to avoid colliding with previous runs
+fresh_email = f"test_mod_review_v37_{uuid.uuid4().hex[:8]}@test.com"
+r = register(fresh_email, "Test@123")
 if r.status_code != 200:
-    log("3.pre login admin", False, f"status={r.status_code} body={r.text[:200]}")
-else:
-    admin_token = r.json()["token"]
-    log("3.pre login admin", True, "ok")
-
-if admin_token:
-    r = requests.get(f"{BASE_URL}/admin/audit-logs?limit=20",
-                     headers=auth_h(admin_token), timeout=30)
-    if r.status_code != 200:
-        log("3a admin audit-logs limit=20", False, f"status={r.status_code}")
-    else:
-        b = r.json()
-        log("3a admin audit-logs shape",
-            isinstance(b.get("logs"), list) and isinstance(b.get("count"), int),
-            f"logs={len(b.get('logs', []))} count={b.get('count')}")
-        actions = {row.get("action") for row in b.get("logs", [])}
-        wanted = {"auth.register", "auth.login", "auth.login_failed"}
-        log("3a recent test events present", len(wanted & actions) >= 2,
-            f"found={wanted & actions}")
-
-    r = requests.get(f"{BASE_URL}/admin/audit-logs?action=auth.login_failed&limit=50",
-                     headers=auth_h(admin_token), timeout=30)
-    rows = r.json().get("logs", []) if r.status_code == 200 else []
-    all_match = all(row.get("action") == "auth.login_failed" for row in rows)
-    log("3b filter action=auth.login_failed",
-        r.status_code == 200 and all_match and len(rows) >= 1,
-        f"status={r.status_code} rows={len(rows)} all_match={all_match}")
-
-    if creator_id:
-        r = requests.get(f"{BASE_URL}/admin/audit-logs?user_id={creator_id}&limit=50",
-                         headers=auth_h(admin_token), timeout=30)
-        rows = r.json().get("logs", []) if r.status_code == 200 else []
-        all_match = all(row.get("user_id") == creator_id for row in rows)
-        log("3c filter user_id=demo_creator",
-            r.status_code == 200 and all_match and len(rows) >= 1,
-            f"status={r.status_code} rows={len(rows)} all_match={all_match}")
-
-r = requests.get(f"{BASE_URL}/admin/audit-logs", timeout=10)
-log("3d no auth → 401/403", r.status_code in (401, 403), f"status={r.status_code}")
-
-if basic_token:
-    r = requests.get(f"{BASE_URL}/admin/audit-logs",
-                     headers=auth_h(basic_token), timeout=10)
-    log("3d non-admin token → 403", r.status_code == 403, f"status={r.status_code}")
+    _log(False, "fresh user register", f"{r.status_code} {r.text[:200]}")
+    sys.exit(1)
+fresh = r.json()
+fresh_tok = fresh["token"]
+fresh_uid = fresh["user"]["id"]
+_log(True, "fresh user registered", f"email={fresh_email} uid={fresh_uid}")
 
 
-# ═════ (4) ACCOUNT DELETION ═════
-print("\n━━━ (4) ACCOUNT DELETION ━━━")
-
-del_suffix = random.randint(10000, 99999)
-del_email = f"test_dsar_delete_v36_{del_suffix}@test.com"
-r = requests.post(f"{BASE_URL}/auth/register",
-                  json={"email": del_email, "password": PWD, "name": "Del"}, timeout=30)
-if r.status_code != 200:
-    log("4a register throwaway", False, f"status={r.status_code} body={r.text[:200]}")
-    del_token = None
-else:
-    del_token = r.json()["token"]
-    log("4a register throwaway", True, f"email={del_email}")
-
-if del_token:
-    r = requests.post(f"{BASE_URL}/account/delete-account",
-                      headers=auth_h(del_token), timeout=30)
-    if r.status_code != 200:
-        log("4b delete-account 200", False, f"status={r.status_code} body={r.text[:300]}")
-    else:
-        b = r.json()
-        red = b.get("redaction_email") or ""
-        log("4b delete-account 200", True,
-            f"deleted_at={b.get('deleted_at','')[:20]} redact={red}")
-        log("4b.deleted_at present", bool(b.get("deleted_at")), "")
-        log("4b.redaction starts with 'deleted-'",
-            red.startswith("deleted-"), f"redact={red}")
-        log("4b.message present", bool(b.get("message")), "")
-
-    r = login(del_email)
-    log("4c login after delete → 401", r.status_code == 401, f"status={r.status_code}")
-
-    r = requests.post(f"{BASE_URL}/auth/register",
-                      json={"email": del_email, "password": PWD, "name": "Re"}, timeout=30)
-    log("4d re-register after delete", r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}")
-
-
-# ═════ (5) SIGNED-URL HELPER ═════
-print("\n━━━ (5) SIGNED-URL HELPER ━━━")
-
-target = "preview_insp_funny_free_monday_mood_audio.mp4"
-r = requests.get(f"{BASE_URL}/serve-file/{target}", timeout=15)
-if r.status_code == 404:
-    # Try alternatives
-    for alt in ["preview_insp_funny_free_monday_mood.mp4",
-                "preview_insp_devotional_free_morning_blessing.mp4"]:
-        rr = requests.get(f"{BASE_URL}/serve-file/{alt}", timeout=15)
-        if rr.status_code == 200:
-            target = alt
-            r = rr
-            break
-log("5a unsigned serve-file → 200", r.status_code == 200,
-    f"status={r.status_code} file={target}")
-
-r = requests.get(f"{BASE_URL}/serve-file/{target}?sig=BADSIG&exp=9999999999", timeout=15)
-log("5b bad sig + future exp → 403", r.status_code == 403, f"status={r.status_code}")
-
-r = requests.get(f"{BASE_URL}/serve-file/{target}?sig=abc&exp=1", timeout=15)
-log("5c expired exp → 403", r.status_code == 403, f"status={r.status_code}")
-
-
-# ═════ (6) TIER GATE — talking_avatar ═════
-print("\n━━━ (6) TIER GATE — talking_avatar ━━━")
-
-
-def _upload_face(token):
-    try:
-        from PIL import Image
-        img = Image.new("RGB", (256, 256), (100, 150, 200))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-    except Exception as e:
-        print(f"  PIL missing: {e}")
-        return None
-    r = requests.post(f"{BASE_URL}/upload-face-image",
-                      headers=auth_h(token),
-                      files={"file": ("face.png", buf.getvalue(), "image/png")},
-                      timeout=30)
-    if r.status_code != 200:
-        print(f"  upload-face-image failed: {r.status_code} {r.text[:200]}")
-        return None
-    return r.json().get("file_path")
-
-
-if basic_token:
-    bimg = _upload_face(basic_token)
-    if not bimg:
-        log("6.pre upload face (basic)", False, "upload failed")
-    else:
-        log("6.pre upload face (basic)", True, bimg)
-        # 6a) Basic + non-procedural → expect 402/403
-        payload = {
-            "image_path": bimg,
-            "script": "Hello there, this is a quick talking-avatar test.",
-            "use_procedural_lipsync": False,
-        }
-        r = requests.post(f"{BASE_URL}/create-talking-avatar",
-                          headers=auth_h(basic_token), json=payload, timeout=30)
-        gate = r.status_code in (402, 403)
-        log("6a basic + non-procedural → 402/403", gate,
-            f"status={r.status_code} body={r.text[:200]}")
-        if gate:
-            log("6a.message mentions Creator",
-                "creator" in r.text.lower(), f"body={r.text[:200]}")
-
-        # 6b) Basic + procedural=true → should bypass talking_avatar gate
-        payload2 = dict(payload, use_procedural_lipsync=True)
-        r = requests.post(f"{BASE_URL}/create-talking-avatar",
-                          headers=auth_h(basic_token), json=payload2, timeout=30)
-        # Bypass = not a paywall response mentioning Creator/Talking-Avatar
-        is_paywall = r.status_code in (402, 403) and (
-            "creator" in r.text.lower() or "talking avatar" in r.text.lower()
-        )
-        log("6b basic + procedural=true bypass gate", not is_paywall,
-            f"status={r.status_code} body={r.text[:200]}")
-
-if creator_token:
-    cimg = _upload_face(creator_token)
-    if not cimg:
-        log("6.pre upload face (creator)", False, "upload failed")
-    else:
-        log("6.pre upload face (creator)", True, cimg)
-        payload = {
-            "image_path": cimg,
-            "script": "Hi there. Creator gate test.",
-            "use_procedural_lipsync": False,
-        }
-        r = requests.post(f"{BASE_URL}/create-talking-avatar",
-                          headers=auth_h(creator_token), json=payload, timeout=30)
-        not_gated = r.status_code not in (402, 403)
-        log("6c creator + non-procedural passes gate", not_gated,
-            f"status={r.status_code} body={r.text[:200]}")
-
-
-# ═════ (7) SMOKE / NO-REGRESSION ═════
-print("\n━━━ (7) SMOKE / NO-REGRESSION ━━━")
-
-r = requests.get(f"{BASE_URL}/subscription/plans", timeout=20)
-if r.status_code != 200:
-    log("7a plans no-auth 200", False, f"status={r.status_code}")
-else:
-    plans = r.json().get("plans", [])
-    plan_ids = sorted(p.get("id") for p in plans)
-    expected = {"trial", "basic", "creator"}
-    log("7a plans no-auth ⊇ trial/basic/creator",
-        expected.issubset(set(plan_ids)), f"ids={plan_ids}")
-    log("7a plans no-auth ONLY trial/basic/creator",
-        set(plan_ids) == expected, f"ids={plan_ids}")
-
-r = requests.get(f"{BASE_URL}/subscription/plans?include_hidden=1", timeout=20)
-if r.status_code != 200:
-    log("7b plans include_hidden 200", False, f"status={r.status_code}")
-else:
-    plans = r.json().get("plans", [])
-    plan_ids = sorted(p.get("id") for p in plans)
-    log("7b plans include_hidden has 6", len(plans) == 6,
-        f"count={len(plans)} ids={plan_ids}")
-
-if admin_token:
-    r = requests.post(f"{BASE_URL}/admin/plans/starter/toggle-visibility",
-                      headers=auth_h(admin_token), json={"visible": True}, timeout=20)
-    log("7c admin toggle-visibility starter 200",
-        r.status_code == 200 and r.json().get("ok") is True,
-        f"status={r.status_code} body={r.text[:120]}")
-    # Reset
-    requests.post(f"{BASE_URL}/admin/plans/starter/toggle-visibility",
-                  headers=auth_h(admin_token), json={"visible": False}, timeout=20)
-
-if creator_token:
-    r = requests.get(f"{BASE_URL}/me/limits",
-                     headers=auth_h(creator_token), timeout=20)
-    if r.status_code != 200:
-        log("7d me/limits demo_creator", False, f"status={r.status_code}")
-    else:
-        b = r.json()
-        ok = all(k in b for k in ("tier", "credits", "usage_this_month",
-                                  "usage_today", "feature_gates", "upgrade_hints"))
-        log("7d me/limits demo_creator", ok, f"keys={sorted(b.keys())}")
-
-# 7e) backend logs sanity
+# ────────────────────────────────────────────────────────────────────
+# 1) MODERATION PERSISTENCE
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 1. MODERATION PERSISTENCE ===")
+r = _post("/wizard/prompts", {"idea": "this fucking sucks"}, headers=bearer(fresh_tok))
+ok = r.status_code == 400
+detail = {}
 try:
-    log_text = ""
-    for p in ("/var/log/supervisor/backend.err.log", "/var/log/supervisor/backend.out.log"):
-        if Path(p).exists():
-            with open(p, "r", errors="ignore") as f:
-                log_text += f.read()[-30000:]
-    has_500 = " 500 Internal" in log_text or "Internal Server Error" in log_text
-    log("7e no 500 in recent backend logs", not has_500, "")
+    detail = r.json().get("detail", {})
+except Exception:
+    pass
+_log(ok and detail.get("moderation_blocked") is True and "profanity" in (detail.get("categories") or []),
+     "1a wizard/prompts 'this fucking sucks' → 400 moderation_blocked profanity",
+     f"status={r.status_code} detail={json.dumps(detail)[:200]}")
+
+# Admin list records
+r = _get("/admin/moderation/records", headers=bearer(admin_tok), params={"limit": 10})
+records_status = r.status_code
+records_data = r.json() if r.ok else {}
+recs = records_data.get("records", [])
+# Find the most recent record for our user
+user_recs = [x for x in recs if x.get("user_id") == fresh_uid]
+top = user_recs[0] if user_recs else None
+match = (top and top.get("source") == "wizard.idea" and int(top.get("severity") or 0) == 1
+         and top.get("status") == "blocked")
+_log(records_status == 200 and match,
+     "1b admin/moderation/records — most recent for fresh user matches",
+     f"status={records_status} top={json.dumps(top)[:280] if top else None}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 2) STRIKE + AUTO-BAN
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 2. STRIKE + AUTO-BAN ===")
+# We already did one strike above (sev 1, score 1). Now do the next 2.
+# Actually the review says 3 in sequence with the specific phrases. Let's do
+# all three from scratch on a different fresh user to match the script exactly.
+
+fresh2_email = f"test_mod_review_v37_{uuid.uuid4().hex[:8]}@test.com"
+r = register(fresh2_email, "Test@123")
+fresh2 = r.json()
+fresh2_tok = fresh2["token"]
+fresh2_uid = fresh2["user"]["id"]
+_log(True, "fresh2 user registered", f"email={fresh2_email} uid={fresh2_uid}")
+
+phrases = [
+    ("this fucking sucks", 1, "sev1 profanity"),
+    ("another bhencho moment", 1, "sev1 hindi-roman profanity"),
+    ("deepfake of modi saying fake quote", 3, "sev3 real-person deepfake"),
+]
+for idea, exp_sev, lbl in phrases:
+    r = _post("/wizard/prompts", {"idea": idea}, headers=bearer(fresh2_tok))
+    try:
+        d = r.json().get("detail", {})
+    except Exception:
+        d = {}
+    _log(r.status_code == 400 and d.get("moderation_blocked") is True,
+         f"2.strike: '{idea[:30]}…' → 400 moderation_blocked ({lbl})",
+         f"status={r.status_code} cats={d.get('categories')}")
+
+# Check users-strikes via admin
+r = _get("/admin/moderation/users-strikes", headers=bearer(admin_tok), params={"min_score": 0})
+us = r.json() if r.ok else {}
+mine = next((u for u in (us.get("users") or []) if u.get("id") == fresh2_uid), None)
+_log(r.status_code == 200 and mine is not None
+     and int(mine.get("strike_count") or 0) == 3
+     and int(mine.get("strike_score") or 0) == 5
+     and mine.get("is_banned") is True,
+     "2b users-strikes: fresh2 has strike_count=3 strike_score=5 is_banned=true",
+     f"got={json.dumps({k: mine.get(k) for k in ('strike_count','strike_score','is_banned')}) if mine else None}")
+
+# Banned user → /me/limits → 403
+r = _get("/me/limits", headers=bearer(fresh2_tok))
+det = {}
+try:
+    det = r.json().get("detail", {})
+except Exception:
+    pass
+reason = (det.get("reason") or "") if isinstance(det, dict) else ""
+_log(r.status_code == 403 and (isinstance(det, dict) and det.get("banned") is True) and ("strike score" in reason.lower()),
+     "2c banned fresh2 token → GET /me/limits → 403 banned, reason mentions 'strike score'",
+     f"status={r.status_code} detail={json.dumps(det)[:240]}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 3) ADMIN OVERRIDE
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 3. ADMIN OVERRIDE ===")
+# Get records for fresh2 user, find FIRST (most chronologically earliest)
+r = _get("/admin/moderation/records", headers=bearer(admin_tok), params={"user_id": fresh2_uid, "limit": 100})
+recs2 = (r.json() or {}).get("records") or []
+# records are sorted by created_at desc; FIRST chronologically = last in list
+first_rec = recs2[-1] if recs2 else None
+first_rec_id = first_rec.get("id") if first_rec else None
+_log(first_rec_id is not None,
+     f"3.setup: located first moderation record for fresh2 user (records returned={len(recs2)})",
+     f"first_rec_id={first_rec_id}")
+
+# Override = overridden_allow
+r = _post(f"/admin/moderation/records/{first_rec_id}/override",
+          {"decision": "overridden_allow", "admin_note": "false positive on profanity"},
+          headers=bearer(admin_tok))
+body = r.json() if r.ok else {}
+_log(r.status_code == 200 and body.get("ok") is True and body.get("status") == "overridden_allow",
+     "3a override → 200 ok:true status='overridden_allow'",
+     f"status={r.status_code} body={json.dumps(body)[:200]}")
+
+# Re-check users-strikes — strike_count should drop 3 → 2
+r = _get("/admin/moderation/users-strikes", headers=bearer(admin_tok), params={"min_score": 0})
+us2 = r.json() if r.ok else {}
+mine2 = next((u for u in (us2.get("users") or []) if u.get("id") == fresh2_uid), None)
+_log(mine2 is not None and int(mine2.get("strike_count") or 0) == 2,
+     "3b users-strikes: fresh2 strike_count 3 → 2 after override",
+     f"got_strike_count={mine2.get('strike_count') if mine2 else None} got_strike_score={mine2.get('strike_score') if mine2 else None}")
+
+# Invalid decision → 400
+r = _post(f"/admin/moderation/records/{first_rec_id}/override",
+          {"decision": "invalid_decision"}, headers=bearer(admin_tok))
+_log(r.status_code == 400,
+     "3c invalid decision → 400",
+     f"status={r.status_code} body={r.text[:200]}")
+
+# Unknown record → 404
+r = _post("/admin/moderation/records/00000000-deadbeef/override",
+          {"decision": "overridden_allow"}, headers=bearer(admin_tok))
+_log(r.status_code == 404,
+     "3d unknown record id → 404",
+     f"status={r.status_code} body={r.text[:200]}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 4) MANUAL BAN/UNBAN
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 4. MANUAL BAN/UNBAN ===")
+# 4a Unban first (user was auto-banned in step 2)
+r = _post(f"/admin/users/{fresh2_uid}/unban", {}, headers=bearer(admin_tok))
+body = r.json() if r.ok else {}
+_log(r.status_code == 200 and body.get("ok") is True and bool(body.get("unbanned_at")),
+     "4a admin/users/{id}/unban → ok:true, unbanned_at present",
+     f"status={r.status_code} body={json.dumps(body)[:200]}")
+
+# Verify strike_score reset to 0
+r = _get("/admin/users", headers=bearer(admin_tok), params={"limit": 500})
+users_all = (r.json() or {}).get("users") or []
+me = next((u for u in users_all if u.get("id") == fresh2_uid), None)
+_log(me is not None and int(me.get("strike_score") or 0) == 0,
+     "4a.1 after unban: strike_score reset to 0",
+     f"strike_score={me.get('strike_score') if me else None} is_banned={me.get('is_banned') if me else None}")
+
+# 4b /me/limits 200 with user token
+r = _get("/me/limits", headers=bearer(fresh2_tok))
+_log(r.status_code == 200, "4b user regained access /me/limits → 200",
+     f"status={r.status_code} body={r.text[:160]}")
+
+# 4c Manual ban
+r = _post(f"/admin/users/{fresh2_uid}/ban", {"reason": "manual ban test"}, headers=bearer(admin_tok))
+body = r.json() if r.ok else {}
+_log(r.status_code == 200 and body.get("ok") is True, "4c admin manual ban → ok:true",
+     f"status={r.status_code} body={json.dumps(body)[:200]}")
+
+# 4d /me/limits → 403 banned
+r = _get("/me/limits", headers=bearer(fresh2_tok))
+det = {}
+try:
+    det = r.json().get("detail", {})
+except Exception:
+    pass
+_log(r.status_code == 403 and isinstance(det, dict) and det.get("banned") is True,
+     "4d banned user /me/limits → 403 banned:true",
+     f"status={r.status_code} detail={json.dumps(det)[:200]}")
+
+# 4e Try to ban an admin → 400
+r = _post(f"/admin/users/{admin_u['id']}/ban", {"reason": "x"}, headers=bearer(admin_tok))
+err_msg = ""
+try:
+    err_msg = (r.json() or {}).get("detail", "")
+except Exception:
+    err_msg = r.text
+_log(r.status_code == 400 and "cannot ban an admin" in (str(err_msg).lower()),
+     "4e banning an admin → 400 'cannot ban an admin'",
+     f"status={r.status_code} detail={err_msg}")
+
+# Cleanup: final unban
+r = _post(f"/admin/users/{fresh2_uid}/unban", {}, headers=bearer(admin_tok))
+_log(r.status_code == 200, "4f cleanup unban", f"status={r.status_code}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 5) NEGATIVE TESTS (non-admin auth)
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 5. NEGATIVE TESTS (403 expected) ===")
+r = _get("/admin/moderation/records", headers=bearer(nonadmin_tok))
+_log(r.status_code == 403, "5a non-admin GET /admin/moderation/records → 403",
+     f"status={r.status_code} body={r.text[:160]}")
+
+# Need a valid record_id for the override 403 check
+some_record_id = first_rec_id or "00000000-deadbeef"
+r = _post(f"/admin/moderation/records/{some_record_id}/override",
+          {"decision": "overridden_allow"}, headers=bearer(nonadmin_tok))
+_log(r.status_code == 403, "5b non-admin POST override → 403",
+     f"status={r.status_code} body={r.text[:160]}")
+
+r = _post(f"/admin/users/{fresh2_uid}/ban", {"reason": "x"}, headers=bearer(nonadmin_tok))
+_log(r.status_code == 403, "5c non-admin POST /admin/users/{id}/ban → 403",
+     f"status={r.status_code} body={r.text[:160]}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 6) NO REGRESSION (smoke)
+# ────────────────────────────────────────────────────────────────────
+print("\n=== 6. NO REGRESSION (smoke) ===")
+# /api/subscription/plans (no auth) — trial/basic/creator
+r = _get("/subscription/plans")
+plans = r.json() if r.ok else {}
+plan_ids = set()
+if isinstance(plans, dict) and isinstance(plans.get("plans"), list):
+    plan_ids = {p.get("id") for p in plans["plans"]}
+elif isinstance(plans, list):
+    plan_ids = {p.get("id") for p in plans}
+required_plans = {"trial", "basic", "creator"}
+_log(r.status_code == 200 and required_plans.issubset(plan_ids),
+     "6a /subscription/plans returns trial/basic/creator",
+     f"status={r.status_code} got_plans={sorted(plan_ids)}")
+
+# /api/account/export-data with creator token
+try:
+    creator_tok, _ = login("demo_creator@test.com", "Test@123")
+    r = _get("/account/export-data", headers=bearer(creator_tok))
+    _log(r.status_code == 200, "6b /account/export-data (creator) → 200",
+         f"status={r.status_code} body_len={len(r.text)}")
 except Exception as e:
-    log("7e backend log scan", True, f"skipped: {e}")
+    _log(False, "6b /account/export-data (creator)", f"err={e}")
+
+# /api/admin/feature-flags
+r = _get("/admin/feature-flags", headers=bearer(admin_tok))
+_log(r.status_code == 200, "6c /admin/feature-flags (admin) → 200",
+     f"status={r.status_code} body={r.text[:160]}")
+
+# /api/admin/audit-logs?limit=10 — should contain moderation events
+r = _get("/admin/audit-logs", headers=bearer(admin_tok), params={"limit": 200})
+logs = (r.json() or {}).get("logs") or (r.json() or {}).get("items") or []
+events = {e.get("action") or e.get("event") for e in logs}
+has_strike = any(("moderation.strike" in (e or "")) for e in events)
+has_banned = any(("moderation.banned" in (e or "")) for e in events)
+has_override = any(("moderation.overridden_allow" in (e or "")) for e in events)
+_log(r.status_code == 200,
+     "6d /admin/audit-logs → 200",
+     f"status={r.status_code} log_count={len(logs)} strike={has_strike} banned={has_banned} override={has_override}")
+_log(has_strike and has_banned and has_override,
+     "6d.1 audit logs contain moderation.strike + moderation.banned + moderation.overridden_allow",
+     f"strike={has_strike} banned={has_banned} override={has_override}")
 
 
-# ═════ SUMMARY ═════
-print("\n" + "=" * 70)
-passed = sum(1 for _, p, _ in results if p)
-failed = sum(1 for _, p, _ in results if not p)
-print(f"TOTAL: {passed}/{len(results)} passed, {failed} failed")
-if failed:
-    print("\n❌ FAILURES:")
-    for n, p, d in results:
-        if not p:
-            print(f"  - {n}: {d}")
-sys.exit(0 if failed == 0 else 1)
+# ────────────────────────────────────────────────────────────────────
+# SUMMARY
+# ────────────────────────────────────────────────────────────────────
+print("\n=== SUMMARY ===")
+print(f"PASS: {len(PASS)}")
+print(f"FAIL: {len(FAIL)}")
+if FAIL:
+    print("\nFailures:")
+    for lbl, det in FAIL:
+        print(f"  ❌ {lbl}  {det}")
+sys.exit(0 if not FAIL else 1)

@@ -469,7 +469,7 @@ async def _async_update_job(job_id: str, **patch):
 
 # ---------------- Endpoints ----------------
 @router.post('/prompts')
-async def post_prompts(req: PromptsRequest):
+async def post_prompts(req: PromptsRequest, request: Request):
     """Generate 3 structured prompt options from a user idea.
 
     Sprint 30e — `lang` (english|hindi|hinglish) is now plumbed through to
@@ -477,9 +477,9 @@ async def post_prompts(req: PromptsRequest):
     Without this, "Krishna bhajan" + Hindi UI selection still produced an
     English script (which then routed to an English voice — wrong).
     """
-    # Moderation gate (text)
-    from core.moderation import moderate_text, raise_if_blocked
-    raise_if_blocked(await moderate_text(req.idea, source='wizard.idea'))
+    # Moderation gate (text) — Session 37 Sprint 3: auto-strikes via moderate_and_enforce.
+    from core.moderation import moderate_and_enforce
+    await moderate_and_enforce(req.idea, request=request, source='wizard.idea')
     opts = await generate_3_options(req.idea, lang=req.lang or 'english')
     if not opts:
         raise HTTPException(status_code=502, detail='LLM did not return options. Try again.')

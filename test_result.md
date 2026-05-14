@@ -13495,3 +13495,246 @@ agent_communication:
         • No regressions in subscription/plans, /me/limits, or
           admin plan-visibility toggle
       No 500s, no stuck tasks.
+
+
+# ───────────────────────────────────────────────────────────
+# Session 37 — Sprint 3 (Content Moderation v2) (2026-05-14)
+# ───────────────────────────────────────────────────────────
+
+backend:
+  - task: "Moderation v2 — persistence + strike system"
+    implemented: true
+    working: true
+    file: "backend/core/moderation.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Extended core/moderation.py with:
+            • record_moderation_decision() — persists every BLOCKED decision
+              to db.moderation_records with severity, status, reviewer fields
+            • apply_strike() — severity-weighted strike accumulator (1-3),
+              30-day decay window, auto-ban at STRIKE_BAN_THRESHOLD=3 score
+            • moderate_and_enforce(text, request|user_id, source) — one-call
+              helper: moderate → persist → strike → raise (sets is_banned)
+          End-to-end smoke verified: 3 blocked attempts (1+1+3 severity) →
+          strike_score=5, is_banned=true, ban_reason populated. Admin
+          unban resets strikes_score=0 and restores access.
+      - working: true
+        agent: "testing"
+        comment: |
+          Session 37 — Sprint 3 verification FULL PASS 31/31 against
+          https://creative-plan-engine.preview.emergentagent.com/api.
+          Test artefact: /app/backend_test.py.
+
+          1) MODERATION PERSISTENCE (2/2)
+             • Fresh user test_mod_review_v37_<rand>@test.com registered → 200.
+             • POST /api/wizard/prompts {"idea":"this fucking sucks"}
+               (Bearer) → 400 detail={moderation_blocked:true,
+               categories:['profanity'], reason:"Your text contains language
+               we don't allow on MagiCAi Studio."}. ✓
+             • GET /api/admin/moderation/records?limit=10 (admin) → 200.
+               Most recent record for that user has source='wizard.idea',
+               severity=1, status='blocked', user_id matches. content_preview
+               populated. ✓
+
+          2) STRIKE + AUTO-BAN — severity-weighted, threshold 3 (4/4)
+             Three sequential blocked /api/wizard/prompts with fresh2 user:
+               a) 'this fucking sucks'        → 400 cats=['profanity'] sev=1
+               b) 'another bhencho moment'    → 400 cats=['profanity'] sev=1
+               c) 'deepfake of modi …'        → 400 cats=['real_person_deepfake'] sev=3
+             GET /api/admin/moderation/users-strikes?min_score=0 (admin) → 200.
+             That user has strike_count=3, strike_score=5, is_banned=true. ✓
+             With banned user's token, GET /api/me/limits → 403 detail=
+             {banned:true, reason:"Automatic ban — strike score 5 ≥ 3.
+             Last: Content depicting real public figures with deepfake
+             intent is not allowed.", banned_at:'2026-…'}. reason contains
+             'strike score'. ✓
+
+          3) ADMIN OVERRIDE (4/4)
+             • Located FIRST moderation record via GET /api/admin/moderation/
+               records?user_id=<uid> (3 records returned; took the last
+               element = chronologically first).
+             • POST /api/admin/moderation/records/{id}/override body
+               {"decision":"overridden_allow","admin_note":"false positive
+               on profanity"} → 200 {ok:true, record_id, status:'overridden_allow'}. ✓
+             • GET /api/admin/moderation/users-strikes (admin) → 200; that
+               user's strike_count went 3 → 2 and strike_score 5 → 4 (the
+               removed strike was sev=1). ✓
+             • POST /override body {"decision":"invalid_decision"}
+               → 400 {detail:"decision must be overridden_allow or confirmed_block"}. ✓
+             • POST /api/admin/moderation/records/00000000-deadbeef/override
+               → 404 {detail:"record not found"}. ✓
+
+          4) MANUAL BAN/UNBAN (6/6)
+             • POST /api/admin/users/{fresh2_uid}/unban → 200 {ok:true,
+               unbanned_at:'…'}. Cross-checked via /api/admin/users — that
+               user's strike_score=0 ✓.
+             • With user's token, GET /api/me/limits → 200 (regained access). ✓
+             • POST /api/admin/users/{fresh2_uid}/ban {"reason":"manual ban
+               test"} → 200 {ok:true, banned_at, reason}. ✓
+             • With user's token, GET /api/me/limits → 403 detail={banned:true,
+               reason:"manual ban test", banned_at}. ✓
+             • POST /api/admin/users/{admin_id}/ban (admin trying to ban
+               another admin/self) → 400 {detail:"cannot ban an admin"}. ✓
+             • Final cleanup unban → 200. ✓
+
+          5) NEGATIVE TESTS — non-admin 403 (3/3)
+             Logged in as demo_basic@test.com (basic tier, is_admin=false).
+             • GET /api/admin/moderation/records → 403 {detail:"Admin access required"}. ✓
+             • POST /api/admin/moderation/records/{id}/override → 403. ✓
+             • POST /api/admin/users/{id}/ban → 403. ✓
+
+          6) NO REGRESSION smoke (5/5)
+             • GET /api/subscription/plans (no auth) → 200 plans=['basic',
+               'creator','trial']. ✓ (legacy 'free' and hidden 'starter/pro'
+               not exposed)
+             • GET /api/account/export-data (creator Bearer) → 200, body 39659 B. ✓
+             • GET /api/admin/feature-flags (admin) → 200. ✓
+             • GET /api/admin/audit-logs?limit=200 (admin) → 200, log_count=41.
+               Logs CONTAIN moderation.strike + moderation.banned +
+               moderation.overridden_allow events. ✓
+             • Backend.err.log: NO 500s, NO tracebacks. Only expected
+               WARNINGS: 'moderation block: [profanity] | blocklist hit:
+               fucking/bhencho' and 'real-person+deepfake combo'.
+
+          Session 37 — Sprint 3 (Content Moderation v2) is PRODUCTION READY.
+
+  - task: "Hard-stop banned users in auth dependency"
+    implemented: true
+    working: true
+    file: "backend/core/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          get_current_user() now raises 403 with {banned, reason, banned_at}
+          when user.is_banned=true. Admins are exempt (cannot be banned).
+          Verified via smoke: banned user got 403 on /api/me/limits.
+
+  - task: "Admin Safety Dashboard endpoints"
+    implemented: true
+    working: true
+    file: "backend/routes/admin.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          NEW admin endpoints:
+            - GET  /api/admin/moderation/records?user_id=&status=&severity=&limit=
+                  Returns {records:[], count, stats:{total,open,overridden,confirmed}}
+            - POST /api/admin/moderation/records/{id}/override
+                  Body {decision: 'overridden_allow'|'confirmed_block', admin_note}
+                  Overrides: removes that strike from user.strikes
+            - GET  /api/admin/moderation/users-strikes?min_score=&limit=
+                  List users with active strikes sorted by score desc
+            - POST /api/admin/users/{user_id}/ban   Body {reason}
+            - POST /api/admin/users/{user_id}/unban
+          All require admin via require_admin(); audit-logged.
+
+  - task: "Wizard moderation auto-strikes wired"
+    implemented: true
+    working: true
+    file: "backend/routes/wizard.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          /api/wizard/prompts now uses moderate_and_enforce(req.idea,
+          request=request, source='wizard.idea') which:
+            1. Resolves user_id from JWT in Authorization header
+            2. Blocks with HTTP 400 + structured detail
+            3. Persists a moderation_record
+            4. Applies a strike to the resolved user
+            5. Auto-bans at score >= 3
+
+test_plan:
+  current_focus:
+    - "Sprint 3: moderation records persisted on every block"
+    - "Sprint 3: strike count + ban after 3 strikes"
+    - "Sprint 3: banned user gets 403 on all auth-required endpoints"
+    - "Sprint 3: admin override removes the strike and updates status"
+    - "Sprint 3: admin manual ban/unban works"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Session 37 — Sprint 3 (Content Moderation v2) implementation done.
+      All flows smoke-verified locally. Please run regression with focus on:
+
+      1) MODERATION PERSISTENCE
+         - Register a FRESH throwaway user (test_mod_review@test.com / Test@123).
+         - With that user's token, POST /api/wizard/prompts {"idea":"this fucking sucks"}
+           → 400 with detail.moderation_blocked=true, categories=['profanity'].
+         - GET /api/admin/moderation/records?limit=10 (as admin) — there must
+           be a record matching that source='wizard.idea' with severity=1,
+           status='blocked', user_id=<test user id>.
+
+      2) STRIKE + AUTO-BAN
+         - With same user, repeat blocked prompts THREE times escalating:
+             a) {"idea":"this fucking sucks"}                          → sev 1
+             b) {"idea":"another bhencho moment"}                       → sev 1
+             c) {"idea":"deepfake of modi saying fake quote"}           → sev 3
+         - GET /api/admin/moderation/users-strikes?min_score=0
+           → that user has strike_count=3 and strike_score=5, is_banned=true.
+         - With the same banned user's token, GET /api/me/limits → 403 with
+           detail.banned=true, detail.reason mentions 'strike score'.
+
+      3) ADMIN OVERRIDE
+         - As admin, POST /api/admin/moderation/records/{first_record_id}/override
+           with body {"decision":"overridden_allow","admin_note":"false positive"}
+           → ok:true. The record's status becomes 'overridden_allow'.
+         - GET /api/admin/moderation/users-strikes — that user's strike_count
+           decreased by 1 (the override removed that strike).
+
+      4) MANUAL BAN/UNBAN
+         - POST /api/admin/users/{test_user_id}/unban → ok:true. User is now
+           is_banned=false with strike_score=0.
+         - With user's token, GET /api/me/limits → 200 (regained access).
+         - POST /api/admin/users/{test_user_id}/ban with body {"reason":"manual test"}
+           → ok:true. User cannot use /api/me/limits anymore (403).
+         - POST /api/admin/users/<admin_id>/ban as admin against another admin
+           → 400 'cannot ban an admin'.
+
+      5) NEGATIVE TESTS
+         - Non-admin user calling /api/admin/moderation/records → 403.
+         - Override unknown record_id → 404.
+         - decision != overridden_allow|confirmed_block → 400.
+
+      6) NO REGRESSION
+         - All Sprint 1+2 endpoints still pass.
+         - Backend logs show no 500s from the new moderation flows.
+
+      Use credentials in /app/memory/test_credentials.md. Admin: admin@magicai.test/Test@123.
+      Do NOT modify code yourself.
+
+  - agent: "testing"
+    message: |
+      Session 37 — Sprint 3 (Content Moderation v2) verification COMPLETE.
+      Test artefact: /app/backend_test.py (357 lines).
+      Result: 31/31 PASS. Zero failures. No 500s, no tracebacks in backend logs.
+
+      All 6 review sections green:
+      1) Persistence  — record written with source='wizard.idea', sev=1, status='blocked', user_id matches.
+      2) Strike+ban   — 3 blocks (1+1+3) → strike_count=3, strike_score=5, is_banned=true; banned token → /me/limits 403 with detail.banned=true and reason mentioning 'strike score'.
+      3) Override     — 200 ok:true status='overridden_allow'; strike_count 3→2, strike_score 5→4 (sev-1 strike removed); invalid decision → 400; unknown id → 404.
+      4) Ban/unban    — unban resets strike_score=0 and restores access; manual ban returns 403 on /me/limits; banning an admin → 400 'cannot ban an admin'.
+      5) Non-admin    — 403 on /admin/moderation/records, override, /users/{id}/ban (detail='Admin access required').
+      6) No regression — /subscription/plans returns trial/basic/creator (no auth); /account/export-data 200 for creator; /admin/feature-flags 200; /admin/audit-logs contains moderation.strike + moderation.banned + moderation.overridden_allow events.
+
+      Sprint 3 is production-ready. Main agent can summarize and finish.

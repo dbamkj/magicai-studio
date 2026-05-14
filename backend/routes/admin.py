@@ -358,6 +358,178 @@ async def admin_audit_logs(
     return {'logs': rows, 'count': len(rows)}
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Session 37 — Sprint 3: Content Moderation v2 Admin Dashboard
+# ═══════════════════════════════════════════════════════════════════
+
+class ModerationOverride(BaseModel):
+    decision: str  # 'overridden_allow' | 'confirmed_block'
+    admin_note: str = ''
+
+
+class UserBanRequest(BaseModel):
+    reason: str = ''
+
+
+@router.get('/moderation/records')
+async def admin_moderation_records(
+    request: Request,
+    user_id: str = None,
+    status: str = None,
+    severity: int = None,
+    limit: int = 100,
+):
+    """List moderation decisions. Admin-only."""
+    await require_admin(request)
+    q: dict = {}
+    if user_id:
+        q['user_id'] = user_id
+    if status:
+        q['status'] = status
+    if severity is not None:
+        q['severity'] = int(severity)
+    limit = max(1, min(int(limit or 100), 1000))
+    rows = await db.moderation_records.find(q, {'_id': 0}).sort('created_at', -1).to_list(length=limit)
+    # Compact stats for dashboard cards
+    total = await db.moderation_records.count_documents({})
+    blocked = await db.moderation_records.count_documents({'status': 'blocked'})
+    overridden = await db.moderation_records.count_documents({'status': 'overridden_allow'})
+    confirmed = await db.moderation_records.count_documents({'status': 'confirmed_block'})
+    return {
+        'records': rows,
+        'count': len(rows),
+        'stats': {
+            'total': total,
+            'open': blocked,
+            'overridden': overridden,
+            'confirmed': confirmed,
+        },
+    }
+
+
+@router.post('/moderation/records/{record_id}/override')
+async def admin_override_moderation(record_id: str, req: ModerationOverride, request: Request):
+    """Override or confirm a moderation decision. Admin-only.
+
+    decision = 'overridden_allow' → the block was wrong; do NOT count toward
+                                    the user's strikes (remove strike).
+    decision = 'confirmed_block'  → the block was correct; keep as-is.
+    """
+    admin = await require_admin(request)
+    if req.decision not in ('overridden_allow', 'confirmed_block'):
+        raise HTTPException(status_code=400, detail='decision must be overridden_allow or confirmed_block')
+    rec = await db.moderation_records.find_one({'id': record_id})
+    if not rec:
+        raise HTTPException(status_code=404, detail='record not found')
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.moderation_records.update_one(
+        {'id': record_id},
+        {'$set': {
+            'status': req.decision,
+            'admin_note': (req.admin_note or '')[:500],
+            'reviewed_by': admin.get('id'),
+            'reviewed_at': now,
+        }},
+    )
+
+    # If overridden to allow, retroactively remove that strike from the user.
+    if req.decision == 'overridden_allow' and rec.get('user_id'):
+        u = await db.users.find_one({'id': rec['user_id']}, {'strikes': 1})
+        if u:
+            strikes = [s for s in (u.get('strikes') or []) if s.get('record_id') != record_id]
+            score = sum(int(s.get('severity') or 1) for s in strikes)
+            update = {
+                'strikes': strikes,
+                'strike_count': len(strikes),
+                'strike_score': score,
+            }
+            # If user was banned BECAUSE of this strike, also unban.
+            if u.get('is_banned'):  # type: ignore[unreachable]
+                pass  # leave is_banned; admin should explicitly /unban
+            await db.users.update_one({'id': rec['user_id']}, {'$set': update})
+
+    # Audit
+    try:
+        from core.audit import log_audit
+        await log_audit(
+            f'moderation.{req.decision}',
+            user_id=admin.get('id'),
+            meta={'record_id': record_id, 'note': req.admin_note},
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {'ok': True, 'record_id': record_id, 'status': req.decision}
+
+
+@router.get('/moderation/users-strikes')
+async def admin_users_with_strikes(request: Request, min_score: int = 1, limit: int = 100):
+    """List users with active strikes, sorted by strike_score desc. Admin-only."""
+    await require_admin(request)
+    limit = max(1, min(int(limit or 100), 500))
+    rows = await db.users.find(
+        {'strike_score': {'$gte': int(min_score)}},
+        {'_id': 0, 'password_hash': 0, 'google_email': 0},
+    ).sort('strike_score', -1).to_list(length=limit)
+    # Strip super-long fields to keep payload small
+    for u in rows:
+        u.pop('push_tokens', None)
+    return {'users': rows, 'count': len(rows)}
+
+
+@router.post('/users/{user_id}/ban')
+async def admin_ban_user(user_id: str, req: UserBanRequest, request: Request):
+    """Manually ban a user. Admin-only."""
+    admin = await require_admin(request)
+    u = await db.users.find_one({'id': user_id}, {'id': 1, 'email': 1, 'is_admin': 1})
+    if not u:
+        raise HTTPException(status_code=404, detail='user not found')
+    if u.get('is_admin'):
+        raise HTTPException(status_code=400, detail='cannot ban an admin')
+    now = datetime.now(timezone.utc).isoformat()
+    reason = (req.reason or 'Manually banned by admin')[:240]
+    await db.users.update_one(
+        {'id': user_id},
+        {'$set': {'is_banned': True, 'banned_at': now, 'ban_reason': reason}},
+    )
+    try:
+        from core.audit import log_audit
+        await log_audit('moderation.banned', user_id=user_id,
+                        meta={'by_admin': admin.get('id'), 'reason': reason}, request=request)
+    except Exception:
+        pass
+    return {'ok': True, 'user_id': user_id, 'banned_at': now, 'reason': reason}
+
+
+@router.post('/users/{user_id}/unban')
+async def admin_unban_user(user_id: str, request: Request):
+    """Manually unban a user. Admin-only. Also resets strike_score to 0."""
+    admin = await require_admin(request)
+    u = await db.users.find_one({'id': user_id}, {'id': 1})
+    if not u:
+        raise HTTPException(status_code=404, detail='user not found')
+    now = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {'id': user_id},
+        {'$set': {
+            'is_banned': False,
+            'unbanned_at': now,
+            'strikes': [],
+            'strike_count': 0,
+            'strike_score': 0,
+        }},
+    )
+    try:
+        from core.audit import log_audit
+        await log_audit('moderation.unbanned', user_id=user_id,
+                        meta={'by_admin': admin.get('id')}, request=request)
+    except Exception:
+        pass
+    return {'ok': True, 'user_id': user_id, 'unbanned_at': now}
+
+
 @router.post('/plans/{plan_id}/toggle-visibility')
 async def toggle_plan_visibility(plan_id: str, req: PlanVisibilityToggle, request: Request):
     """Override `is_visible_in_pricing_page` for a plan at runtime.

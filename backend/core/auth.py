@@ -64,6 +64,16 @@ async def get_current_user(request: Optional[Request] = None, strict: bool = Fal
     user = await _db.users.find_one({'id': data['sub']}, {'_id': 0, 'password_hash': 0})
     if not user:
         raise HTTPException(status_code=401, detail='User not found')
+    # Session 37 — Sprint 3: hard-stop banned users.
+    if user.get('is_banned') and not user.get('is_admin'):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                'banned': True,
+                'reason': user.get('ban_reason') or 'Account suspended for safety policy violations.',
+                'banned_at': user.get('banned_at'),
+            },
+        )
     user['env'] = ENV
     return user
 
