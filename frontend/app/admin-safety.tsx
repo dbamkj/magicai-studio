@@ -74,7 +74,7 @@ export default function AdminSafetyDashboard() {
   const adminGuard = user?.is_admin;
 
   const authHeaders = async () => {
-    const token = await AsyncStorage.getItem('@auth_token');
+    const token = await AsyncStorage.getItem('magicai_jwt_v1');
     return { Authorization: `Bearer ${token}` };
   };
 

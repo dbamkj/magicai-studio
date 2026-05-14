@@ -34,7 +34,7 @@ export default function PrivacyCenter() {
   const onExport = async () => {
     try {
       setExporting(true);
-      const token = await AsyncStorage.getItem('@auth_token');
+      const token = await AsyncStorage.getItem('magicai_jwt_v1');
       const r = await axios.get(`${BACKEND_URL}/api/account/export-data`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -71,7 +71,7 @@ export default function PrivacyCenter() {
           onPress: async () => {
             try {
               setDeleting(true);
-              const token = await AsyncStorage.getItem('@auth_token');
+              const token = await AsyncStorage.getItem('magicai_jwt_v1');
               await axios.post(
                 `${BACKEND_URL}/api/account/delete-account`, {},
                 { headers: { Authorization: `Bearer ${token}` } },
