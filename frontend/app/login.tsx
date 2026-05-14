@@ -275,7 +275,7 @@ export default function LandingScreen() {
                         </LinearGradient>
                       </TouchableOpacity>
 
-                      <TouchableOpacity onPress={() => setAuthMode('login')} style={s.secondaryCta}>
+                      <TouchableOpacity onPress={() => setAuthMode('login')} style={s.secondaryCta} testID="welcome-login-link">
                         <Text style={s.secondaryCtaText}>I already have an account · Log in</Text>
                       </TouchableOpacity>
 
