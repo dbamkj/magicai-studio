@@ -3377,6 +3377,13 @@ async def _startup_scheduler():
         # Use the templates router's db which respects ENV-based routing.
         from routes.templates import db as _tmpl_db
         start_scheduler(_tmpl_db)
+        # Session 38 — Sprint 4: start persistent job-queue worker.
+        try:
+            from core.queue import start_worker
+            start_worker()
+            logger.info("queue: worker started (mongo backend)")
+        except Exception as e:
+            logger.error(f"queue worker failed to start: {e}")
     except Exception as e:
         logger.error(f"startup scheduler wire failed: {e}")
 
@@ -3386,6 +3393,11 @@ async def shutdown_db_client():
     try:
         from core.scheduler import stop_scheduler
         stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from core.queue import stop_worker
+        stop_worker()
     except Exception:
         pass
     client.close()

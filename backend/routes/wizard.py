@@ -747,10 +747,10 @@ async def get_bgm_catalog():
 async def post_create_reel(req: CreateReelRequest, background: BackgroundTasks, request: Request):
     # Moderation gate (text) — block obscene / abusive / unsafe content before
     # we spend any compute or LLM/Pixabay credits.
-    from core.moderation import moderate_text, raise_if_blocked
+    from core.moderation import moderate_and_enforce
     for src, txt in (('idea', req.idea), ('title', req.title), ('script', req.script), ('image_query', req.image_query)):
         if txt:
-            raise_if_blocked(await moderate_text(txt, source=f'wizard.{src}'))
+            await moderate_and_enforce(txt, request=request, source=f'wizard.{src}')
 
     job_id = f'wz_{uuid.uuid4().hex[:12]}'
     now = datetime.now(timezone.utc).isoformat()

@@ -497,3 +497,29 @@ async def dsar_delete_account(request: Request):
         "redaction_email": redaction_email,
         "message": "Account has been deleted. You will be logged out.",
     }
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Session 38 — Sprint 4: Public Job-status endpoint
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/jobs/{job_id}")
+async def public_job_status(job_id: str, request: Request):
+    """Get the current status of a queued job.
+
+    Returns:
+        {job_id, name, status, retries, max_retries, result, error,
+         created_at, started_at, finished_at}
+    """
+    user = await get_current_user(request, strict=True)
+    from core.queue import get_job_status
+    job = await get_job_status(job_id)
+    if not job:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Job not found")
+    # Only owner (or admin) can see job
+    if job.get("user_id") and job["user_id"] != user.get("id") and not user.get("is_admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Not your job")
+    return job

@@ -225,6 +225,9 @@ export default function AdminScreen() {
         <Text style={s.brand}>🎬 MagiCAi Admin</Text>
         <Text style={s.envTag}>{mode?.env} · {mode?.version}</Text>
         <View style={{ flex: 1 }} />
+        <TouchableOpacity onPress={() => router.push('/admin-safety' as any)} style={[s.navBtn, { marginRight: 8, backgroundColor: 'rgba(239,68,68,0.18)', borderColor: 'rgba(239,68,68,0.5)' }]}>
+          <Text style={[s.navBtnText, { color: '#FCA5A5' }]}>🛡️ Safety</Text>
+        </TouchableOpacity>
         <TouchableOpacity onPress={() => router.push('/')} style={s.navBtn}><Text style={s.navBtnText}>← App</Text></TouchableOpacity>
       </View>
       <View style={s.layout}>

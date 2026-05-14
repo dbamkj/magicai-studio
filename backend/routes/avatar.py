@@ -665,13 +665,13 @@ async def post_avatar_suggestions(req: AvatarSuggestionsRequest):
 
 
 @router.post("/dialogues")
-async def post_avatar_dialogues(req: AvatarDialoguesRequest):
+async def post_avatar_dialogues(req: AvatarDialoguesRequest, request: Request):
     """Generate 3 avatar-appropriate one-liners based on picked style + idea."""
     if req.style_id not in STYLES:
         raise HTTPException(status_code=400, detail=f"Unknown style. Use: {', '.join(STYLES.keys())}")
-    # Moderation — block abusive / unsafe ideas before any LLM spend.
-    from core.moderation import moderate_text, raise_if_blocked
-    raise_if_blocked(await moderate_text(req.idea, source="avatar.dialogues.idea"))
+    # Moderation — block abusive / unsafe ideas before any LLM spend (auto-strikes).
+    from core.moderation import moderate_and_enforce
+    await moderate_and_enforce(req.idea, request=request, source="avatar.dialogues.idea")
 
     style = STYLES[req.style_id]
     persona = STYLE_PERSONALITY.get(req.style_id, DEFAULT_PERSONALITY)
@@ -798,10 +798,10 @@ async def cartoonize(req: CartoonizeRequest, background: BackgroundTasks, reques
         raise HTTPException(status_code=400, detail=f"Unknown style. Use: {', '.join(STYLES.keys())}")
     style_def = STYLES[req.style]
 
-    # Phase-4 safety — moderate any text input
-    from core.moderation import moderate_text, raise_if_blocked
+    # Phase-4 safety — moderate any text input (auto-strikes via Sprint 3 v2)
+    from core.moderation import moderate_and_enforce
     if req.prompt:
-        raise_if_blocked(await moderate_text(req.prompt, source="avatar.prompt"))
+        await moderate_and_enforce(req.prompt, request=request, source="avatar.prompt")
 
     user = await _resolve_user(request)
     user_tier = (user.get("subscription_tier") or "free").lower()

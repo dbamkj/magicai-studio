@@ -359,6 +359,46 @@ async def admin_audit_logs(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Session 38 — Sprint 4: Job Queue Admin
+# ═══════════════════════════════════════════════════════════════════
+
+@router.get('/queue/stats')
+async def admin_queue_stats(request: Request):
+    """Counters and registered handlers for the persistent job queue."""
+    await require_admin(request)
+    from core.queue import queue_stats
+    return await queue_stats()
+
+
+@router.get('/queue/jobs')
+async def admin_queue_jobs(
+    request: Request,
+    status: str = None,
+    name: str = None,
+    limit: int = 100,
+):
+    """List recent jobs. Admin-only."""
+    await require_admin(request)
+    q: dict = {}
+    if status:
+        q['status'] = status
+    if name:
+        q['name'] = name
+    limit = max(1, min(int(limit or 100), 1000))
+    rows = await db.job_queue.find(q, {'_id': 0}).sort('created_at', -1).to_list(length=limit)
+    return {'jobs': rows, 'count': len(rows)}
+
+
+@router.post('/queue/enqueue-test')
+async def admin_queue_enqueue_test(request: Request):
+    """Enqueue a system.ping job for smoke-testing the worker."""
+    await require_admin(request)
+    from core.queue import enqueue
+    job_id = await enqueue('system.ping', {'src': 'admin_smoke'}, priority=10)
+    return {'ok': True, 'job_id': job_id}
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Session 37 — Sprint 3: Content Moderation v2 Admin Dashboard
 # ═══════════════════════════════════════════════════════════════════
 
