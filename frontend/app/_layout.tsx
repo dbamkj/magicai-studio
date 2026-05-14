@@ -4,7 +4,6 @@ import { View, StyleSheet, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
-import { Ionicons } from '@expo/vector-icons';
 import { AuthProvider, useAuth } from '../src/AuthContext';
 import { ThemeProvider } from '../src/ThemeContext';
 import BetaChrome from '../src/BetaChrome';
@@ -64,11 +63,16 @@ export default function RootLayout() {
   const [soundsEnabled, setSoundsEnabled] = useState<boolean | null>(null);
 
   // Pre-load Ionicons font BEFORE any screen renders.
-  // This fixes the "ExpoFontLoader.loadAsync rejected — Font file for ionicons is empty"
-  // crash that occurred when @expo/vector-icons tried to lazy-load Ionicons.ttf
-  // mid-render on real Android devices.
+  // Fix for the "ExpoFontLoader.loadAsync rejected — Font file for ionicons
+  // is empty" crash that intermittently hit Android devices.
+  //
+  // Root cause: spreading `...Ionicons.font` from @expo/vector-icons relies on
+  // Metro resolving the .ttf require inside the package. Under the fast
+  // resolver + flaky network, the asset URL was occasionally fetched as 0
+  // bytes. We side-step the indirection by bundling the TTF in our own
+  // /assets/fonts/ folder and requiring it directly.
   const [fontsLoaded, fontsError] = useFonts({
-    ...Ionicons.font,
+    Ionicons: require('../assets/fonts/Ionicons.ttf'),
   });
 
   useEffect(() => {
