@@ -1316,6 +1316,14 @@ async def post_dual_lipsync(req: DualLipsyncRequest, background: BackgroundTasks
         feature=None if is_procedural else 'talking_avatar',
     )
 
+    # Session 39 — Sprint 3 v3: dynamic-camera gate (mirrors talking.py).
+    _motion = (getattr(req, 'motion', None) or '').strip().lower()
+    if _motion and _motion not in ('none', 'static'):
+        from core.pricing import check_feature_access
+        _ok, _reason = check_feature_access(user, feature='dynamic_camera')
+        if not _ok:
+            raise HTTPException(status_code=402, detail=_reason)
+
     # Phase-3 — Apply cinematic preset overrides (motion + voice + bgm)
     # the same way the solo route does, so dual-lipsync's camera+effects
     # pass picks up the right motion. Was previously only pulling

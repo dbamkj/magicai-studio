@@ -162,6 +162,18 @@ async def create_talking_avatar(
         feature=None if is_procedural else 'talking_avatar',
     )
 
+    # Session 39 — Sprint 3 v3: dynamic-camera feature gate.
+    # If the request has a non-trivial motion (i.e. NOT "none"/empty), the
+    # user must be on a plan that allows dynamic camera FX. Procedural
+    # lipsync still gets gated — motion costs are the same whether ai-driven
+    # or not, so the plan check applies uniformly.
+    _motion = (getattr(req, 'motion', None) or '').strip().lower()
+    if _motion and _motion not in ('none', 'static'):
+        from core.pricing import check_feature_access
+        _ok, _reason = check_feature_access(user, feature='dynamic_camera')
+        if not _ok:
+            raise HTTPException(status_code=402, detail=_reason)
+
     # Phase-1 — Cinematic preset resolution. If client sent preset_id,
     # apply its config bundle (voice_style / motion / bgm_style) BEFORE
     # we persist the project so the recorded payload reflects what

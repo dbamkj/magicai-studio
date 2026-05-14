@@ -53,6 +53,28 @@ _client = AsyncIOMotorClient(MONGO_URL)
 _db = _client[DB_NAME]
 
 QUEUE_POLL_SECONDS = float(os.environ.get("QUEUE_POLL_SECONDS", "2.0"))
+
+# ═══════════════════════════════════════════════════════════════════
+# Backend selection — Mongo (default) or Arq/Redis (opt-in via REDIS_URL).
+# When REDIS_URL is set in env and the `arq` package + adapter import OK,
+# enqueue/get_job_status/queue_stats route through core.queue_arq_adapter.
+# Otherwise the Mongo-backed implementation below stays active.
+# This makes the Redis swap a one-line ops change with zero caller-code edits.
+# ═══════════════════════════════════════════════════════════════════
+_USE_REDIS = bool(os.environ.get("REDIS_URL"))
+
+
+def _arq():
+    """Lazy import the Arq adapter (only when REDIS_URL is set)."""
+    if not _USE_REDIS:
+        return None
+    try:
+        from core import queue_arq_adapter  # type: ignore
+        return queue_arq_adapter
+    except Exception as e:
+        log.warning("queue: REDIS_URL set but arq adapter unavailable (%s) — "
+                    "falling back to mongo backend", e)
+        return None
 QUEUE_MAX_RETRIES = int(os.environ.get("QUEUE_MAX_RETRIES", "3"))
 QUEUE_STUCK_THRESHOLD_SEC = int(os.environ.get("QUEUE_STUCK_THRESHOLD_SEC", "600"))  # 10 min
 
@@ -94,7 +116,16 @@ async def enqueue(
     max_retries: int = QUEUE_MAX_RETRIES,
     user_id: Optional[str] = None,
 ) -> str:
-    """Insert a pending job and return its job_id."""
+    """Insert a pending job and return its job_id.
+
+    Routes to Arq when REDIS_URL is set, otherwise uses Mongo backend.
+    """
+    adapter = _arq()
+    if adapter is not None:
+        return await adapter.enqueue(name, payload,
+                                     priority=priority,
+                                     max_retries=max_retries,
+                                     user_id=user_id)
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     now = datetime.now(timezone.utc).isoformat()
     doc = {
@@ -119,11 +150,17 @@ async def enqueue(
 
 
 async def get_job_status(job_id: str) -> Optional[dict]:
+    adapter = _arq()
+    if adapter is not None:
+        return await adapter.get_job_status(job_id)
     return await _db.job_queue.find_one({"job_id": job_id}, {"_id": 0})
 
 
 async def queue_stats() -> dict:
     """Aggregate counters for admin dashboard."""
+    adapter = _arq()
+    if adapter is not None and hasattr(adapter, "queue_stats"):
+        return await adapter.queue_stats()
     pipeline = [
         {"$group": {
             "_id": "$status",
@@ -262,7 +299,15 @@ async def _stuck_recovery_loop():
 
 
 def start_worker() -> None:
-    """Spawn the background worker. Safe to call multiple times."""
+    """Spawn the background worker. Safe to call multiple times.
+
+    No-op when REDIS_URL is set — Arq runs its own external worker process
+    (`python -m arq core.queue_arq_adapter.WorkerSettings`), so the in-process
+    Mongo worker is not started.
+    """
+    if _arq() is not None:
+        log.info("queue: REDIS_URL set — skipping in-process worker (Arq has its own)")
+        return
     global _worker_task, _stuck_recovery_task
     loop = asyncio.get_event_loop()
     if _worker_task is None or _worker_task.done():
