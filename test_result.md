@@ -14069,3 +14069,155 @@ agent_communication:
             (3-line change).
          2. After fix, re-run /app/backend_test.py — single failing test
             should flip to PASS. No other tests need re-running.
+sprint_1_to_4_frontend_regression_session:
+  - task: "Sprint 1-4 Frontend Regression (pricing, privacy, admin-safety, home, login copy)"
+    implemented: true
+    working: false
+    file: "frontend/app/pricing.tsx, frontend/app/privacy.tsx, frontend/app/admin-safety.tsx, frontend/app/admin.tsx, frontend/app/index.tsx, frontend/app/login.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Mobile (390x844) regression sweep — partial PASS with 3 issues flagged.
+
+          ✅ TEST 1 — /pricing PUBLIC (Sprint 1): PASS
+            * No redirect to /onboarding or /login when logged out.
+            * Hero renders "Create cinematic / AI videos in minutes" (two-line)
+              + "✨ Start 7-day free trial" gradient CTA + "No credit card · Cancel anytime".
+            * Monthly/Annual toggle present (Annual -17% chip visible & clickable).
+            * 3 plan cards confirmed: Trial → Basic → Creator with BEST VALUE badge.
+            * Screenshot: t1_pricing.png shows clean layout, no overflow.
+
+          ✅ TEST 6 — /login copy regression: PASS
+            * "Start your 7-day free trial · 50 credits · no card needed" visible
+              (old "300 free credits" GONE).
+            * "See plans & pricing →" link present below "I already have an account · Log in".
+            * Screenshot: t6_login.png.
+
+          ❌ TEST 5 — Home screen credits pill: FAIL
+            * After demo_creator login, credits pill shows **600**, NOT the
+              expected 1200. Neither matches the legacy 3000 nor the Sprint-1
+              migration target of 1200. Possible causes:
+                (a) demo_creator account has consumed credits (600 = 1200 - 600);
+                (b) seed/migration only set 600, not 1200;
+                (c) credits pill displays a different field (daily? remaining?).
+              Main agent should verify whether demo_creator's credits_balance
+              in DB is actually 1200 or 600, and whether the home pill is
+              wired to /api/me.credits_balance or some other source.
+            * NO Ionicons font crashes, NO red screen, NO font-loading console
+              errors detected. Console only emits 4× 401s (expected — /api/me
+              probes before token attached).
+
+          ⚠️ TEST 5 — Drawer entries: NOT VERIFIED (profile is bottom-tab,
+             not top-right avatar)
+            * Home screen has a bottom nav with "Profile" tab; there is no
+              top-right avatar drawer on mobile. The spec assumed a top-right
+              avatar but the actual UI uses bottom-nav Profile. The "Privacy &
+              My Data" entry presumably lives inside the Profile tab/screen,
+              which was not opened in this run (test budget). Main agent
+              should update spec language ("avatar in top right") to match
+              reality OR confirm whether the drawer is indeed inside Profile
+              tab. Test 2 (Privacy export) consequently could not be reached.
+
+          ✅ TEST 4 — Non-admin guard on /admin-safety: PASS
+            * demo_creator → /admin-safety renders the red 🔒 lock icon +
+              "Admin access required" + "This page is restricted to platform
+              admins." NO dashboard contents leak through. Screenshot:
+              t4_guard.png.
+
+          ⚠️ TEST 3 — /admin-safety as admin: MIXED
+            * /admin-safety page itself: PASS. Renders 4 stat cards
+              (TOTAL=0, OPEN=0, OVERRIDDEN=0, CONFIRMED=0), tab switcher
+              "Records (0)" / "Users w/ strikes (0)", filter chips
+              "All / blocked / overridden allow / confirmed block".
+              Tab switching works (verified by clicking strikes tab).
+              Empty state shows "No moderation records match this filter."
+              Screenshots: t3_safety_records.png, t3_safety_users.png.
+            * ❌ FAIL: All counts are 0. The spec said "Total should be > 0
+              (testing has created records)." No moderation records exist
+              in the BETA db at test time — either records were never
+              seeded, or live on a different DB (videoai_database vs
+              magicai_beta latent issue flagged earlier). Cannot verify
+              the "False positive / Confirm block" action buttons or
+              user strike/ban controls.
+            * ❌ FAIL: On the mobile /admin page (390x844), the red
+              "🛡️ Safety" button does NOT appear. The mobile /admin view
+              only renders the ENV-switcher mini-panel ("Switch Environment"
+              + Current state + "👉 Open on desktop (≥ 900px) for full
+              admin dashboard"). Per the existing comment in test_result
+              (line 308), this matches the documented "mobile shows ENV
+              switcher mini-panel only" behavior. The "🛡️ Safety" button
+              described in the test spec is presumably only rendered in
+              the desktop ≥900px admin layout. Main agent should either
+              add the Safety button to the mobile mini-panel OR clarify
+              the spec.
+
+          📸 Screenshots captured: t1_pricing, t6_login, t5_home, t4_guard,
+             t3_admin (mobile ENV switcher), t3_safety_records,
+             t3_safety_users.
+
+          🛑 Console errors observed: 4 × HTTP 401 from /api/me probes
+             before login. NO Ionicons font-load errors. NO crash/red-screen.
+
+          OVERALL: 3 of 6 sections clean PASS (Tests 1, 4, 6).
+                  3 of 6 have issues to address (Tests 2/5 — credits=600
+                  + drawer-via-bottom-nav not verified; Test 3 — moderation
+                  records empty + mobile Safety button missing).
+
+  - task: "test_credentials.md presence"
+    implemented: true
+    working: true
+    file: "/app/memory/test_credentials.md"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Used credentials provided in review request:
+          demo_creator@test.com / Test@123, admin@magicai.test / Test@123.
+          Both logged in successfully (demo_creator and admin redirected to
+          home /). Auth flow itself is healthy.
+
+agent_communication_sprint_regression:
+  - agent: "testing"
+    message: |
+      Sprint 1-4 frontend regression complete (mobile only, 390x844).
+
+      ✅ Clean PASS: /pricing PUBLIC (Sprint 1), /admin-safety lock screen
+         for non-admins (Sprint 3 v2 guard), /login copy regression
+         ("50 credits · no card needed" + "See plans & pricing →").
+
+      ❌ FAIL items for main agent attention:
+      1. Home credits pill reads **600** for demo_creator, NOT the 1200
+         the spec expects (Sprint 1 migration target). Could be a seed/
+         migration bug OR the pill is wired to wrong field. Please verify
+         demo_creator.credits_balance in DB and the source of the home
+         pill.
+      2. On mobile /admin (390x844), the red "🛡️ Safety" button is missing.
+         Mobile /admin only shows ENV-switcher mini-panel. The Safety
+         button likely only exists in the desktop layout. Add it to the
+         mobile mini-panel so admins on phones can reach /admin-safety
+         without manually typing the URL.
+      3. /admin-safety stat cards all read 0 — moderation records not
+         present in the DB the API reads. Worth confirming whether test
+         records were seeded into the correct DB (videoai_database vs
+         magicai_beta — see latent core/db.py vs core/config.py
+         resolution issue flagged in Session 34-D).
+
+      ⚠️ Spec drift: review request says "profile drawer (avatar in top
+         right)" but actual mobile UI uses a bottom-nav "Profile" tab.
+         Please update spec language OR refactor home header to add a
+         top-right avatar. The "Privacy & My Data" drawer entry presumably
+         lives inside the Profile tab; that screen was not opened in this
+         run so Test 2 (Privacy export) is not verified end-to-end —
+         needs follow-up.
+
+      🟢 No Ionicons font-load crashes. No red screen. No critical console
+         errors (only expected pre-auth 401s).
+
+      📸 7 screenshots saved under .screenshots/ in workspace.

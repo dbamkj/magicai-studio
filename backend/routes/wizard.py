@@ -63,6 +63,12 @@ class PromptsRequest(BaseModel):
 class PreviewImagesRequest(BaseModel):
     image_query: str = Field(..., min_length=2, max_length=120)
     count: int = 5
+    # Optional context fields used for content moderation (Session 38 — Sprint 3 v2).
+    idea: Optional[str] = None
+    title: Optional[str] = None
+    script: Optional[str] = None
+    language: Optional[str] = None
+    music_query: Optional[str] = None
 
 
 class PreviewVideosRequest(BaseModel):
@@ -487,8 +493,22 @@ async def post_prompts(req: PromptsRequest, request: Request):
 
 
 @router.post('/preview-images')
-async def post_preview_images(req: PreviewImagesRequest):
-    """Search Pixabay for vertical images matching the query."""
+async def post_preview_images(req: PreviewImagesRequest, request: Request):
+    """Search Pixabay for vertical images matching the query.
+
+    Session 38: moderates image_query + any context fields the client passes
+    (idea/title/script/music_query). Repeat offenders get strikes.
+    """
+    from core.moderation import moderate_and_enforce
+    for src, txt in (
+        ('image_query', req.image_query),
+        ('idea', req.idea),
+        ('title', req.title),
+        ('script', req.script),
+        ('music_query', req.music_query),
+    ):
+        if txt:
+            await moderate_and_enforce(txt, request=request, source=f'wizard.preview_images.{src}')
     hits = await pixabay.search_images(req.image_query, count=max(3, min(req.count, 15)), orientation='vertical')
     imgs = []
     for h in hits:
