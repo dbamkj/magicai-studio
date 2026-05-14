@@ -30,18 +30,29 @@ export default function PrivacyCenter() {
   const [exporting, setExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [exportResult, setExportResult] = useState<any | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // Cross-platform alert — Alert.alert is a no-op on RN-Web, so we wire a
+  // window.alert fallback so the user gets feedback on every platform.
+  const crossAlert = (title: string, message: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.alert) {
+      window.alert(`${title}\n\n${message}`);
+    } else {
+      Alert.alert(title, message);
+    }
+  };
 
   const onExport = async () => {
     try {
       setExporting(true);
+      setExportError(null);
       const token = await AsyncStorage.getItem('magicai_jwt_v1');
       const r = await axios.get(`${BACKEND_URL}/api/account/export-data`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = r.data || {};
       setExportResult(data.counts || {});
-      // Render as JSON blob the user can copy
-      Alert.alert(
+      crossAlert(
         'Your data is ready',
         `We collected:\n` +
         `• ${data.counts?.projects ?? 0} video projects\n` +
@@ -49,10 +60,11 @@ export default function PrivacyCenter() {
         `• ${data.counts?.waitlist_entries ?? 0} waitlist entries\n` +
         `• ${data.counts?.notifications ?? 0} notifications\n\n` +
         `Per DPDPA 2023 / GDPR Art. 15, you have the right to receive this data.`,
-        [{ text: 'OK' }],
       );
     } catch (e: any) {
-      Alert.alert('Export failed', e?.response?.data?.detail || e?.message || 'Unknown error');
+      const msg = e?.response?.data?.detail || e?.message || 'Unknown error';
+      setExportError(msg);
+      crossAlert('Export failed', msg);
     } finally {
       setExporting(false);
     }
