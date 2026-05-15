@@ -399,6 +399,173 @@ async def admin_queue_enqueue_test(request: Request):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Session 40 — Admin: force-trial-expire + cost-projection
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post('/users/{user_id}/expire-trial')
+async def admin_expire_trial(user_id: str, request: Request):
+    """Force-expire a user's trial NOW (for Phase A testing).
+
+    Pushes Trial → Basic with credits=0 and requires_upgrade=true,
+    matching the production cron behavior in core.scheduler._expire_trials.
+    Admin-only.
+    """
+    admin = await require_admin(request)
+    u = await db.users.find_one({'id': user_id}, {'id': 1, 'subscription_tier': 1})
+    if not u:
+        raise HTTPException(status_code=404, detail='user not found')
+    if (u.get('subscription_tier') or '').lower() != 'trial':
+        raise HTTPException(status_code=400, detail='user is not on Trial')
+    now = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {'id': user_id},
+        {'$set': {
+            'subscription_tier': 'basic',
+            'subscription_cycle': 'trial_ended',
+            'subscription_price_inr': 0,
+            'credits_balance': 0,
+            'trial_active': False,
+            'trial_expired_at': now,
+            'requires_upgrade': True,
+        }},
+    )
+    try:
+        from core.audit import log_audit
+        await log_audit('moderation.trial_force_expired', user_id=user_id,
+                        meta={'by_admin': admin.get('id')}, request=request)
+    except Exception:
+        pass
+    return {'ok': True, 'user_id': user_id, 'new_tier': 'basic', 'credits_balance': 0}
+
+
+@router.get('/cost-projection')
+async def admin_cost_projection(request: Request, window_days: int = 30):
+    """Compute real-time cost & revenue projection for the last N days.
+
+    Combines:
+      - db.video_projects (per-feature MH credit charges)
+      - db.users (tier counts → expected revenue)
+      - db.audit_logs (DSAR / moderation activity)
+
+    Returns monthly run-rate estimates.
+    """
+    await require_admin(request)
+    from datetime import timedelta
+    from core.pricing import PLANS
+
+    window_days = max(1, min(int(window_days or 30), 365))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+
+    # MH cost basis (₹0.135 per MH credit at ₹1,350/mo for 10,000 MH credits)
+    MH_INR_PER_CREDIT = 0.135
+
+    # Per-feature MH cost map (from core.constants.MH_CREDIT_COSTS)
+    PER_FEATURE_MH_CREDITS = {
+        'lipsync': 35,           # ~5s × 7 per sec
+        'face_swap': 6,
+        'face_swap_video': 15,   # ~5s × 3
+        'head_swap': 10,
+        'body_swap': 10,
+        'ai_image': 5,
+        'ai_video': 30,          # ~3s × 10
+        'image_to_video': 30,
+        'video_to_video': 40,    # ~5s × 8
+        'video_redub': 35,
+        'multishot': 80,
+        'divine': 30,
+        'talking_avatar': 70,    # ~10s × 7
+    }
+
+    # ── Revenue side: count users per tier × tier price ──
+    tier_counts: dict[str, int] = {}
+    async for u in db.users.find({}, {'subscription_tier': 1, 'is_banned': 1, 'is_deleted': 1}):
+        if u.get('is_banned') or u.get('is_deleted'):
+            continue
+        t = (u.get('subscription_tier') or 'free').lower()
+        tier_counts[t] = tier_counts.get(t, 0) + 1
+    monthly_revenue = 0.0
+    revenue_breakdown: list[dict] = []
+    for tier_id, count in tier_counts.items():
+        plan = PLANS.get(tier_id) or {}
+        price = int(plan.get('price_inr') or 0)
+        rev = price * count
+        monthly_revenue += rev
+        revenue_breakdown.append({
+            'tier': tier_id, 'users': count,
+            'price_inr': price, 'monthly_revenue_inr': rev,
+        })
+    revenue_breakdown.sort(key=lambda x: -x['monthly_revenue_inr'])
+
+    # ── COGS side: count recent video_projects by status='completed' ──
+    cost_breakdown: list[dict] = []
+    total_mh_credits = 0
+    cursor = db.video_projects.find(
+        {'created_at': {'$gte': cutoff}, 'status': {'$in': ['completed', 'processing']}},
+        {'workflow_type': 1, 'created_at': 1, '_id': 0},
+    )
+    feature_counts: dict[str, int] = {}
+    async for p in cursor:
+        wf = (p.get('workflow_type') or 'unknown').lower()
+        feature_counts[wf] = feature_counts.get(wf, 0) + 1
+
+    for wf, count in sorted(feature_counts.items(), key=lambda x: -x[1]):
+        mh_per_call = PER_FEATURE_MH_CREDITS.get(wf, 30)  # default heuristic
+        cost_inr = count * mh_per_call * MH_INR_PER_CREDIT
+        total_mh_credits += count * mh_per_call
+        cost_breakdown.append({
+            'feature': wf,
+            'count': count,
+            'mh_credits_per_call': mh_per_call,
+            'total_mh_credits': count * mh_per_call,
+            'cogs_inr': round(cost_inr, 2),
+        })
+
+    # Scale window-period cost to monthly run-rate
+    scale = 30.0 / window_days
+    monthly_cogs = round(sum(c['cogs_inr'] for c in cost_breakdown) * scale, 2)
+
+    # Fixed costs
+    mh_base = 1350
+    emergent_llm_est = 50
+    sarvam_est = 60
+    razorpay_pct = 0.02
+
+    fixed_monthly = mh_base + emergent_llm_est + sarvam_est
+    razorpay_fee = round(monthly_revenue * razorpay_pct, 2)
+    total_monthly_cost = round(monthly_cogs + fixed_monthly + razorpay_fee, 2)
+    profit = round(monthly_revenue - total_monthly_cost, 2)
+    margin_pct = round((profit / monthly_revenue * 100) if monthly_revenue else 0, 1)
+
+    return {
+        'window_days': window_days,
+        'currency': 'INR',
+        'revenue': {
+            'monthly_run_rate': round(monthly_revenue, 2),
+            'breakdown': revenue_breakdown,
+        },
+        'cogs': {
+            'variable_monthly_inr': monthly_cogs,
+            'mh_subscription_inr': mh_base,
+            'emergent_llm_inr': emergent_llm_est,
+            'sarvam_inr': sarvam_est,
+            'razorpay_fee_inr': razorpay_fee,
+            'total_monthly_inr': total_monthly_cost,
+            'feature_breakdown': cost_breakdown,
+        },
+        'profit': {
+            'monthly_inr': profit,
+            'margin_pct': margin_pct,
+        },
+        'assumptions': {
+            'mh_inr_per_credit': MH_INR_PER_CREDIT,
+            'mh_base_subscription_inr': mh_base,
+            'razorpay_fee_pct': razorpay_pct * 100,
+            'note': 'Variable COGS scaled from last {} days to 30-day run-rate.'.format(window_days),
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Session 37 — Sprint 3: Content Moderation v2 Admin Dashboard
 # ═══════════════════════════════════════════════════════════════════
 

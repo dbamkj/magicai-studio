@@ -233,6 +233,31 @@ export default function AdminScreen() {
             <Text style={{ color: '#FCA5A5', fontSize: 18 }}>›</Text>
           </TouchableOpacity>
 
+          {/* Session 40 — Cost Projection entry-point */}
+          <TouchableOpacity
+            onPress={() => router.push('/admin-cost-projection' as any)}
+            activeOpacity={0.85}
+            style={{
+              marginTop: 10,
+              paddingVertical: 14,
+              paddingHorizontal: 16,
+              borderRadius: 14,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+              backgroundColor: 'rgba(34,211,238,0.12)',
+              borderWidth: 1,
+              borderColor: 'rgba(34,211,238,0.40)',
+            }}
+          >
+            <Text style={{ fontSize: 22 }}>📊</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#7afcff', fontWeight: '800', fontSize: 15 }}>Cost Projection</Text>
+              <Text style={{ color: '#94A3B8', fontSize: 11 }}>Revenue vs MH spend · run-rate</Text>
+            </View>
+            <Text style={{ color: '#7afcff', fontSize: 18 }}>›</Text>
+          </TouchableOpacity>
+
           <Text style={s.mobileNote}>
             👉 Open on desktop (≥ 900px) for full admin dashboard: users, usage & profit tabs.
           </Text>
